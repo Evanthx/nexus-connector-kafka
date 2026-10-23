@@ -2,12 +2,19 @@
 
 A Temporal connector for one Kafka topic. It runs in two ways, which share their Kafka code:
 
-- **The streamer** streams every message into Temporal, like the Python prototype. It joins a
-  consumer group and starts one standalone Nexus operation per batch, through a Nexus endpoint.
-  It only sends messages in: nothing comes back.
+- **The streamer** streams every message into Temporal. It joins a consumer group and starts one
+  standalone Nexus operation per batch, through a Nexus endpoint. It only sends messages in: it
+  doesn't wait for results or write replies to Kafka. This will change once completion callbacks 
+  are implemented in the Go SDK, at that point replies could be written to Kafka - but only replies, 
+  you will not be able to originate a message and send it to the streamer to write to Kafka.
 - **The Nexus worker** serves the topic as a Nexus service with two operations. `read` returns the
   next batch for a consumer group. `write` writes messages. Each call runs as a standalone
   activity.
+
+Use the streamer to move messages from Kafka into Temporal: it delivers as soon as messages
+arrive, scales out across partitions, and costs nothing while the topic is idle. 
+Use the Nexus worker to write to Kafka, or to read when a workflow should pull messages at its
+own pace or for ad hoc reads. Each consumer group can have only one reader at a time.
 
 ```
  streamer                                    namespace: kafka-test
@@ -137,7 +144,7 @@ go run ./test/nexuscaller/starter read -group reader1
 
 This starts `ReaderWorkflow` for the group `reader1`. It reads a batch, processes each message
 (terminal 5 logs `Processed message`), acknowledges the batch on its next read, and repeats. A
-read waits up to 30 seconds for its batch to fill, then returns what it has. The reader runs until
+read waits up to 60 seconds for its batch to fill, then returns what it has. The reader runs until
 you stop it:
 
 ```bash
@@ -378,9 +385,14 @@ one fetch still holds a full batch. Small batches (`batchSize` much smaller than
 byte limit) against a large backlog still fetch more than they return. See
 [Possible future changes](#possible-future-changes).
 
-**Each read heartbeats** every 10 seconds, from when it starts until it returns, so a worker that
-dies is noticed within the 30-second heartbeat timeout. A worker process runs at most 8 activities
-at once: the number of Kafka consumers it keeps for reads, so a read never waits for one.
+**Each read heartbeats** every 70 seconds until it returns, starting 70 seconds in, and its
+heartbeat timeout is 140 seconds. A read that returns sooner, such as the test caller's 60-second
+reads, sends no heartbeat: each heartbeat that reaches Temporal is a billable Action. A worker that
+dies during such a read is noticed at its start-to-close timeout (time limit plus a minute)
+instead. A longer read is noticed within 140 seconds.
+
+A worker process runs at most 8 activities at once: the number of Kafka consumers it keeps for
+reads, so a read never waits for one.
 
 **`write(messages)`** writes messages in order and waits for Kafka to acknowledge them. A retried
 write can write a message twice. Each message gets a `dedupe-id` header,
@@ -403,8 +415,42 @@ minutes. Retrying a read is safe: it commits the same `ack` again and reads the 
 [`test/nexuscaller`](test/nexuscaller/workflows.go) shows how to read in a loop. `ReaderWorkflow`
 reads a batch, processes its messages in parallel (one activity each), then acknowledges the batch
 on its next read. When Temporal suggests it, because the history is getting long, it continues as
-new and passes its position to the new run, whose first read acknowledges it. After an empty batch
-read with no time limit, it waits 5 seconds before reading again.
+new and passes its position to the new run, whose first read acknowledges it. Its reads always
+long-poll: `timeLimitSeconds` is 60 unless the starter's `-time-limit` says otherwise.
+
+One activity per message shows messages processed in parallel, but it is the expensive choice:
+see [Cost](#cost).
+
+### Cost
+
+Temporal Cloud bills by [Action](https://docs.temporal.io/evaluate/cloud/actions). What the
+connector itself costs:
+
+- **The streamer:** one standalone Nexus operation per partition in each batch, plus whatever the
+  receiving service starts, such as one workflow per operation. It costs nothing while the topic
+  is idle: it waits in Kafka.
+- **The Nexus worker:** each `read` called from a workflow is one Action for the Nexus operation
+  and one for the activity behind it, plus one per heartbeat (none for a read that returns within
+  70 seconds; one every 70 seconds after that). `write` is the same without heartbeats.
+
+These figures assume a standalone Nexus operation costs one Action to start, as a Nexus operation
+started from a workflow does; Temporal's pricing pages don't state it for standalone ones yet.
+
+With full batches, the connector's share is small: a few Actions per batch either way.
+What decides the bill is the rest:
+
+- **Process a batch, not a message.** One activity or workflow per message costs one Action per
+  message, many times what reading the batch costs. Passing a batch to one activity costs one
+  Action per batch, but a message that fails retries the whole batch.
+- **Long-poll with `read`.** Give reads a time limit, such as the test caller's 60 seconds,
+  rather than reading with no time limit and pausing after an empty batch. While the topic is idle,
+  a 60-second read costs two Actions per wait (the read and its activity), about 120 an hour.
+  Reading with no time limit and pausing 5 seconds after each empty batch costs about three (the
+  read, its activity, and a timer) every 5 seconds, about 2,200 an hour. Keep the time limit under
+  70 seconds to avoid heartbeats.
+- **Let the streamer's batches fill.** With `KAFKA_BATCH_TIME_LIMIT` 0, a quiet topic's batches
+  hold a message or two, so each message costs about an operation. A time limit such as `1s` lets
+  batches fill at the cost of that much delay.
 
 ### Settings
 

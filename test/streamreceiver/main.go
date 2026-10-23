@@ -25,7 +25,20 @@ const (
 	taskQueue = "kafka-receiver"
 )
 
-// ReceiveWorkflow stands in for real work on a batch: it logs each message.
+// ReceiveWorkflow is the Temporal workflow that each receive starts, one per batch. It is durable:
+// it can run a series of activities, child workflows, or timers to process the batch, and the
+// Nexus operation completes when it does. Here it stands in for that work and only logs each
+// message; a real receiver would call its activities and register them on the worker in main.
+//
+// It gets the whole batch, so it can process it either way:
+//   - run one activity on the whole batch: one Action per batch, but a message that fails
+//     retries the whole batch; or
+//   - walk the batch and run an activity per message, in parallel or in order: each message
+//     retries on its own, but costs an Action.
+//
+// It doesn't loop. Each run handles one batch and returns. The loop is in the streamer, which
+// starts a new receive operation, and so a new ReceiveWorkflow, for every batch it reads. The
+// worker in main keeps running and takes each one from the task queue.
 func ReceiveWorkflow(ctx workflow.Context, input kafkaapi.ReceiveInput) (kafkaapi.ReceiveOutput, error) {
 	for _, rec := range input.Records {
 		workflow.GetLogger(ctx).Info("Received message",
@@ -64,6 +77,8 @@ func main() {
 	w.RegisterNexusService(svc)
 	w.RegisterWorkflow(ReceiveWorkflow)
 	log.Printf("Receiving on namespace %q, task queue %q", opts.Namespace, taskQueue)
+	// Run polls the task queue until interrupted: each batch the streamer delivers arrives as a
+	// receive operation, which starts a ReceiveWorkflow on this worker.
 	if err := w.Run(worker.InterruptCh()); err != nil {
 		log.Fatalf("Worker stopped: %v", err)
 	}

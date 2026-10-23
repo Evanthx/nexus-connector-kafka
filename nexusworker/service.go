@@ -16,15 +16,16 @@ import (
 const taskQueue = "nexus-connector-kafka"
 
 // readOptions are the options for the activity behind one read. An attempt may take the read's
-// time limit plus a minute; the whole read, with retries, the time limit plus five minutes. The
-// read heartbeats while it waits, so a worker that dies is noticed within the heartbeat timeout.
+// time limit plus a minute; the whole read, with retries, the time limit plus five minutes. A
+// worker that dies is noticed within the heartbeat timeout, twice the heartbeat interval, or at
+// the start-to-close timeout if that comes first, as it does for a read of a minute or less.
 func readOptions(requestID string, in kafkaapi.ReadInput) client.StartActivityOptions {
 	timeLimit := time.Duration(in.TimeLimitSecondsOrDefault()) * time.Second
 	return client.StartActivityOptions{
 		ID:                     "kafka-read-" + requestID,
 		StartToCloseTimeout:    timeLimit + time.Minute,
 		ScheduleToCloseTimeout: timeLimit + 5*time.Minute,
-		HeartbeatTimeout:       30 * time.Second,
+		HeartbeatTimeout:       2 * heartbeatInterval,
 	}
 }
 

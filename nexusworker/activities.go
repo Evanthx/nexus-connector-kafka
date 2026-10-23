@@ -15,10 +15,13 @@ import (
 // of one write, so a consumer can drop the copies a retried write leaves.
 const DedupeHeader = "dedupe-id"
 
-// heartbeatInterval is how often a read heartbeats, well under the read's heartbeat timeout (see
-// readOptions). It and recordHeartbeat are variables so tests can watch heartbeats.
+// heartbeatInterval is how often a read heartbeats; the read's heartbeat timeout is twice this
+// (see readOptions). It is longer than the test caller's 60-second reads, so a read of a minute or
+// less sends no heartbeat, and longer than the SDK's longest throttle (60 seconds), so each
+// heartbeat reaches the server when it is sent. It and recordHeartbeat are variables so tests can
+// watch heartbeats.
 var (
-	heartbeatInterval = 10 * time.Second
+	heartbeatInterval = 70 * time.Second
 	recordHeartbeat   = activity.RecordHeartbeat
 )
 
@@ -62,16 +65,19 @@ func (a *activities) Read(ctx context.Context, in kafkaapi.ReadInput) (kafkaapi.
 	return kafkaapi.ReadOutput{Records: res.Records, Position: res.Position}, nil
 }
 
-// heartbeat heartbeats every heartbeatInterval until stop is called.
+// heartbeat heartbeats every heartbeatInterval until stop is called. The first heartbeat comes
+// after one interval, not at once: the SDK sends a first heartbeat to the server straight away,
+// and each one that reaches the server is a billable Action, so a read that finishes within the
+// interval costs none.
 func heartbeat(ctx context.Context) (stop func()) {
 	ctx, cancel := context.WithCancel(ctx)
 	go func() {
 		ticker := time.NewTicker(heartbeatInterval)
 		defer ticker.Stop()
 		for {
-			recordHeartbeat(ctx)
 			select {
 			case <-ticker.C:
+				recordHeartbeat(ctx)
 			case <-ctx.Done():
 				return
 			}

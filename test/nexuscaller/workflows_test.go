@@ -16,9 +16,11 @@ import (
 
 // fakeKafka serves read from a list of batches and records each read's ack.
 type fakeKafka struct {
-	mu      sync.Mutex
-	batches []kafkaapi.ReadOutput
-	acks    []string
+	mu         sync.Mutex
+	batches    []kafkaapi.ReadOutput
+	acks       []string
+	timeLimits []int64
+	batchSizes []int64
 }
 
 func (f *fakeKafka) service() *nexus.Service {
@@ -30,6 +32,8 @@ func (f *fakeKafka) service() *nexus.Service {
 			ack = *in.Ack
 		}
 		f.acks = append(f.acks, ack)
+		f.timeLimits = append(f.timeLimits, in.TimeLimitSecondsOrDefault())
+		f.batchSizes = append(f.batchSizes, in.BatchSizeOrDefault())
 		if len(f.batches) == 0 {
 			return kafkaapi.ReadOutput{Records: []kafkaapi.Record{}, Position: ack}, nil
 		}
@@ -82,4 +86,25 @@ func TestReaderWorkflow(t *testing.T) {
 
 	require.Equal(t, []string{"p0", "p1"}, fake.acks)
 	require.ElementsMatch(t, []string{"a", "b", "c"}, processed)
+}
+
+// Without a time limit, the reader long-polls with DefaultTimeLimitSeconds rather than reading as
+// fast as it can. Without a batch size, it leaves the read's own default (100) to apply, rather
+// than asking for batches of 0, which would only acknowledge.
+func TestReaderWorkflow_Defaults(t *testing.T) {
+	var ts testsuite.WorkflowTestSuite
+	env := ts.NewTestWorkflowEnvironment()
+	fake := &fakeKafka{}
+	env.RegisterNexusService(fake.service())
+	env.RegisterActivity(ProcessRecord)
+
+	original := shouldContinueAsNew
+	shouldContinueAsNew = func(workflow.Context) bool { return true }
+	t.Cleanup(func() { shouldContinueAsNew = original })
+
+	env.ExecuteWorkflow(ReaderWorkflow, ReaderInput{Group: "g"})
+	var can *workflow.ContinueAsNewError
+	require.ErrorAs(t, env.GetWorkflowError(), &can)
+	require.Equal(t, []int64{DefaultTimeLimitSeconds}, fake.timeLimits)
+	require.Equal(t, []int64{100}, fake.batchSizes)
 }
