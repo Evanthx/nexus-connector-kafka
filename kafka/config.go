@@ -15,7 +15,9 @@ import (
 	"strings"
 
 	"github.com/twmb/franz-go/pkg/kadm"
+	"github.com/twmb/franz-go/pkg/kerr"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"github.com/twmb/franz-go/pkg/kmsg"
 	"github.com/twmb/franz-go/pkg/sasl/scram"
 )
 
@@ -86,22 +88,38 @@ func Identify(ctx context.Context, cfg Config) (TopicIdentity, error) {
 		return TopicIdentity{}, fmt.Errorf("create Kafka client: %w", err)
 	}
 	defer cl.Close()
-	md, err := kadm.NewClient(cl).Metadata(ctx, cfg.Topic)
+	return identify(ctx, cl, cfg.Topic)
+}
+
+// identify asks Kafka, through cl, for topic's identity. It sends its own metadata request rather
+// than using the client's cached metadata, which can be seconds old, so it notices a topic deleted
+// and created again.
+func identify(ctx context.Context, cl *kgo.Client, topic string) (TopicIdentity, error) {
+	req := kmsg.NewPtrMetadataRequest()
+	reqTopic := kmsg.NewMetadataRequestTopic()
+	reqTopic.Topic = kmsg.StringPtr(topic)
+	req.Topics = []kmsg.MetadataRequestTopic{reqTopic}
+	resp, err := req.RequestWith(ctx, cl)
 	if err != nil {
-		return TopicIdentity{}, fmt.Errorf("describe topic %q: %w", cfg.Topic, err)
+		return TopicIdentity{}, fmt.Errorf("describe topic %q: %w", topic, err)
 	}
-	topic, ok := md.Topics[cfg.Topic]
-	if !ok {
-		return TopicIdentity{}, fmt.Errorf("describe topic %q: not in the cluster's metadata", cfg.Topic)
+	for _, t := range resp.Topics {
+		if t.Topic == nil || *t.Topic != topic {
+			continue
+		}
+		if err := kerr.ErrorForCode(t.ErrorCode); err != nil {
+			return TopicIdentity{}, fmt.Errorf("describe topic %q: %w", topic, err)
+		}
+		var id TopicIdentity
+		if resp.ClusterID != nil {
+			id.Cluster = *resp.ClusterID
+		}
+		if t.TopicID != ([16]byte{}) {
+			id.TopicID = kadm.TopicID(t.TopicID).String()
+		}
+		return id, nil
 	}
-	if topic.Err != nil {
-		return TopicIdentity{}, fmt.Errorf("describe topic %q: %w", cfg.Topic, topic.Err)
-	}
-	id := TopicIdentity{Cluster: md.Cluster}
-	if topic.ID != (kadm.TopicID{}) {
-		id.TopicID = topic.ID.String()
-	}
-	return id, nil
+	return TopicIdentity{}, fmt.Errorf("describe topic %q: not in the cluster's metadata", topic)
 }
 
 // clientOpts are the options every client of the topic uses, plus extra.

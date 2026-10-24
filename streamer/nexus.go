@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/temporalio/nexus-connector-kafka/generated/kafkaapi"
@@ -42,16 +43,22 @@ func (n *nexusStarter) start(ctx context.Context, operationID string, input kafk
 		Summary:                fmt.Sprintf("Kafka %s/%d/%d-%d", first.Topic, first.Partition, first.Offset, last.Offset),
 	})
 	var started *serviceerror.NexusOperationExecutionAlreadyStarted
-	var invalid *serviceerror.InvalidArgument
 	switch {
 	case err == nil, errors.As(err, &started):
 		return nil
-	case errors.As(err, &invalid):
-		// The server refused these messages, for example as larger than an input can be. Setup
-		// problems (an unknown endpoint, standalone Nexus operations not enabled) are other
-		// errors and are retried.
+	case refusedAsTooLarge(err):
 		return fmt.Errorf("%w: %w", errUndeliverable, err)
 	default:
 		return err
 	}
+}
+
+// refusedAsTooLarge reports whether the server refused an operation because its input is larger
+// than the server allows: the one refusal that is about the messages, not the setup. Other
+// refusals, including other InvalidArguments such as an operation timeout the namespace doesn't
+// allow, would refuse every batch alike, so they are retried, and the stream waits for the setup
+// to be fixed rather than moving every message to the dead-letter topic.
+func refusedAsTooLarge(err error) bool {
+	var invalid *serviceerror.InvalidArgument
+	return errors.As(err, &invalid) && strings.Contains(invalid.Error(), "exceeds size limit")
 }

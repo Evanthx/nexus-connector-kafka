@@ -96,10 +96,16 @@ func (r *GroupReader) CheckAck(group, ack string) error {
 
 // Read commits req.Ack, if given, then reads the next batch for req.Group.
 func (r *GroupReader) Read(ctx context.Context, req ReadRequest) (ReadResult, error) {
+	id, err := identify(ctx, r.adminCl, r.cfg.Topic)
+	if err != nil {
+		return ReadResult{}, err
+	}
 	var ack position
 	if req.Ack != "" {
-		var err error
 		if ack, err = decodePosition(req.Ack, req.Group, r.cfg.Topic); err != nil {
+			return ReadResult{}, err
+		}
+		if err := ack.checkIdentity(id); err != nil {
 			return ReadResult{}, err
 		}
 	}
@@ -110,7 +116,7 @@ func (r *GroupReader) Read(ctx context.Context, req ReadRequest) (ReadResult, er
 	}
 	if req.BatchSize == 0 {
 		// Only acknowledging: the group is now at the ack.
-		pos := position{Group: req.Group, Topic: r.cfg.Topic, Offsets: ack.Offsets}
+		pos := position{Group: req.Group, Topic: r.cfg.Topic, Cluster: id.Cluster, TopicID: id.TopicID, Offsets: ack.Offsets}
 		return ReadResult{Records: []kafkaapi.Record{}, Position: pos.encode()}, nil
 	}
 	committed, err := r.committedOffsets(ctx, req.Group)
@@ -138,12 +144,13 @@ func (r *GroupReader) Read(ctx context.Context, req ReadRequest) (ReadResult, er
 		return ReadResult{}, fmt.Errorf("%w: partition %d offset %d is %d bytes encoded, and the limit is %d",
 			ErrRecordTooLarge, rec.Partition, rec.Offset, b.bytes, req.MaxBytes)
 	}
-	pos := position{Group: req.Group, Topic: r.cfg.Topic, Offsets: p.next}
+	pos := position{Group: req.Group, Topic: r.cfg.Topic, Cluster: id.Cluster, TopicID: id.TopicID, Offsets: p.next}
 	return ReadResult{Records: b.records, Position: pos.encode()}, nil
 }
 
 // committedOffsets returns the group's committed offset for each partition of the topic that has
-// one. A group that has never committed has none.
+// one. A group that has never committed has none. Kafka deletes a group's offsets for a topic when
+// the topic is deleted, so none are left over from an earlier topic of the same name.
 func (r *GroupReader) committedOffsets(ctx context.Context, group string) (map[int32]int64, error) {
 	out := map[int32]int64{}
 	resp, err := r.admin.FetchOffsets(ctx, group)
@@ -200,19 +207,9 @@ type readPlan struct {
 // can return) and only partitions with records left are fetched. With a time limit, records
 // written during the read count too, so every partition is fetched and none has an end.
 func (r *GroupReader) plan(ctx context.Context, committed map[int32]int64, waitForNew bool) (readPlan, error) {
-	starts, err := r.admin.ListStartOffsets(ctx, r.cfg.Topic)
-	if err == nil {
-		err = starts.Error()
-	}
+	starts, ends, err := listBounds(ctx, r.admin, r.cfg.Topic)
 	if err != nil {
-		return readPlan{}, fmt.Errorf("list start offsets of %q: %w", r.cfg.Topic, err)
-	}
-	ends, err := r.admin.ListCommittedOffsets(ctx, r.cfg.Topic)
-	if err == nil {
-		err = ends.Error()
-	}
-	if err != nil {
-		return readPlan{}, fmt.Errorf("list end offsets of %q: %w", r.cfg.Topic, err)
+		return readPlan{}, err
 	}
 
 	p := readPlan{next: map[int32]int64{}, end: map[int32]int64{}, assign: map[int32]kgo.Offset{}}
@@ -245,6 +242,26 @@ func (p readPlan) chosenStarts(committed map[int32]int64) map[int32]int64 {
 		}
 	}
 	return chosen
+}
+
+// listBounds lists each partition's oldest offset and its end: the last stable offset, the end of
+// the committed records, which is all a read-committed client can read.
+func listBounds(ctx context.Context, admin *kadm.Client, topic string) (starts, ends kadm.ListedOffsets, err error) {
+	starts, err = admin.ListStartOffsets(ctx, topic)
+	if err == nil {
+		err = starts.Error()
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("list start offsets of %q: %w", topic, err)
+	}
+	ends, err = admin.ListCommittedOffsets(ctx, topic)
+	if err == nil {
+		err = ends.Error()
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("list end offsets of %q: %w", topic, err)
+	}
+	return starts, ends, nil
 }
 
 // startOffset is where to read a partition from, given the group's committed offset (if any)
@@ -287,14 +304,8 @@ func (r *GroupReader) read(ctx context.Context, req ReadRequest, p readPlan, b *
 	done := func() bool { return b.full() || p.finished() }
 	poll := func(pollCtx context.Context) error {
 		fetches := consumer.PollRecords(pollCtx, req.BatchSize-len(b.records))
-		var fetchErr error
-		fetches.EachError(func(topic string, part int32, err error) {
-			if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
-				fetchErr = errors.Join(fetchErr, fmt.Errorf("fetch %s[%d]: %w", topic, part, err))
-			}
-		})
-		if fetchErr != nil {
-			return fetchErr
+		if err := fetchErrors(fetches); err != nil {
+			return err
 		}
 		fetches.EachRecord(func(rec *kgo.Record) { p.take(rec, b) })
 		return nil

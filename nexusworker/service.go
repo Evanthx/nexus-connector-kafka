@@ -12,8 +12,15 @@ import (
 	"go.temporal.io/sdk/worker"
 )
 
-// taskQueue is the Nexus worker's task queue. The Nexus endpoint targets it.
-const taskQueue = "nexus-connector-kafka"
+const (
+	// taskQueue is the Nexus worker's task queue. The Nexus endpoint targets it, and write
+	// activities run on it.
+	taskQueue = "nexus-connector-kafka"
+	// readTaskQueue is where read activities run, on a worker of their own. A read can wait a
+	// minute or more for its batch, and reads are limited to as many at once as the reader has
+	// consumers; on a queue of their own, waiting reads never hold up a write.
+	readTaskQueue = "nexus-connector-kafka-reads"
+)
 
 // readOptions are the options for the activity behind one read. An attempt may take the read's
 // time limit plus a minute; the whole read, with retries, the time limit plus five minutes. A
@@ -23,6 +30,7 @@ func readOptions(requestID string, in kafkaapi.ReadInput) client.StartActivityOp
 	timeLimit := time.Duration(in.TimeLimitSecondsOrDefault()) * time.Second
 	return client.StartActivityOptions{
 		ID:                     "kafka-read-" + requestID,
+		TaskQueue:              readTaskQueue,
 		StartToCloseTimeout:    timeLimit + time.Minute,
 		ScheduleToCloseTimeout: timeLimit + 5*time.Minute,
 		HeartbeatTimeout:       2 * heartbeatInterval,
@@ -69,20 +77,14 @@ func newService(a *activities) *nexus.Service {
 	return svc
 }
 
-// workerOptions are the options for the worker that runs the activities. It runs no more at once
-// than the reader has consumers, so a read never waits for one.
-func workerOptions() worker.Options {
-	return worker.Options{MaxConcurrentActivityExecutionSize: kafka.MaxConcurrentReads}
-}
-
-// registry is the part of a worker that register needs.
-type registry interface {
-	worker.ActivityRegistry
-	worker.NexusServiceRegistry
-}
-
-// register registers the Nexus service and the activities it starts.
-func register(w registry, a *activities) {
-	w.RegisterNexusService(newService(a))
-	w.RegisterActivity(a)
+// newWorkers creates the Nexus worker's two workers. The first serves the Nexus service and runs
+// writes. The second runs reads, no more at once than the reader has consumers, so a read never
+// waits for one.
+func newWorkers(c client.Client, a *activities) (nexusAndWrites, reads worker.Worker) {
+	nexusAndWrites = worker.New(c, taskQueue, worker.Options{})
+	nexusAndWrites.RegisterNexusService(newService(a))
+	nexusAndWrites.RegisterActivity(a.Write)
+	reads = worker.New(c, readTaskQueue, worker.Options{MaxConcurrentActivityExecutionSize: kafka.MaxConcurrentReads})
+	reads.RegisterActivity(a.Read)
+	return nexusAndWrites, reads
 }

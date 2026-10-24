@@ -3,9 +3,13 @@ package kafka
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/temporalio/nexus-connector-kafka/generated/kafkaapi"
+	"github.com/twmb/franz-go/pkg/kgo"
 )
 
 // batch collects records up to a number of records and, if maxBytes isn't 0, a number of encoded
@@ -83,4 +87,24 @@ func pollUntil(ctx context.Context, timeLimit time.Duration, done func() bool, p
 		}
 	}
 	return nil
+}
+
+// fetchErrors returns the errors in fetches that should end a read. A context error only means a
+// poll's time was up. franz-go reports data loss (records removed before they were read, after
+// which it resumes from the oldest left) and a lost group session (after which it rejoins) to
+// inform, and recovers from both itself, so they are logged rather than returned.
+func fetchErrors(fetches kgo.Fetches) error {
+	var errs error
+	fetches.EachError(func(topic string, part int32, err error) {
+		var dataLoss *kgo.ErrDataLoss
+		var lostSession *kgo.ErrGroupSession
+		switch {
+		case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		case errors.As(err, &dataLoss), errors.As(err, &lostSession):
+			slog.Warn("Kafka reported a problem and recovered", "topic", topic, "partition", part, "error", err)
+		default:
+			errs = errors.Join(errs, fmt.Errorf("fetch %s[%d]: %w", topic, part, err))
+		}
+	})
+	return errs
 }

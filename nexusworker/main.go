@@ -60,9 +60,12 @@ func main() {
 	}
 	defer c.Close()
 
-	w := worker.New(c, taskQueue, workerOptions())
-	register(w, &activities{reader: reader, writer: writer, topic: cfg.Topic, maxBatchBytes: maxBatchBytes})
-	log.Printf("Serving topic %q on namespace %q, task queue %q", cfg.Topic, opts.Namespace, taskQueue)
+	w, reads := newWorkers(c, &activities{reader: reader, writer: writer, topic: cfg.Topic, maxBatchBytes: maxBatchBytes})
+	if err := reads.Start(); err != nil {
+		log.Fatalf("Failed to start the read worker: %v", err)
+	}
+	defer reads.Stop()
+	log.Printf("Serving topic %q on namespace %q, task queues %q and %q", cfg.Topic, opts.Namespace, taskQueue, readTaskQueue)
 	if err := w.Run(worker.InterruptCh()); err != nil {
 		log.Fatalf("Worker stopped: %v", err)
 	}

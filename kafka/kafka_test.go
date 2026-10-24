@@ -12,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/temporalio/nexus-connector-kafka/generated/kafkaapi"
+	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kfake"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/twmb/franz-go/pkg/kmsg"
@@ -338,8 +339,8 @@ func TestGroupReader_RejectsAnotherGroupsAck(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidPosition)
 }
 
-// A reader can't commit for a group that has live members, such as a streamer's: not an ack, and
-// not the start it chose for a partition the group has no offset for.
+// A reader can't commit an ack for a group that has live members, such as a streamer's. (Its
+// first read commits nothing: the member committed a start for every partition when it joined.)
 func TestGroupReader_GroupInUse(t *testing.T) {
 	cfg := newCluster(t)
 	produce(t, cfg, 0, "m0", "m1")
@@ -351,11 +352,72 @@ func TestGroupReader_GroupInUse(t *testing.T) {
 	require.NoError(t, member.Commit(context.Background(), b))
 
 	r := newReader(t, cfg)
-	_, err = r.Read(context.Background(), ReadRequest{Group: "live", BatchSize: 1})
-	require.ErrorIs(t, err, ErrGroupInUse, "partitions 1 and 2 have no committed offset")
-	ack := position{Group: "live", Topic: testTopic, Offsets: map[int32]int64{0: 2}}.encode()
-	_, err = r.Read(context.Background(), ReadRequest{Group: "live", BatchSize: 0, Ack: ack})
+	res := read(t, r, ReadRequest{Group: "live", BatchSize: 1})
+	_, err = r.Read(context.Background(), ReadRequest{Group: "live", BatchSize: 0, Ack: res.Position})
 	require.ErrorIs(t, err, ErrGroupInUse)
+}
+
+// recreateTopic deletes the test topic and creates it again, empty, with a new topic ID.
+func recreateTopic(t *testing.T, cfg Config) {
+	t.Helper()
+	cl, err := kgo.NewClient(cfg.clientOpts()...)
+	require.NoError(t, err)
+	defer cl.Close()
+	admin := kadm.NewClient(cl)
+	_, err = admin.DeleteTopics(context.Background(), testTopic)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		_, err := admin.CreateTopic(context.Background(), 3, 1, nil, testTopic)
+		return err == nil
+	}, 10*time.Second, 100*time.Millisecond)
+}
+
+// readRetrying reads like an activity that is retried: right after a topic is created again,
+// the client's cached metadata can still name the old topic, which fails a read until it
+// refreshes.
+func readRetrying(t *testing.T, r *GroupReader, req ReadRequest) ReadResult {
+	t.Helper()
+	var res ReadResult
+	require.Eventually(t, func() bool {
+		var err error
+		res, err = r.Read(context.Background(), req)
+		return err == nil
+	}, 30*time.Second, 200*time.Millisecond)
+	return res
+}
+
+// A position from before the topic was deleted and created again is refused rather than
+// committed against the new topic, where its offsets would skip the new topic's first records.
+func TestGroupReader_AckFromARecreatedTopic(t *testing.T) {
+	cfg := newCluster(t)
+	produce(t, cfg, 0, "old0", "old1")
+	r := newReader(t, cfg)
+	old := read(t, r, ReadRequest{Group: "g", BatchSize: 2})
+	require.Equal(t, []string{"old0", "old1"}, values(old.Records))
+
+	recreateTopic(t, cfg)
+	produce(t, cfg, 0, "new0", "new1", "new2")
+	_, err := r.Read(context.Background(), ReadRequest{Group: "g", BatchSize: 10, Ack: old.Position})
+	require.ErrorIs(t, err, ErrInvalidPosition)
+
+	// Reading without the ack starts over on the new topic.
+	res := readRetrying(t, r, ReadRequest{Group: "g", BatchSize: 10})
+	require.Equal(t, []string{"new0", "new1", "new2"}, values(res.Records))
+}
+
+// Offsets the group committed for the old topic don't apply to the new one: Kafka deletes them with
+// the topic (checked against Kafka 4.3.1 too), so reading starts over.
+func TestGroupReader_CommitsFromARecreatedTopic(t *testing.T) {
+	cfg := newCluster(t)
+	produce(t, cfg, 0, "old0", "old1")
+	r := newReader(t, cfg)
+	old := read(t, r, ReadRequest{Group: "g", BatchSize: 2})
+	read(t, r, ReadRequest{Group: "g", BatchSize: 0, Ack: old.Position}) // commits offset 2
+
+	recreateTopic(t, cfg)
+	produce(t, cfg, 0, "new0", "new1", "new2")
+	res := readRetrying(t, r, ReadRequest{Group: "g", BatchSize: 10})
+	require.Equal(t, []string{"new0", "new1", "new2"}, values(res.Records))
 }
 
 func TestStartOffset(t *testing.T) {
@@ -467,6 +529,31 @@ func TestGroupMember_StartFromNewest(t *testing.T) {
 	require.Equal(t, []string{"new"}, values(b.Records))
 }
 
+// A batch released before the group ever committed survives a handoff, even starting from newest:
+// the member commits the start it chose before consuming, so the next member starts there too
+// rather than at the end, past the released batch.
+func TestGroupMember_ReleasedFirstBatchSurvivesAHandoff(t *testing.T) {
+	cfg := newCluster(t)
+	cfg.StartFrom = StartFromNewest
+	first, err := NewGroupMember(cfg, "g")
+	require.NoError(t, err)
+	empty, err := first.Next(context.Background(), 10, time.Second) // joins at the end
+	require.NoError(t, err)
+	require.NoError(t, first.Commit(context.Background(), empty))
+
+	produce(t, cfg, 0, "must-survive")
+	b, err := first.Next(context.Background(), 1, 30*time.Second)
+	require.NoError(t, err)
+	require.Equal(t, []string{"must-survive"}, values(b.Records))
+	first.Release(b)
+	first.Close()
+
+	next := newMember(t, cfg, "g")
+	again, err := next.Next(context.Background(), 1, 30*time.Second)
+	require.NoError(t, err)
+	require.Equal(t, []string{"must-survive"}, values(again.Records))
+}
+
 // A released batch is read again: the member's position goes back to the batch's first records.
 func TestGroupMember_ReleaseReadsTheBatchAgain(t *testing.T) {
 	cfg := newCluster(t)
@@ -527,6 +614,18 @@ func TestTombstone(t *testing.T) {
 	require.False(t, empty.Tombstone)
 	require.Nil(t, DeadLetter("dl", tombstone, "g", errors.New("x")).Value)
 	require.NotNil(t, DeadLetter("dl", empty, "g", errors.New("x")).Value)
+}
+
+// Errors franz-go reports only to inform, and context errors, don't end a read; others do.
+func TestFetchErrors(t *testing.T) {
+	fetches := func(err error) kgo.Fetches {
+		return kgo.Fetches{{Topics: []kgo.FetchTopic{{Topic: testTopic, Partitions: []kgo.FetchPartition{{Partition: 0, Err: err}}}}}}
+	}
+	require.NoError(t, fetchErrors(fetches(nil)))
+	require.NoError(t, fetchErrors(fetches(context.DeadlineExceeded)))
+	require.NoError(t, fetchErrors(fetches(&kgo.ErrDataLoss{Topic: testTopic})))
+	require.NoError(t, fetchErrors(fetches(&kgo.ErrGroupSession{Err: errors.New("kicked")})))
+	require.ErrorContains(t, fetchErrors(fetches(errors.New("corrupt batch"))), "corrupt batch")
 }
 
 func TestToKafkaRecord(t *testing.T) {

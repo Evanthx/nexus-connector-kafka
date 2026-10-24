@@ -24,8 +24,13 @@ type config struct {
 	service          string        // STREAM_SERVICE: the Nexus service
 	operation        string        // STREAM_OPERATION: the operation started for each batch
 	operationTimeout time.Duration // STREAM_OPERATION_TIMEOUT: how long each operation may take
-	maxInputBytes    int           // STREAM_MAX_INPUT_BYTES: the largest encoded input an operation can take
+	maxInputBytes    int           // STREAM_MAX_INPUT_BYTES: the largest encoded input sent to an operation
 }
+
+// defaultMaxInputBytes is under Temporal's 2 MiB payload limit by 64 KiB, the same reserve the
+// nexusworker keeps: the limit applies to the whole payload, metadata included, and the size
+// counted here is an estimate of the encoded records.
+const defaultMaxInputBytes = 2*1024*1024 - 64*1024
 
 func configFromEnv() (config, error) {
 	kafkaCfg, err := kafka.ConfigFromEnv()
@@ -56,7 +61,7 @@ func configFromEnv() (config, error) {
 	if c.batchSize, err = positiveInt("KAFKA_BATCH_SIZE", 100); err != nil {
 		return config{}, err
 	}
-	if c.maxInputBytes, err = positiveInt("STREAM_MAX_INPUT_BYTES", 2*1024*1024); err != nil {
+	if c.maxInputBytes, err = positiveInt("STREAM_MAX_INPUT_BYTES", defaultMaxInputBytes); err != nil {
 		return config{}, err
 	}
 	if c.timeLimit, err = duration("KAFKA_BATCH_TIME_LIMIT", 0); err != nil {

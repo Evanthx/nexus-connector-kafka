@@ -41,7 +41,8 @@ type streamer struct {
 	member          *kafka.GroupMember
 	starter         operationStarter
 	deadLetters     deadLetterWriter
-	source          string // names the cluster, topic, and group in operation IDs; see sourceKey
+	identify        func(context.Context) (kafka.TopicIdentity, error) // the topic's current identity
+	topic           string
 	group           string
 	deadLetterTopic string
 	batchSize       int
@@ -76,9 +77,10 @@ func (s *streamer) run(ctx context.Context) error {
 		err = s.member.Commit(commitCtx, batch)
 		cancel()
 		if err != nil {
-			// Delivered but not committed: the group will deliver these again, and their
-			// operation IDs match the operations already started.
-			s.logger.Warn("Commit failed; these messages will be delivered again", "records", len(batch.Records), "error", err)
+			// Delivered but not committed. If this streamer keeps the partitions, its next commit
+			// covers these too. If they move to another streamer, or this one restarts, they are
+			// delivered again.
+			s.logger.Warn("Commit failed; these messages may be delivered again", "records", len(batch.Records), "error", err)
 		}
 		if len(batch.Records) > 0 {
 			s.logger.Info("Delivered batch", "records", len(batch.Records))
@@ -98,12 +100,36 @@ func (s *streamer) deliverBeforeRebalance(ctx context.Context, records []kafkaap
 		case <-ctx.Done():
 		}
 	}()
-	return s.deliver(ctx, records)
+	if len(records) == 0 {
+		return nil
+	}
+	source, err := s.source(ctx)
+	if err != nil {
+		return err
+	}
+	return s.deliver(ctx, source, records)
+}
+
+// source is the source key for this batch's operation IDs (see sourceKey). It asks Kafka for the
+// topic's identity for every batch, retrying until it answers or ctx ends, so a topic deleted and
+// created again while the streamer runs gets new IDs: the new topic's offsets mean different
+// messages.
+func (s *streamer) source(ctx context.Context) (string, error) {
+	for attempt := 1; ; attempt++ {
+		id, err := s.identify(ctx)
+		if err == nil {
+			return sourceKey(id, s.topic, s.group), nil
+		}
+		s.logger.Warn("Could not get the topic's identity; retrying", "attempt", attempt, "error", err)
+		if err := s.sleep(ctx, attempt); err != nil {
+			return "", err
+		}
+	}
 }
 
 // deliver delivers a batch. Partitions are delivered in parallel; within a partition, operations
 // start in offset order. It returns an error only if ctx ends first.
-func (s *streamer) deliver(ctx context.Context, records []kafkaapi.Record) error {
+func (s *streamer) deliver(ctx context.Context, source string, records []kafkaapi.Record) error {
 	byPartition := map[int64][]kafkaapi.Record{}
 	for _, rec := range records {
 		byPartition[rec.Partition] = append(byPartition[rec.Partition], rec)
@@ -112,7 +138,7 @@ func (s *streamer) deliver(ctx context.Context, records []kafkaapi.Record) error
 	errs := make(chan error, len(byPartition))
 	for _, recs := range byPartition {
 		wg.Go(func() {
-			if err := s.deliverPartition(ctx, recs); err != nil {
+			if err := s.deliverPartition(ctx, source, recs); err != nil {
 				errs <- err
 			}
 		})
@@ -127,14 +153,14 @@ const inputOverhead = len(`{"records":[]}`)
 
 // deliverPartition delivers one partition's records, as few operations as fit maxInputBytes. A
 // message too large for an input on its own goes to the dead-letter topic.
-func (s *streamer) deliverPartition(ctx context.Context, recs []kafkaapi.Record) error {
+func (s *streamer) deliverPartition(ctx context.Context, source string, recs []kafkaapi.Record) error {
 	var part []kafkaapi.Record
 	size := inputOverhead
 	flush := func() error {
 		if len(part) == 0 {
 			return nil
 		}
-		err := s.deliverPart(ctx, part)
+		err := s.deliverPart(ctx, source, part)
 		part, size = nil, inputOverhead
 		return err
 	}
@@ -162,22 +188,25 @@ func (s *streamer) deliverPartition(ctx context.Context, recs []kafkaapi.Record)
 }
 
 // deliverPart starts the operation for consecutive records of one partition, retrying until it
-// starts or ctx ends. If the server refuses them, they go to the dead-letter topic instead.
-func (s *streamer) deliverPart(ctx context.Context, recs []kafkaapi.Record) error {
-	id := operationID(s.source, recs)
+// starts or ctx ends. If the server refuses the records as too large, they are split in two and
+// each half delivered in turn, so only a message refused on its own goes to the dead-letter topic.
+func (s *streamer) deliverPart(ctx context.Context, source string, recs []kafkaapi.Record) error {
+	id := operationID(source, recs)
 	for attempt := 1; ; attempt++ {
 		err := s.starter.start(ctx, id, kafkaapi.ReceiveInput{Records: recs})
 		switch {
 		case err == nil:
 			return nil
+		case errors.Is(err, errUndeliverable) && len(recs) > 1:
+			s.logger.Warn("The operation was refused as too large; splitting it", "operationID", id, "records", len(recs), "error", err)
+			half := len(recs) / 2
+			if err := s.deliverPart(ctx, source, recs[:half]); err != nil {
+				return err
+			}
+			return s.deliverPart(ctx, source, recs[half:])
 		case errors.Is(err, errUndeliverable):
 			s.logger.Error("The operation was refused", "operationID", id, "error", err)
-			for _, rec := range recs {
-				if err := s.deadLetter(ctx, rec, err); err != nil {
-					return err
-				}
-			}
-			return nil
+			return s.deadLetter(ctx, recs[0], err)
 		}
 		s.logger.Warn("Could not start the operation; retrying", "operationID", id, "attempt", attempt, "error", err)
 		if err := s.sleep(ctx, attempt); err != nil {

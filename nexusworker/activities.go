@@ -42,8 +42,9 @@ type activities struct {
 	maxBatchBytes int // the most bytes a read's result may encode to
 }
 
-// Read acknowledges the previous batch, if in.Ack is set, and reads the next. It heartbeats the
-// whole time, including while it talks to Kafka before polling and while it waits for a consumer.
+// Read acknowledges the previous batch, if in.Ack is set, and reads the next. It heartbeats every
+// heartbeatInterval for as long as it runs, from the start: talking to Kafka before polling
+// counts, not only polling.
 func (a *activities) Read(ctx context.Context, in kafkaapi.ReadInput) (kafkaapi.ReadOutput, error) {
 	stop := heartbeat(ctx)
 	defer stop()

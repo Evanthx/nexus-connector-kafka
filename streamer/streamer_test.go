@@ -17,6 +17,7 @@ import (
 	"github.com/temporalio/nexus-connector-kafka/kafka"
 	"github.com/temporalio/nexus-connector-kafka/test/testenv"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"go.temporal.io/api/serviceerror"
 )
 
 // fakeStarter records each start. fail, if set, decides an attempt's error.
@@ -113,8 +114,9 @@ type running struct {
 	done chan error
 }
 
-// stream starts a streamer for group with starter, and stops it when the test ends.
-func stream(t *testing.T, cfg kafka.Config, group string, starter operationStarter, maxInputBytes int) running {
+// stream starts a streamer for group with starter, and stops it when the test ends. options, if
+// any, change the streamer before it starts.
+func stream(t *testing.T, cfg kafka.Config, group string, starter operationStarter, maxInputBytes int, options ...func(*streamer)) running {
 	t.Helper()
 	member, err := kafka.NewGroupMember(cfg, group)
 	require.NoError(t, err)
@@ -124,7 +126,8 @@ func stream(t *testing.T, cfg kafka.Config, group string, starter operationStart
 		member:          member,
 		starter:         starter,
 		deadLetters:     writer,
-		source:          source(t, cfg, group),
+		identify:        member.Identity,
+		topic:           cfg.Topic,
 		group:           group,
 		deadLetterTopic: testenv.DeadLetterTopic,
 		batchSize:       10,
@@ -132,6 +135,9 @@ func stream(t *testing.T, cfg kafka.Config, group string, starter operationStart
 		maxInputBytes:   maxInputBytes,
 		logger:          slog.Default(),
 		retryDelay:      func(int) time.Duration { return 10 * time.Millisecond },
+	}
+	for _, option := range options {
+		option(s)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	r := running{done: make(chan error, 1)}
@@ -388,6 +394,47 @@ func TestStreamer_UndeliverableGoesToTheDeadLetterTopic(t *testing.T) {
 	require.Equal(t, []string{"after"}, next.values(), "the dead-lettered messages were committed past")
 }
 
+// Messages the server refuses as too large together are split until each part is accepted, so
+// none of them goes to the dead-letter topic.
+func TestStreamer_RefusedPartIsSplit(t *testing.T) {
+	cfg := testenv.Kafka(t)
+	produce(t, cfg, 0, "m0", "m1", "m2", "m3")
+	starter := newFakeStarter()
+	starter.fail = func(input kafkaapi.ReceiveInput, _ int) error {
+		if len(input.Records) > 1 {
+			return fmt.Errorf("%w: input exceeds size limit", errUndeliverable)
+		}
+		return nil
+	}
+	stream(t, cfg, "g", starter, bigEnough)
+	starter.waitFor(t, 4)
+	require.Equal(t, []string{"m0", "m1", "m2", "m3"}, starter.values(), "delivered in order")
+	require.Equal(t, []string{opID(t, cfg, 0, 0, 0), opID(t, cfg, 0, 1, 1), opID(t, cfg, 0, 2, 2), opID(t, cfg, 0, 3, 3)}, starter.ids)
+}
+
+// The topic's identity is asked for every batch, so a topic deleted and created again while the
+// streamer runs gets operation IDs of its own.
+func TestStreamer_IdentityIsCheckedForEveryBatch(t *testing.T) {
+	cfg := testenv.Kafka(t)
+	var current atomic.Value
+	current.Store(kafka.TopicIdentity{Cluster: "c", TopicID: "first"})
+	starter := newFakeStarter()
+	stream(t, cfg, "g", starter, bigEnough, func(s *streamer) {
+		s.identify = func(context.Context) (kafka.TopicIdentity, error) { return current.Load().(kafka.TopicIdentity), nil }
+	})
+
+	produce(t, cfg, 0, "m0")
+	starter.waitFor(t, 1)
+	second := kafka.TopicIdentity{Cluster: "c", TopicID: "second"}
+	current.Store(second)
+	produce(t, cfg, 0, "m1")
+	starter.waitFor(t, 2)
+
+	starter.mu.Lock()
+	defer starter.mu.Unlock()
+	require.Equal(t, operationID(sourceKey(second, cfg.Topic, "g"), starter.batches[1]), starter.ids[1])
+}
+
 // A message too large to be an operation's input goes to the dead-letter topic without a start,
 // and no operation spans it: the messages on either side of it start separate operations.
 func TestStreamer_OversizedMessageGoesToTheDeadLetterTopic(t *testing.T) {
@@ -432,6 +479,14 @@ func TestIdentify(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, id.Cluster)
 	require.NotEmpty(t, id.TopicID)
+}
+
+// Only a refusal for size counts as undeliverable; other refusals concern the setup, so they are
+// retried rather than sending every batch to the dead-letter topic.
+func TestRefusedAsTooLarge(t *testing.T) {
+	require.True(t, refusedAsTooLarge(serviceerror.NewInvalidArgument("input exceeds size limit")))
+	require.False(t, refusedAsTooLarge(serviceerror.NewInvalidArgument("schedule-to-close timeout exceeds the namespace maximum")))
+	require.False(t, refusedAsTooLarge(serviceerror.NewNotFound("endpoint not found")))
 }
 
 func TestBackoff(t *testing.T) {

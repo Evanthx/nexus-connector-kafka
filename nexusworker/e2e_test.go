@@ -47,8 +47,9 @@ func start(t *testing.T, maxBatchBytes int) harness {
 	writer, err := kafka.NewWriter(kafkaCfg)
 	require.NoError(t, err)
 	t.Cleanup(writer.Close)
-	w := worker.New(connector, taskQueue, workerOptions())
-	register(w, &activities{reader: reader, writer: writer, topic: kafkaCfg.Topic, maxBatchBytes: maxBatchBytes})
+	w, reads := newWorkers(connector, &activities{reader: reader, writer: writer, topic: kafkaCfg.Topic, maxBatchBytes: maxBatchBytes})
+	require.NoError(t, reads.Start())
+	t.Cleanup(reads.Stop)
 	require.NoError(t, w.Start())
 	t.Cleanup(w.Stop)
 
@@ -120,6 +121,22 @@ func TestEndToEnd_WriteThenReadByGroup(t *testing.T) {
 	}
 }
 
+// Reads waiting for their batches don't hold up a write, even when as many are waiting as the
+// reader allows at once.
+func TestEndToEnd_WaitingReadsDoNotBlockWrites(t *testing.T) {
+	h := start(t, defaultMaxBatchBytes)
+	for i := range kafka.MaxConcurrentReads {
+		_, err := h.test.ExecuteWorkflow(context.Background(), client.StartWorkflowOptions{TaskQueue: nexuscaller.TaskQueue}, readOnce,
+			kafkaapi.ReadInput{Group: fmt.Sprintf("idle-%d", i), TimeLimitSeconds: ptr(int64(30))})
+		require.NoError(t, err)
+	}
+	<-time.After(5 * time.Second) // let the reads start and take their slots
+
+	start := time.Now()
+	h.write(t, "not held up")
+	require.Less(t, time.Since(start), 15*time.Second)
+}
+
 // A read with a time limit waits for messages written after it started.
 func TestEndToEnd_ReadWaitsForNewMessages(t *testing.T) {
 	h := start(t, defaultMaxBatchBytes)
@@ -164,8 +181,9 @@ func TestEndToEnd_GroupInUse(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, member.Commit(context.Background(), b))
 
-	// The member committed one partition; the read must commit a start for the other two.
-	_, err = h.read(t, kafkaapi.ReadInput{Group: "live", BatchSize: ptr(int64(1))})
+	first, err := h.read(t, kafkaapi.ReadInput{Group: "live", BatchSize: ptr(int64(1))})
+	require.NoError(t, err)
+	_, err = h.read(t, kafkaapi.ReadInput{Group: "live", BatchSize: ptr(int64(0)), Ack: &first.Position})
 	requireErrorType(t, err, ErrorTypeGroupInUse)
 }
 

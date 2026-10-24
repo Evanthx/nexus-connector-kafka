@@ -8,7 +8,10 @@ import (
 	"time"
 
 	"github.com/temporalio/nexus-connector-kafka/generated/kafkaapi"
+	"github.com/twmb/franz-go/pkg/kadm"
+	"github.com/twmb/franz-go/pkg/kerr"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"github.com/twmb/franz-go/pkg/kmsg"
 )
 
 // GroupMember reads the topic as a live member of a consumer group. Kafka splits the topic's
@@ -20,34 +23,93 @@ import (
 // that waits too long gets the member kicked out of the group, so when one is waiting,
 // RebalanceWanted says so, and the batch should be committed or released quickly.
 type GroupMember struct {
-	client *kgo.Client
-	topic  string
+	client    *kgo.Client
+	ready     chan struct{} // closed once client is set, for the callbacks that use it
+	topic     string
+	startFrom StartFrom
 
 	mu     sync.Mutex
 	wanted chan struct{} // closed when a rebalance is waiting for the batch that is out
 }
 
 // NewGroupMember joins group for the topic in cfg. A partition the group has no committed offset
-// for starts where cfg.StartFrom says.
+// for, or whose committed offset is no longer in the log, starts where cfg.StartFrom says, the
+// same way a GroupReader's does (see startOffset).
 func NewGroupMember(cfg Config, group string) (*GroupMember, error) {
 	reset := kgo.NewOffset().AtStart()
 	if cfg.StartFrom == StartFromNewest {
 		reset = kgo.NewOffset().AtEnd()
 	}
-	m := &GroupMember{topic: cfg.Topic, wanted: make(chan struct{})}
+	m := &GroupMember{ready: make(chan struct{}), topic: cfg.Topic, startFrom: cfg.StartFrom, wanted: make(chan struct{})}
 	client, err := kgo.NewClient(cfg.readOpts(
 		kgo.ConsumerGroup(group),
 		kgo.ConsumeTopics(cfg.Topic),
-		kgo.ConsumeResetOffset(reset),
+		kgo.ConsumeResetOffset(reset), // not normally used: chooseStarts resolves every start
 		kgo.DisableAutoCommit(),
 		kgo.BlockRebalanceOnPoll(),
 		kgo.OnPartitionsCallbackBlocked(func(context.Context, *kgo.Client) { m.rebalanceWaiting() }),
+		kgo.AdjustFetchOffsetsFn(m.chooseStarts),
 	)...)
 	if err != nil {
 		return nil, fmt.Errorf("create Kafka consumer: %w", err)
 	}
 	m.client = client
+	close(m.ready)
 	return m, nil
+}
+
+// chooseStarts runs when the member is given partitions, after the group's committed offsets are
+// fetched and before consuming starts. Where StartFrom decides a partition's start, it commits
+// that start before anything is read. Otherwise nothing would record it: a batch released before
+// the group's first commit, or a member that stopped before it, would leave the next member to
+// choose again, and starting from newest that skips the batch.
+func (m *GroupMember) chooseStarts(ctx context.Context, fetched map[string]map[int32]kgo.Offset) (map[string]map[int32]kgo.Offset, error) {
+	<-m.ready
+	parts := fetched[m.topic]
+	if len(parts) == 0 {
+		return fetched, nil
+	}
+	starts, ends, err := listBounds(ctx, kadm.NewClient(m.client), m.topic)
+	if err != nil {
+		return nil, err
+	}
+	chosen := map[int32]kgo.EpochOffset{}
+	for part, off := range parts {
+		committed := off.EpochOffset().Offset // negative if the group has no commit for it
+		start, _ := starts.Lookup(m.topic, part)
+		end, _ := ends.Lookup(m.topic, part)
+		from := startOffset(committed, committed >= 0, start.Offset, end.Offset, m.startFrom)
+		if from != committed {
+			chosen[part] = kgo.EpochOffset{Epoch: -1, Offset: from}
+			parts[part] = kgo.NewOffset().At(from).WithEpoch(-1)
+		}
+	}
+	if len(chosen) == 0 {
+		return fetched, nil
+	}
+	var commitErr error
+	m.client.CommitOffsetsSync(ctx, map[string]map[int32]kgo.EpochOffset{m.topic: chosen},
+		func(_ *kgo.Client, _ *kmsg.OffsetCommitRequest, resp *kmsg.OffsetCommitResponse, err error) {
+			if err != nil {
+				commitErr = err
+				return
+			}
+			for _, t := range resp.Topics {
+				for _, p := range t.Partitions {
+					commitErr = errors.Join(commitErr, kerr.ErrorForCode(p.ErrorCode))
+				}
+			}
+		})
+	if commitErr != nil {
+		return nil, fmt.Errorf("commit the starts chosen for %q: %w", m.topic, commitErr)
+	}
+	return fetched, nil
+}
+
+// Identity asks Kafka for the topic's identity, through the member's own connection. It asks every
+// time, so it notices a topic deleted and created again.
+func (m *GroupMember) Identity(ctx context.Context) (TopicIdentity, error) {
+	return identify(ctx, m.client, m.topic)
 }
 
 // RebalanceWanted returns a channel that is closed when a rebalance is waiting for the batch that
@@ -108,14 +170,8 @@ func (m *GroupMember) Next(ctx context.Context, batchSize int, timeLimit time.Du
 		if fetches.IsClientClosed() {
 			return errors.New("the Kafka client is closed")
 		}
-		var fetchErr error
-		fetches.EachError(func(topic string, part int32, err error) {
-			if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
-				fetchErr = errors.Join(fetchErr, fmt.Errorf("fetch %s[%d]: %w", topic, part, err))
-			}
-		})
-		if fetchErr != nil {
-			return fetchErr
+		if err := fetchErrors(fetches); err != nil {
+			return err
 		}
 		fetches.EachRecord(func(rec *kgo.Record) {
 			b.add(toRecord(rec))

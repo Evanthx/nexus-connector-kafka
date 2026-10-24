@@ -236,8 +236,11 @@ A group that has committed offsets continues after them. For a partition the gro
 committed offset for (a new group, or a partition added to the topic), `KAFKA_START_FROM` decides:
 `oldest`, the default, starts at the oldest message still in the topic, and `newest` reads only
 messages written from then on. The same rule applies when a committed offset is no longer in the
-topic, because retention deleted it or the topic was recreated. The Nexus worker commits a start
-it chose this way before it reads, so a retried read starts at the same place even with `newest`.
+topic, because retention deleted it or the topic was recreated. Both ways commit a start chosen
+this way before reading from it, so a read that is retried, or a partition that moves to another
+streamer before its first commit, starts at the same place even with `newest`. If retention
+removes messages before they are read, Kafka's client logs it and carries on from the oldest
+message left.
 
 ### The streamer
 
@@ -268,8 +271,8 @@ before committing, the group delivers the batch again. Each operation's ID is bu
 messages: `kafka-<source>-<partition>-<first offset>-<last offset>`. `<source>` is 32 hex
 characters, a hash of the Kafka cluster's ID, the topic's name and ID, and the group. Hashing them
 keeps names apart that would otherwise run together, such as topic `a-b` with group `c` and topic
-`a` with group `b-c`. The topic's ID changes if the topic is deleted and created again, so a new
-topic's offsets don't reuse the old one's IDs. The operation's summary shows the topic, partition,
+`a` with group `b-c`. The topic's ID changes if the topic is deleted and created again, and the
+streamer asks for it with every batch, so a new topic's offsets don't reuse the old one's IDs. The operation's summary shows the topic, partition,
 and offsets. The start uses two policies:
 
 - `USE_EXISTING`: if the operation is still running, the start attaches to it.
@@ -291,12 +294,14 @@ and offset. If duplicates aren't acceptable, set `KAFKA_BATCH_SIZE=1`: each oper
 one message, so its ID never changes, at the cost of one operation per message.
 
 **The dead-letter topic.** A message goes to `KAFKA_DEAD_LETTER_TOPIC` when no retry could deliver
-it: it is larger on its own than an operation's input can be (`STREAM_MAX_INPUT_BYTES`, 2 MiB by
-default, measured as encoded), or the server rejects its operation as invalid, which sends every
-message in that operation. A dead letter has the message's key, value (null for a tombstone), and
+it: it is larger on its own than an operation's input can be (`STREAM_MAX_INPUT_BYTES`, 2 MiB less
+a 64 KiB reserve by default, measured as encoded), or the server refuses it alone as too large.
+When the server refuses an operation of several messages as too large, the streamer splits it in
+two and tries each half, so only a message refused on its own is dead-lettered. A dead letter has the message's key, value (null for a tombstone), and
 headers, plus `dead-letter-reason`, `dead-letter-source` (`topic/partition/offset`), and
 `dead-letter-group`. Every other error, such as Temporal being unreachable, an endpoint that
-doesn't exist, or standalone Nexus operations not being enabled, is retried with backoff (1
+doesn't exist, standalone Nexus operations not being enabled, or any other refusal (which would
+refuse every batch alike), is retried with backoff (1
 second, doubling, up to 30 seconds) until it works. The stream waits rather than move a working
 topic into the dead-letter topic. The streamer logs every retry.
 
@@ -347,7 +352,7 @@ process can serve any read, and a worker can restart between reads without losin
   per batch.
 - **The last batch:** a run that ends without acknowledging its last batch leaves it for the next
   reader to read again. To acknowledge it, end with a read that has the `ack` and `batchSize` 0.
-  That read only commits: it doesn't ask Kafka for anything.
+  That read only checks the topic and commits.
 - **A new run or a new workflow:** call `read` without an `ack`. It continues after the group's
   last acknowledged batch, so nothing has to be passed between runs.
 
@@ -360,10 +365,21 @@ hold no state.
 commit for such a group, so a read fails with `GroupInUse` when it has an `ack` to commit, or a
 start to commit for a partition the group has no offset for.
 
-**Positions are trusted.** A position is the group, topic, and offsets, encoded. The worker checks
-that an `ack` is well formed and names the group and topic being read, but not that a read
-returned it. A caller that makes up or edits a position can commit past messages it never read.
-Only let callers you trust reach the endpoint.
+In particular, the streamer and the Nexus worker can't share a consumer group. The streamer
+commits a start for every partition when it joins, so a reader's first read on its consumer group
+succeeds and returns whatever the streamer hasn't committed yet. Its next read, which acknowledges
+that batch, fails with `GroupInUse`. Give each its own consumer group. Each consumer group gets
+every message, so the streamer and a reader can both read the same topic.
+
+**Positions are trusted.** A position is the group, topic, cluster, topic ID, and offsets,
+encoded. The worker checks that an `ack` is well formed and names the group and topic being read,
+but not that a read returned it. A caller that makes up or edits a position can commit past
+messages it never read. Only let callers you trust reach the endpoint.
+
+**A topic deleted and created again.** Its offsets start over and mean different messages, so an
+`ack` returned before then fails with `InvalidRequest` rather than being committed. Read without an
+`ack` to start over: Kafka deleted the group's offsets with the old topic, so reading starts where
+`KAFKA_START_FROM` says.
 
 **Kafka forgets an idle group's offsets.** Kafka keeps an empty group's committed offsets for
 `offsets.retention.minutes` (7 days by default) after its last commit. A reader that stops for
@@ -391,8 +407,11 @@ reads, sends no heartbeat: each heartbeat that reaches Temporal is a billable Ac
 dies during such a read is noticed at its start-to-close timeout (time limit plus a minute)
 instead. A longer read is noticed within 140 seconds.
 
-A worker process runs at most 8 activities at once: the number of Kafka consumers it keeps for
-reads, so a read never waits for one.
+**Reads and writes run on separate task queues.** The endpoint targets `nexus-connector-kafka`,
+where the Nexus operations and writes run. Reads run on `nexus-connector-kafka-reads`, on a second
+worker in the same process that runs at most 8 at once: the number of Kafka consumers it keeps
+for reads, so a read never waits for one. Reads waiting out their time limits never hold up a
+write.
 
 **`write(messages)`** writes messages in order and waits for Kafka to acknowledge them. A retried
 write can write a message twice. Each message gets a `dedupe-id` header,
@@ -402,7 +421,7 @@ write can write a message twice. Each message gets a `dedupe-id` header,
 
 | Type | When |
 |---|---|
-| `InvalidRequest` | The `ack` isn't a well-formed position for this group and topic. Rejected before any activity starts, as a `BAD_REQUEST` Nexus error. |
+| `InvalidRequest` | The `ack` isn't a well-formed position for this group and topic, rejected before any activity starts as a `BAD_REQUEST` Nexus error; or it is from before the topic was deleted and created again. |
 | `GroupInUse` | The group has live members. |
 | `RecordTooLarge` | The next message doesn't fit in a result on its own. |
 | `Rejected` | Kafka refused the write, for example because a message is larger than the broker allows. |
@@ -472,7 +491,7 @@ CLI's profile file. The namespace defaults to `kafka-connector`.
 | `STREAM_ENDPOINT` | streamer | The Nexus endpoint to deliver to. Required. |
 | `STREAM_SERVICE`, `STREAM_OPERATION` | streamer | The service and operation. Default `KafkaMessageReceiver` and `receive`. |
 | `STREAM_OPERATION_TIMEOUT` | streamer | How long each operation may take. Default `24h`. |
-| `STREAM_MAX_INPUT_BYTES` | streamer | The largest encoded input sent to an operation. Default 2097152. |
+| `STREAM_MAX_INPUT_BYTES` | streamer | The largest encoded input sent to an operation. Default 2031616 (2 MiB less 64 KiB). |
 
 On Temporal Cloud, or a server you run, the connector's namespace needs standalone Nexus operations
 (for the streamer) and standalone activities with completion callbacks (for the Nexus worker).
@@ -488,14 +507,19 @@ go test -short ./...   # skip the end-to-end tests
 The tests need no Docker. They run Kafka in memory with franz-go's `kfake`.
 
 - `kafka/` tests reading for a group (acks, ack-only reads, retried first reads, batch and byte
-  limits, time limits, where a new group starts, groups in use), reading as a group member
-  (commits, releasing a batch, noticing a waiting rebalance, where it starts), and tombstones.
+  limits, time limits, where a new group starts, groups in use, a topic created again), reading
+  as a group member (commits, releasing a batch, a released first batch surviving a handoff,
+  noticing a waiting rebalance, where it starts), fetch errors Kafka's client recovers from, and
+  tombstones.
 - `streamer/` tests delivery order, splitting batches to fit an input, commits, redelivery with the
   same operation IDs, the duplicate when a redelivered batch ends elsewhere, releasing a stuck
-  batch for a rebalance, operation IDs' source key, retries, and the dead-letter topic. Its end-to-end tests start a dev server with the `temporal` CLI and deliver
-  to a receiver in another namespace. They show that a batch delivered again starts nothing new
+  batch for a rebalance, operation IDs' source key and its check on every batch, splitting a
+  refused operation, which refusals count as undeliverable, retries, and the dead-letter topic.
+  Its end-to-end tests start a dev server with the `temporal` CLI and deliver to a receiver in
+  another namespace. They show that a batch delivered again starts nothing new
   once its operation completed, and runs again if it failed.
-- `nexusworker/` tests that a read heartbeats before it reaches Kafka. Its end-to-end tests write
+- `nexusworker/` tests that a read heartbeats before it reaches Kafka, and that reads waiting for
+  their batches don't hold up writes. Its end-to-end tests write
   and read across namespaces through the endpoint, and run the test caller's `ReaderWorkflow`.
 - `test/nexuscaller/` tests that `ReaderWorkflow` acknowledges every batch and carries its
   position across continue-as-new.

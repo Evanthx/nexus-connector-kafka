@@ -11,7 +11,9 @@ import (
 // type; callers find it with errors.As. Any other failure is retried until the operation times
 // out.
 const (
-	// ErrorTypeInvalidRequest: the ack isn't a position a read of this group returned.
+	// ErrorTypeInvalidRequest: the ack isn't a well-formed position for this group and topic, or
+	// it is from an earlier topic of the same name. Positions aren't signed: callers are trusted
+	// to pass back what a read returned.
 	ErrorTypeInvalidRequest = "InvalidRequest"
 	// ErrorTypeGroupInUse: the group has live members, such as a streamer, so its offsets can't
 	// be committed from here. Use a group of its own.

@@ -7,17 +7,30 @@ import (
 	"fmt"
 )
 
-// ErrInvalidPosition means an ack isn't a position this connector returned for the group and
-// topic being read.
+// ErrInvalidPosition means an ack isn't a well-formed position for the group and topic being
+// read, or is for an earlier topic of the same name.
 var ErrInvalidPosition = errors.New("invalid position")
 
 // position is where a group's reader is: each partition's next offset. Callers treat it as an
 // opaque string. It names the group and topic, so an ack from one group can't be committed for
-// another.
+// another, and the cluster and topic ID, so an ack from a topic that has since been deleted and
+// created again isn't committed against the new one, whose offsets mean different messages.
 type position struct {
 	Group   string          `json:"g"`
 	Topic   string          `json:"t"`
+	Cluster string          `json:"c,omitempty"`
+	TopicID string          `json:"i,omitempty"`
 	Offsets map[int32]int64 `json:"o"`
+}
+
+// checkIdentity reports whether p was returned for the topic id names: the same cluster, and the
+// same topic rather than an earlier one of the same name.
+func (p position) checkIdentity(id TopicIdentity) error {
+	if p.Cluster != id.Cluster || p.TopicID != id.TopicID {
+		return fmt.Errorf("%w: it was returned for an earlier topic named %q, which has since been deleted and created again, "+
+			"or for another cluster; read without an ack to continue from the group's committed offsets", ErrInvalidPosition, p.Topic)
+	}
+	return nil
 }
 
 func (p position) encode() string {
@@ -29,11 +42,11 @@ func (p position) encode() string {
 func decodePosition(s, group, topic string) (position, error) {
 	b, err := base64.RawURLEncoding.DecodeString(s)
 	if err != nil {
-		return position{}, fmt.Errorf("%w: not one returned by a read", ErrInvalidPosition)
+		return position{}, fmt.Errorf("%w: not a well-formed position", ErrInvalidPosition)
 	}
 	var p position
 	if err := json.Unmarshal(b, &p); err != nil {
-		return position{}, fmt.Errorf("%w: not one returned by a read", ErrInvalidPosition)
+		return position{}, fmt.Errorf("%w: not a well-formed position", ErrInvalidPosition)
 	}
 	if p.Group != group {
 		return position{}, fmt.Errorf("%w: it was returned for group %q, not %q", ErrInvalidPosition, p.Group, group)
