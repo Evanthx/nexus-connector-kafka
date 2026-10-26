@@ -23,16 +23,18 @@ const (
 	// TestNamespace is where the test programs run.
 	TestNamespace = "kafka-test"
 	// Topic is the topic Kafka starts with, with three partitions.
-	Topic = "events"
+	Topic = "customers"
 	// DeadLetterTopic is a second topic, for the streamer's dead letters.
-	DeadLetterTopic = "events-dead-letters"
+	DeadLetterTopic = "customers-dead-letters"
+	// OrdersTopic is a second topic, with three partitions, for a second nexusworker.
+	OrdersTopic = "orders"
 )
 
-// Kafka starts an in-memory Kafka with Topic and DeadLetterTopic and returns the settings to reach
-// it.
+// Kafka starts an in-memory Kafka with Topic, DeadLetterTopic, and OrdersTopic and returns the
+// settings to reach it, for Topic.
 func Kafka(t *testing.T) kafka.Config {
 	t.Helper()
-	c, err := kfake.NewCluster(kfake.NumBrokers(1), kfake.SeedTopics(3, Topic), kfake.SeedTopics(1, DeadLetterTopic))
+	c, err := kfake.NewCluster(kfake.NumBrokers(1), kfake.SeedTopics(3, Topic, OrdersTopic), kfake.SeedTopics(1, DeadLetterTopic))
 	require.NoError(t, err)
 	t.Cleanup(c.Close)
 	return kafka.Config{Brokers: c.ListenAddrs(), Topic: Topic, StartFrom: kafka.StartFromOldest}

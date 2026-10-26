@@ -1,6 +1,30 @@
 # nexus-connector-kafka
 
-A Temporal connector for one Kafka topic. It runs in two ways, which share their Kafka code:
+- [Configure the streamer](#configure-the-streamer)
+- [Configure the Nexus worker](#configure-the-nexus-worker)
+- [Demo](#demo), a local Kafka and Temporal to try it with
+- [Method 1: stream messages into Temporal](#method-1-stream-messages-into-temporal)
+- [Method 2: read and write through the Nexus worker](#method-2-read-and-write-through-the-nexus-worker)
+- [Tear down](#tear-down)
+- [Folders](#folders)
+- [How it works](#how-it-works)
+  - [The contract](#the-contract)
+  - [Reading in batches](#reading-in-batches)
+  - [Where reading starts](#where-reading-starts)
+  - [The streamer](#the-streamer)
+  - [The Nexus worker](#the-nexus-worker)
+  - [The test caller](#the-test-caller)
+  - [Cost](#cost)
+  - [Settings](#settings)
+  - [Tests](#tests)
+  - [Changing the contract](#changing-the-contract)
+  - [Known limitations](#known-limitations)
+  - [Possible future changes](#possible-future-changes)
+
+AI agents: see [AGENTS.md](AGENTS.md) for how to set up and run this connector, and how the code
+works.
+
+A Temporal connector for one Kafka topic. It has two methods of running, which share their Kafka code:
 
 - **The streamer** streams every message into Temporal. It joins a consumer group and starts one
   standalone Nexus operation per batch, through a Nexus endpoint. It only sends messages in: it
@@ -32,7 +56,54 @@ own pace or for ad hoc reads. Each consumer group can have only one reader at a 
 └──────────────────────────────┘            └─────────────────────────────────┘
 ```
 
-## Set up
+## Configure the streamer
+
+Set these environment variables, then run `go run ./streamer` (or a binary built from it):
+
+| Variable | Set it to |
+|---|---|
+| `KAFKA_BROKERS` | Your Kafka brokers, comma-separated `host:port`. |
+| `KAFKA_TOPIC` | The topic to stream. |
+| `KAFKA_USERNAME`, `KAFKA_PASSWORD` | A SASL/SCRAM-SHA-256 login, if your Kafka needs one. |
+| `KAFKA_GROUP` | The consumer group the streamer joins. Streamers with the same consumer group share the topic's partitions. |
+| `KAFKA_DEAD_LETTER_TOPIC` | An existing topic for messages that can't be delivered. Or leave it unset and set `DELETE_DEAD_LETTERS=true` to delete them instead. |
+| `STREAM_ENDPOINT` | The Nexus endpoint to deliver to. It routes to the service that receives the messages, `KafkaMessageReceiver.receive`. |
+| `TEMPORAL_ADDRESS`, `TEMPORAL_NAMESPACE` | Your Temporal server and namespace (default `kafka-connector`), plus `TEMPORAL_API_KEY` for Temporal Cloud. The namespace needs standalone Nexus operations. |
+
+Everything else has a default; see [Settings](#settings). When it starts, the streamer logs every
+setting, marking the defaults, and what it will do with them: check it to confirm the setup. It
+then asks Kafka for the topic, and until Kafka answers it logs a warning every 5 seconds with the
+reason (unreachable brokers, a failed login, a missing topic), then `Connected to Kafka`. Only then
+does it connect to Temporal and start streaming.
+
+## Configure the Nexus worker
+
+Set these environment variables, then run `go run ./nexusworker` (or a binary built from it):
+
+| Variable | Set it to |
+|---|---|
+| `KAFKA_BROKERS` | Your Kafka brokers, comma-separated `host:port`. |
+| `KAFKA_TOPIC` | The topic this Nexus worker reads and writes. Callers can't choose another. |
+| `KAFKA_USERNAME`, `KAFKA_PASSWORD` | A SASL/SCRAM-SHA-256 login, if your Kafka needs one. |
+| `KAFKA_GROUP` | Optional. The only consumer group reads may use. Leave it unset to let each read name its own. |
+| `NEXUS_TASK_QUEUE` | The task queue to serve (default `nexus-connector-kafka`). Give each Nexus worker for a different topic or consumer group its own. |
+| `TEMPORAL_ADDRESS`, `TEMPORAL_NAMESPACE` | Your Temporal server and namespace (default `kafka-connector`), plus `TEMPORAL_API_KEY` for Temporal Cloud. The namespace needs standalone activities with completion callbacks. |
+
+Then create a Nexus endpoint that targets the Nexus worker's namespace and task queue. Callers
+reach the topic through that endpoint. Everything else has a default; see [Settings](#settings).
+When it starts, the Nexus worker logs every setting, marking the defaults, and what it will do
+with them, including the task queue to point its endpoint at. Like the streamer, it then waits
+for Kafka to answer, logging a warning every 5 seconds until it does, before it takes requests.
+If Kafka goes away later, each read fails with the reason and is retried until its time limit
+plus 5 minutes run out.
+
+## Demo
+
+The demo is one run-through, top to bottom. Steps 1 and 2 start Temporal and Kafka, which both
+methods use. Steps 3 to 5 try Method 1, and steps 6 to 10 try Method 2 alongside it. **Leave every
+program running until [Tear down](#tear-down)**: Method 2 needs the Temporal and Kafka from steps 1
+and 2, and the streamer from Method 1 shows Method 2's writes arriving. By the end you have seven
+terminals open.
 
 ### Prerequisites
 
@@ -41,7 +112,7 @@ own pace or for ad hoc reads. Each consumer group can have only one reader at a 
   `temporal --version`.
 - **Docker**, for the local Kafka.
 
-Run every command from the repository root. Commands that keep running need their own terminal.
+Run every command from the repository root.
 
 ### 1. Start Temporal (terminal 1)
 
@@ -58,21 +129,21 @@ test programs run. `nexusoperation.enableStandalone` lets the streamer start sta
 operations. `activity.enableCallbacks` lets the Nexus worker's operations complete when their
 activities do. The Web UI is at <http://localhost:8233>.
 
-### 2. Start Kafka and seed it
+### 2. Start Kafka and seed it (terminal 2)
 
 ```bash
 docker compose -f test/kafka/docker-compose.yml up -d --wait
 test/kafka/scripts/seed.sh
 ```
 
-This starts a single-node Kafka on `localhost:9092` that requires a SASL/SCRAM login. The seed
-script creates the topic `events` (3 partitions) and its dead-letter topic
-`events-dead-letters`, and writes 10 messages to `events`. The settings are in
-[`test/kafka/.env`](test/kafka/.env).
+This starts a single-node Kafka on `localhost:9092` that requires a SASL/SCRAM login, and returns
+when it is up. The seed script creates two topics with 3 partitions each, `customers` and `orders`,
+plus `customers-dead-letters` for the streamer. It writes 10 messages to `customers` and 3 to `orders`.
+The settings are in [`test/kafka/.env`](test/kafka/.env).
 
-## Way 1: stream messages into Temporal
+## Method 1: stream messages into Temporal
 
-### 1. Create the endpoint and start the receiver (terminal 2)
+### 3. Create the endpoint and start the receiver (terminal 2)
 
 The streamer delivers each message to a Nexus endpoint. Here it routes to the test receiver in
 `kafka-test`:
@@ -85,42 +156,51 @@ temporal operator nexus endpoint create \
 go run ./test/streamreceiver
 ```
 
-### 2. Start the streamer (terminal 3)
+### 4. Start the streamer (terminal 3)
 
 ```bash
 set -a; source test/kafka/.env; set +a
-export KAFKA_GROUP=streamer KAFKA_DEAD_LETTER_TOPIC=events-dead-letters STREAM_ENDPOINT=kafka-receiver-endpoint
+export KAFKA_GROUP=streamer KAFKA_DEAD_LETTER_TOPIC=customers-dead-letters STREAM_ENDPOINT=kafka-receiver-endpoint
 go run ./streamer
 ```
 
-It joins the group `streamer`, which has no committed offsets yet, so it starts at the oldest
-message. Terminal 2 logs each of the 10 seeded messages. The streamer delivers them as one batch,
-one operation for each of the 3 partitions, so each `ReceiveWorkflow` logs a partition's messages:
+The streamer streams one topic, `customers`, from `.env`. It joins the consumer group `streamer`,
+which has no committed offsets yet, so it starts at the oldest message. Terminal 2 logs each of the
+10 seeded messages. The streamer delivers them as one batch, one operation for each of the 3
+partitions, so each `ReceiveWorkflow` logs a partition's messages:
 
 ```
-INFO  Received message ... WorkflowID kafka-batch-events-0-0-2 ... topic events partition 0 offset 0 value seed message 1 of 10
-INFO  Received message ... WorkflowID kafka-batch-events-0-0-2 ... topic events partition 0 offset 1 value seed message 4 of 10
+INFO  Received message ... WorkflowID kafka-batch-customers-0-0-2 ... topic customers partition 0 offset 0 value seed message 1 of 10
+INFO  Received message ... WorkflowID kafka-batch-customers-0-0-2 ... topic customers partition 0 offset 1 value seed message 4 of 10
 ```
 
-### 3. Write a message and watch it arrive
+### 5. Write a message and watch it arrive (terminal 7)
+
+Open another terminal; steps 9 and 10 use it too.
 
 ```bash
 test/kafka/scripts/produce.sh "hello from the console producer"
 ```
 
-Terminal 2 logs it within a second or two. Stop the streamer with Ctrl-C and start it again: it
-delivers nothing it already delivered, because it committed each batch.
+Terminal 2 logs it within a second or two. If you like, stop the streamer with Ctrl-C and start it
+again: it delivers nothing it already delivered, because it committed each batch. **Leave it
+running** before you go on.
 
 In the Web UI, `kafka-connector` shows one standalone Nexus operation per batch, under Nexus,
 and `kafka-test` shows the `ReceiveWorkflow` each one started.
 
-## Way 2: read and write through the Nexus worker
+## Method 2: read and write through the Nexus worker
 
-### 1. Create the endpoint and start the Nexus worker (terminal 4)
+Keep everything from steps 1 to 5 running. Each Nexus worker serves one topic, behind a Nexus
+endpoint of its own, so the endpoint a caller uses decides which topic it reads and writes. Here
+two Nexus workers serve the two topics: `kafka-customers-endpoint` is the `customers` topic, and
+`kafka-orders-endpoint` is the `orders` topic. One reader workflow reads both.
+
+### 6. Start a Nexus worker for the customers topic (terminal 4)
 
 ```bash
 temporal operator nexus endpoint create \
-  --name kafka-endpoint \
+  --name kafka-customers-endpoint \
   --target-namespace kafka-connector \
   --target-task-queue nexus-connector-kafka \
   --description-file ./endpoint-description.md
@@ -128,55 +208,140 @@ set -a; source test/kafka/.env; set +a
 go run ./nexusworker
 ```
 
-### 2. Start the test caller's worker (terminal 5)
+It serves the topic `customers`, from `.env`. `KAFKA_GROUP` isn't set, so this Nexus worker has no
+consumer group of its own: each read must name the consumer group it reads for, and a read that
+doesn't fails with `InvalidRequest`. Different callers can share this endpoint with consumer groups
+of their own, each reading the whole topic at its own pace. The reader in step 9 names `reader1`.
+Step 7 shows the other choice.
+
+### 7. Start a second Nexus worker, for the orders topic (terminal 5)
+
+```bash
+temporal operator nexus endpoint create \
+  --name kafka-orders-endpoint \
+  --target-namespace kafka-connector \
+  --target-task-queue nexus-connector-kafka-orders \
+  --description-file ./endpoint-description.md
+set -a; source test/kafka/.env; set +a
+export KAFKA_TOPIC=orders KAFKA_GROUP=orders-reader NEXUS_TASK_QUEUE=nexus-connector-kafka-orders
+go run ./nexusworker
+```
+
+It serves the topic `orders` on a task queue of its own, which its endpoint targets. Unlike step 6,
+it sets `KAFKA_GROUP`, so this Nexus worker has its own consumer group, `orders-reader`, and every
+read through this endpoint uses it. A read may leave the group out or name `orders-reader`; a read
+that names another consumer group fails with `InvalidRequest`.
+
+### 8. Start the test caller's worker (terminal 6)
 
 ```bash
 go run ./test/nexuscaller/worker
 ```
 
-It runs in `kafka-test` and needs no Kafka settings: it reaches Kafka only through the endpoint.
+The test caller stands in for your own application: Temporal workflows, in `kafka-test`, that
+read and write Kafka through the two endpoints. A Temporal worker is the process that runs
+workflow and activity code. It polls a task queue (here `kafka-nexuscaller`) and runs whatever
+Temporal gives it: this one runs `ReaderWorkflow`, `WriterWorkflow`, and the `ProcessRecord`
+activity. The commands in steps 9 and 10 only ask Temporal to start a workflow; this worker is
+what runs it, so terminal 6 is where you watch reading and processing happen.
 
-### 3. Read by consumer group
+Once started, it logs that it is waiting for workflows, and then nothing more: **this is
+expected**. It isn't waiting for messages; nothing has asked it to run a workflow yet. Step 9
+starts one, and the reading begins.
 
-```bash
-go run ./test/nexuscaller/starter read -group reader1
-```
+It is not a Nexus worker. The Nexus workers in terminals 4 and 5 serve the Kafka operations; this
+worker calls them. It needs no Kafka settings, because it reaches Kafka only through the endpoints.
 
-This starts `ReaderWorkflow` for the group `reader1`. It reads a batch, processes each message
-(terminal 5 logs `Processed message`), acknowledges the batch on its next read, and repeats. A
-read waits up to 60 seconds for its batch to fill, then returns what it has. The reader runs until
-you stop it:
-
-```bash
-temporal workflow terminate --namespace kafka-test --workflow-id kafka-reader-reader1
-```
-
-Start it again and it continues after the last batch it acknowledged. Its position is kept in
-Kafka, as the group's committed offsets. While it runs, starting a second reader for the same group
-fails with `Workflow execution is already running`, because the workflow ID names the group.
-
-### 4. Write
+### 9. Read from both topics (terminal 7)
 
 ```bash
-go run ./test/nexuscaller/starter write "first" "second"
+go run ./test/nexuscaller/starter read
 ```
 
-It prints `Wrote 2 message(s)`, and the running reader picks them up, as does the streamer if it
-is still running. Each written message has a `dedupe-id` header; see them with
-`test/kafka/scripts/consume.sh`:
+The command prints the workflow it started and exits at once. That is all it does: it asks
+Temporal to start a `ReaderWorkflow`, which keeps running on the test caller's worker after the
+command exits. **Watch terminal 6** for what the reader does; the Web UI also shows the workflow,
+in the `kafka-test` namespace, with each read and activity in its history.
+
+The reader reads from both endpoints, and so from both topics: `kafka-customers-endpoint`
+(`customers`) for the consumer group `reader1`, and `kafka-orders-endpoint` (`orders`) for that
+endpoint's own consumer group, `orders-reader`. It reads a batch of up to 10 messages from
+`customers` and processes each message, then does the same with `orders`, and repeats.
+Terminal 6 logs each read, with the topic between `***`, and each message processed:
 
 ```
-Partition:0	Offset:3	dedupe-id:kafka-write-c1e0ee92-bd58-4dfb-8bbd-6f4ada7c5033-0	first
+time=16:06:07 level=INFO msg="Reading through kafka-customers-endpoint; the read waits up to 60 seconds for its batch to fill"
+time=16:06:07 level=INFO msg="Read 10 message(s) from topic *** customers *** through kafka-customers-endpoint"
+time=16:06:07 level=INFO msg="Processed message from topic *** customers ***" partition=0 offset=0 value="seed message 1 of 10"
+...
+time=16:06:07 level=INFO msg="Reading through kafka-orders-endpoint; the read waits up to 60 seconds for its batch to fill"
+time=16:07:07 level=INFO msg="Read 3 message(s) from topic *** orders *** through kafka-orders-endpoint"
+time=16:07:07 level=INFO msg="Processed message from topic *** orders ***" partition=0 offset=0 value="seed order 1 of 3"
+```
+
+The messages in a batch are processed in parallel, so they are logged in no particular order.
+
+Expect pauses. A read returns as soon as it has 10 messages, but with fewer it waits up to 60
+seconds for more, then returns what it has. So the `customers` batch arrives at once, while the
+`orders` read, which has only 3 messages, takes about a minute; after that, each quiet topic takes
+a minute per read. `reader1` is a different consumer group from the streamer's, so the reader reads
+the `customers` messages from the start, even though the streamer has already delivered them.
+
+The reader runs until you stop it:
+
+```bash
+temporal workflow terminate --namespace kafka-test \
+  --workflow-id kafka-reader-kafka-customers-endpoint/reader1+kafka-orders-endpoint
+```
+
+Start it again and it continues after the last batch it acknowledged from each topic. Its
+positions are kept in Kafka, as each consumer group's committed offsets. While it runs, starting a
+second reader of the same endpoints and consumer groups fails with `Workflow execution is already
+running`, because the workflow ID names them. To read other endpoints or consumer groups, pass
+`-source endpoint=group`, repeated, or `-source endpoint` for an endpoint that sets its own.
+
+### 10. Write to each topic (terminal 7)
+
+```bash
+go run ./test/nexuscaller/starter write -endpoint kafka-customers-endpoint "customer Ada" "customer Grace"
+go run ./test/nexuscaller/starter write -endpoint kafka-orders-endpoint "first order"
+```
+
+The two commands are the same apart from the endpoint, which chooses the topic: the first writes
+two messages to `customers`, and the second writes one to `orders`. Each argument after the endpoint
+is one message's text. (`-endpoint` defaults to `kafka-customers-endpoint`, so the first command works
+without it too.)
+
+Each command starts a `WriterWorkflow` on the test caller's worker (terminal 6) and waits for it.
+The workflow calls `write` on the endpoint; the Nexus worker behind it (terminal 4 or 5) writes the
+messages to its topic, in order, and the command prints how many were written:
+
+```
+Wrote 2 message(s) through kafka-customers-endpoint
+Wrote 1 message(s) through kafka-orders-endpoint
+```
+
+Then watch them arrive. The reader in terminal 6 logs them on its next read of each topic, within
+a minute or two. The streamer delivers the two `customers` messages too, so terminal 2 logs them
+within a second or two: the streamer and the reader use different consumer groups, so each reads
+every message. Nothing streams `orders`, so only the reader sees `first order`.
+
+Each written message has a `dedupe-id` header; see them with
+`test/kafka/scripts/consume.sh [topic]`:
+
+```
+Partition:0	Offset:3	dedupe-id:kafka-write-c1e0ee92-bd58-4dfb-8bbd-6f4ada7c5033-0	customer Ada
 ```
 
 ## Tear down
 
-Stop the programs with Ctrl-C, then:
+When you are done with both methods, stop the programs with Ctrl-C, then:
 
 ```bash
 docker compose -f test/kafka/docker-compose.yml down -v
 temporal operator nexus endpoint delete --name kafka-receiver-endpoint
-temporal operator nexus endpoint delete --name kafka-endpoint
+temporal operator nexus endpoint delete --name kafka-customers-endpoint
+temporal operator nexus endpoint delete --name kafka-orders-endpoint
 ```
 
 Stopping the dev server discards everything else, including the endpoints.
@@ -185,9 +350,9 @@ Stopping the dev server discards everything else, including the endpoints.
 
 | Folder | What is in it |
 |---|---|
-| `kafka/` | Kafka code both ways share: connecting, reading in batches, writing, dead letters. No Temporal code. |
-| `streamer/` | Way 1: the program that streams each message into Temporal. |
-| `nexusworker/` | Way 2: the program that serves `read` and `write` as Nexus operations. |
+| `kafka/` | Kafka code both methods share: connecting, reading in batches, writing, dead letters. No Temporal code. |
+| `streamer/` | Method 1: the program that streams each message into Temporal. |
+| `nexusworker/` | Method 2: the program that serves `read` and `write` as Nexus operations. |
 | `generated/kafkaapi/` | Go types for the contract, generated from `kafka.nexusrpc.yaml`. |
 | `test/` | Testing only: a receiver for the streamer, a caller for the Nexus worker, shared end-to-end test setup, and a local Kafka. |
 
@@ -218,7 +383,7 @@ are decoded, so out-of-range values are rejected before any code here runs.
 
 ### Reading in batches
 
-Both ways read in batches, with the same rule. Given a batch size and a time limit, a read returns
+Both methods read in batches, with the same rule. Given a batch size and a time limit, a read returns
 as soon as it has the batch size. Otherwise it returns what it has when the time limit passes. With
 no time limit, it returns what Kafka has right away:
 
@@ -236,7 +401,7 @@ A group that has committed offsets continues after them. For a partition the gro
 committed offset for (a new group, or a partition added to the topic), `KAFKA_START_FROM` decides:
 `oldest`, the default, starts at the oldest message still in the topic, and `newest` reads only
 messages written from then on. The same rule applies when a committed offset is no longer in the
-topic, because retention deleted it or the topic was recreated. Both ways commit a start chosen
+topic, because retention deleted it or the topic was recreated. Both methods commit a start chosen
 this way before reading from it, so a read that is retried, or a partition that moves to another
 streamer before its first commit, starts at the same place even with `newest`. If retention
 removes messages before they are read, Kafka's client logs it and carries on from the oldest
@@ -294,15 +459,17 @@ and offset. If duplicates aren't acceptable, set `KAFKA_BATCH_SIZE=1`: each oper
 one message, so its ID never changes, at the cost of one operation per message.
 
 **The dead-letter topic.** A message goes to `KAFKA_DEAD_LETTER_TOPIC` when no retry could deliver
-it: it is larger on its own than an operation's input can be (`STREAM_MAX_INPUT_BYTES`, 2 MiB less
+it, or is deleted, if `DELETE_DEAD_LETTERS` is `true` instead: it is larger on its own than an operation's input can be (`STREAM_MAX_INPUT_BYTES`, 2 MiB less
 a 64 KiB reserve by default, measured as encoded), or the server refuses it alone as too large.
 When the server refuses an operation of several messages as too large, the streamer splits it in
-two and tries each half, so only a message refused on its own is dead-lettered. A dead letter has the message's key, value (null for a tombstone), and
-headers, plus `dead-letter-reason`, `dead-letter-source` (`topic/partition/offset`), and
-`dead-letter-group`. Every other error, such as Temporal being unreachable, an endpoint that
+two and tries each half, so only a message refused on its own is dead-lettered. A dead letter has
+the message's key, value (null for a tombstone), and headers, plus `dead-letter-reason`,
+`dead-letter-source` (`topic/partition/offset`), and `dead-letter-group`. A deleted message is
+logged with its topic, partition, offset, and the reason, then skipped: the streamer commits past
+it, so it is never delivered. It stays in Kafka until retention removes it. Every other error, such as Temporal being unreachable, an endpoint that
 doesn't exist, standalone Nexus operations not being enabled, or any other refusal (which would
-refuse every batch alike), is retried with backoff (1
-second, doubling, up to 30 seconds) until it works. The stream waits rather than move a working
+refuse every batch alike), is retried with backoff (1 second, doubling, up to 30 seconds) until it
+works. The stream waits rather than move a working
 topic into the dead-letter topic. The streamer logs every retry.
 
 **When an operation fails.** Once Temporal accepts an operation, it is durable: Temporal runs it
@@ -338,6 +505,17 @@ it failed, but not its input. To run it again:
 
 ### The Nexus worker
 
+**One topic per Nexus worker.** A Nexus worker serves the topic in `KAFKA_TOPIC`; callers can't
+choose it. To serve several topics, run a Nexus worker for each, every one with its own
+`NEXUS_TASK_QUEUE` and a Nexus endpoint that targets it. Callers then choose the topic by choosing
+the endpoint. Two Nexus workers can also serve the same topic for different consumer groups.
+
+**The consumer group.** A Nexus worker started with `KAFKA_GROUP` serves only that consumer group:
+a read may leave `group` empty or name that consumer group, and a read that names another fails
+with `InvalidRequest`. A Nexus worker without `KAFKA_GROUP` serves any consumer group, and a read
+must name one; a read without one fails with `InvalidRequest`. Both are refused before any activity
+starts, with a message saying what to change.
+
 **`read(group, batchSize, timeLimitSeconds, ack)`** returns a batch of records and a `position`.
 The position is an opaque string; pass it back as `ack` on your next read. A read with an `ack`
 commits it first, then reads from there. A read without one starts from the group's committed
@@ -346,7 +524,8 @@ offsets, so it returns the oldest batch the group hasn't acknowledged.
 The Nexus worker never joins the group. It uses the group only to store offsets, so any worker
 process can serve any read, and a worker can restart between reads without losing anything.
 
-- **Starting:** name a group. The caller never sees offsets. A new group needs no setup: it
+- **Starting:** name a consumer group, unless the Nexus worker has its own. The caller never sees
+  offsets. A new group needs no setup: it
   starts where `KAFKA_START_FROM` says, and Kafka creates it on the first commit.
 - **Reading in a loop:** pass each read's `position` as the next read's `ack`. There is one call
   per batch.
@@ -357,9 +536,9 @@ process can serve any read, and a worker can restart between reads without losin
   last acknowledged batch, so nothing has to be passed between runs.
 
 **One reader per group.** Every read starts from what Kafka has stored for the group, so two
-readers of one group read the same batches. The test caller's starter uses the workflow ID
-`kafka-reader-<group>` to keep it to one. Run as many Nexus worker processes as you like: they
-hold no state.
+readers of one group read the same batches. The test caller's starter names the reader's sources
+in its workflow ID to keep it to one. Run as many Nexus worker processes for one topic as you like:
+they hold no state.
 
 **Don't use a group that has live members,** such as the streamer's. Kafka won't let a non-member
 commit for such a group, so a read fails with `GroupInUse` when it has an `ack` to commit, or a
@@ -407,9 +586,9 @@ reads, sends no heartbeat: each heartbeat that reaches Temporal is a billable Ac
 dies during such a read is noticed at its start-to-close timeout (time limit plus a minute)
 instead. A longer read is noticed within 140 seconds.
 
-**Reads and writes run on separate task queues.** The endpoint targets `nexus-connector-kafka`,
-where the Nexus operations and writes run. Reads run on `nexus-connector-kafka-reads`, on a second
-worker in the same process that runs at most 8 at once: the number of Kafka consumers it keeps
+**Reads and writes run on separate task queues.** The endpoint targets `NEXUS_TASK_QUEUE`
+(`nexus-connector-kafka` by default), where the Nexus operations and writes run. Reads run on the
+same name with `-reads` added, on a second worker in the same process that runs at most 8 at once: the number of Kafka consumers it keeps
 for reads, so a read never waits for one. Reads waiting out their time limits never hold up a
 write.
 
@@ -421,7 +600,7 @@ write can write a message twice. Each message gets a `dedupe-id` header,
 
 | Type | When |
 |---|---|
-| `InvalidRequest` | The `ack` isn't a well-formed position for this group and topic, rejected before any activity starts as a `BAD_REQUEST` Nexus error; or it is from before the topic was deleted and created again. |
+| `InvalidRequest` | The read names no consumer group when the Nexus worker has none of its own, or names a different one when it has; or the `ack` isn't a well-formed position for this group and topic. These are rejected before any activity starts, as a `BAD_REQUEST` Nexus error. Also an `ack` from before the topic was deleted and created again. |
 | `GroupInUse` | The group has live members. |
 | `RecordTooLarge` | The next message doesn't fit in a result on its own. |
 | `Rejected` | Kafka refused the write, for example because a message is larger than the broker allows. |
@@ -431,10 +610,14 @@ minutes. Retrying a read is safe: it commits the same `ack` again and reads the 
 
 ### The test caller
 
-[`test/nexuscaller`](test/nexuscaller/workflows.go) shows how to read in a loop. `ReaderWorkflow`
-reads a batch, processes its messages in parallel (one activity each), then acknowledges the batch
-on its next read. When Temporal suggests it, because the history is getting long, it continues as
-new and passes its position to the new run, whose first read acknowledges it. Its reads always
+[`test/nexuscaller`](test/nexuscaller/workflows.go) shows how to read in a loop, from one or more
+Nexus endpoints. `ReaderWorkflow` takes a list of sources, each an endpoint and a consumer group
+(left empty when the endpoint's Nexus worker has its own). Each pass reads a batch from each source
+in turn, processes its messages in parallel (one activity each), and acknowledges the batch on its
+next read from that source. Reading the sources one after another keeps the loop simple; the cost
+is that a busy source waits while an idle one long-polls. When Temporal suggests it, because the
+history is getting long, it continues as new and passes each source's position to the new run,
+whose first read from that source acknowledges it. Its reads always
 long-poll: `timeLimitSeconds` is 60 unless the starter's `-time-limit` says otherwise.
 
 One activity per message shows messages processed in parallel, but it is the expensive choice:
@@ -485,7 +668,10 @@ CLI's profile file. The namespace defaults to `kafka-connector`.
 | `KAFKA_START_FROM` | both | `oldest` (default) or `newest`; see [Where reading starts](#where-reading-starts). |
 | `KAFKA_MAX_BATCH_BYTES` | Nexus worker | Most bytes a read's result encodes to. Default 2097152. |
 | `KAFKA_GROUP` | streamer | The consumer group to join. Required. |
-| `KAFKA_DEAD_LETTER_TOPIC` | streamer | Where undeliverable messages go. Required; must already exist. |
+| `KAFKA_GROUP` | Nexus worker | The only consumer group reads may use; see [The Nexus worker](#the-nexus-worker). Unset, each read names one. |
+| `NEXUS_TASK_QUEUE` | Nexus worker | The task queue its Nexus endpoint targets. Reads run on this name with `-reads` added. Default `nexus-connector-kafka`. |
+| `KAFKA_DEAD_LETTER_TOPIC` | streamer | Where undeliverable messages go. Must already exist. Required unless `DELETE_DEAD_LETTERS` is `true`. |
+| `DELETE_DEAD_LETTERS` | streamer | `true` to delete undeliverable messages instead of writing them to a topic; then leave `KAFKA_DEAD_LETTER_TOPIC` unset. Default `false`. |
 | `KAFKA_BATCH_SIZE` | streamer | Most messages per batch. Default 100. Set 1 to rule out [duplicates](#the-streamer). |
 | `KAFKA_BATCH_TIME_LIMIT` | streamer | How long a batch waits to fill, such as `500ms`. Default 0. |
 | `STREAM_ENDPOINT` | streamer | The Nexus endpoint to deliver to. Required. |
@@ -518,11 +704,13 @@ The tests need no Docker. They run Kafka in memory with franz-go's `kfake`.
   Its end-to-end tests start a dev server with the `temporal` CLI and deliver to a receiver in
   another namespace. They show that a batch delivered again starts nothing new
   once its operation completed, and runs again if it failed.
-- `nexusworker/` tests that a read heartbeats before it reaches Kafka, and that reads waiting for
-  their batches don't hold up writes. Its end-to-end tests write
-  and read across namespaces through the endpoint, and run the test caller's `ReaderWorkflow`.
-- `test/nexuscaller/` tests that `ReaderWorkflow` acknowledges every batch and carries its
-  position across continue-as-new.
+- `nexusworker/` tests that a read heartbeats before it reaches Kafka, which consumer groups a
+  read may use, and that reads waiting for their batches don't hold up writes. Its end-to-end tests
+  write and read across namespaces through the endpoint, refuse reads for the wrong consumer group,
+  and run the test caller's `ReaderWorkflow` against two Nexus workers serving two topics through
+  two endpoints.
+- `test/nexuscaller/` tests that `ReaderWorkflow` acknowledges every batch, reads its sources in
+  turn, and carries their positions across continue-as-new.
 
 The end-to-end tests are skipped if `temporal` isn't on the `PATH`. `make ci` runs vet,
 workflowcheck, lint, and the tests, as CI does.

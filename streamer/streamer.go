@@ -40,16 +40,18 @@ type deadLetterWriter interface {
 type streamer struct {
 	member          *kafka.GroupMember
 	starter         operationStarter
-	deadLetters     deadLetterWriter
+	deadLetters     deadLetterWriter                                   // nil when deleteDeadLetters is set
 	identify        func(context.Context) (kafka.TopicIdentity, error) // the topic's current identity
 	topic           string
 	group           string
 	deadLetterTopic string
-	batchSize       int
-	timeLimit       time.Duration
-	maxInputBytes   int
-	logger          *slog.Logger
-	retryDelay      func(attempt int) time.Duration
+	// deleteDeadLetters drops undeliverable messages instead of writing them to deadLetterTopic.
+	deleteDeadLetters bool
+	batchSize         int
+	timeLimit         time.Duration
+	maxInputBytes     int
+	logger            *slog.Logger
+	retryDelay        func(attempt int) time.Duration
 }
 
 // run streams until ctx ends, then returns nil. It returns an error only if Kafka can't be read.
@@ -216,8 +218,15 @@ func (s *streamer) deliverPart(ctx context.Context, source string, recs []kafkaa
 }
 
 // deadLetter writes rec to the dead-letter topic, retrying until it is written or ctx ends: the
-// batch is committed once this returns, so the message must not be dropped.
+// batch is committed once this returns, so the message must not be dropped. With
+// deleteDeadLetters, it deletes rec instead: it logs it and returns, so the batch is committed
+// past it and it is never delivered. It stays in Kafka until retention removes it.
 func (s *streamer) deadLetter(ctx context.Context, rec kafkaapi.Record, reason error) error {
+	if s.deleteDeadLetters {
+		s.logger.Error("Deleting a message that can't be delivered (DELETE_DEAD_LETTERS)",
+			"topic", rec.Topic, "partition", rec.Partition, "offset", rec.Offset, "reason", reason)
+		return nil
+	}
 	s.logger.Error("Sending message to the dead-letter topic", "partition", rec.Partition, "offset", rec.Offset, "topic", s.deadLetterTopic, "reason", reason)
 	dl := kafka.DeadLetter(s.deadLetterTopic, rec, s.group, reason)
 	for attempt := 1; ; attempt++ {

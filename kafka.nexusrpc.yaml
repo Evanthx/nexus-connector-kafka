@@ -84,8 +84,7 @@ $defs:
     properties:
       group:
         type: string
-        minLength: 1
-        description: "Consumer group whose committed offsets mark where reading continues. Use one reader per group, and not a group any application consumes from live"
+        description: "Consumer group whose committed offsets mark where reading continues. Use one reader per group, and not a group any application consumes from live. Required unless the Nexus worker has a consumer group of its own (KAFKA_GROUP); then leave it empty or set it to that group"
       batchSize:
         type: integer
         minimum: 0
@@ -101,7 +100,6 @@ $defs:
       ack:
         type: string
         description: "The position from the previous read of this group. It is committed before reading, so the batch it ends is not returned again"
-    required: [group]
     additionalProperties: false
 
   ReadOutput:

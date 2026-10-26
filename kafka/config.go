@@ -10,9 +10,11 @@ package kafka
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kerr"
@@ -89,6 +91,48 @@ func Identify(ctx context.Context, cfg Config) (TopicIdentity, error) {
 	}
 	defer cl.Close()
 	return identify(ctx, cl, cfg.Topic)
+}
+
+// WaitForTopic asks Kafka for the topic in cfg until it answers, so a program learns at startup
+// whether it can reach Kafka, log in, and see the topic, rather than waiting silently. Each failed
+// attempt is passed to failed, with the delay before the next; attempts are retryDelay apart and
+// each may take up to attemptTimeout. It returns the topic's identity, or ctx's error if ctx ends
+// first.
+func WaitForTopic(ctx context.Context, cfg Config, retryDelay, attemptTimeout time.Duration, failed func(attempt int, err error)) (TopicIdentity, error) {
+	for attempt := 1; ; attempt++ {
+		attemptCtx, cancel := context.WithTimeout(ctx, attemptTimeout)
+		id, err := Identify(attemptCtx, cfg)
+		cancel()
+		if err == nil {
+			return id, nil
+		}
+		if ctx.Err() != nil {
+			return TopicIdentity{}, ctx.Err()
+		}
+		failed(attempt, err)
+		select {
+		case <-time.After(retryDelay):
+		case <-ctx.Done():
+			return TopicIdentity{}, ctx.Err()
+		}
+	}
+}
+
+// ConnectAtStartup is WaitForTopic with the delays both programs use when they start, logging
+// each failed attempt and then the connection. A wrong broker address, login, or topic name shows
+// in the log at once, and the program carries on as soon as Kafka answers.
+func ConnectAtStartup(ctx context.Context, cfg Config) error {
+	const retryDelay, attemptTimeout = 5 * time.Second, 10 * time.Second
+	brokers := strings.Join(cfg.Brokers, ",")
+	id, err := WaitForTopic(ctx, cfg, retryDelay, attemptTimeout, func(attempt int, err error) {
+		slog.Warn("Can't reach Kafka or see the topic yet; retrying",
+			"brokers", brokers, "topic", cfg.Topic, "attempt", attempt, "retryIn", retryDelay, "error", err)
+	})
+	if err != nil {
+		return fmt.Errorf("waiting for Kafka at %s: %w", brokers, err)
+	}
+	slog.Info("Connected to Kafka", "brokers", brokers, "topic", cfg.Topic, "cluster", id.Cluster)
+	return nil
 }
 
 // identify asks Kafka, through cl, for topic's identity. It sends its own metadata request rather

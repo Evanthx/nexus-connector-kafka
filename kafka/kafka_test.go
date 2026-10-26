@@ -628,6 +628,54 @@ func TestFetchErrors(t *testing.T) {
 	require.ErrorContains(t, fetchErrors(fetches(errors.New("corrupt batch"))), "corrupt batch")
 }
 
+// WaitForTopic reports each failed attempt and keeps trying: here until the topic exists. It
+// gives up only when its context ends.
+func TestWaitForTopic(t *testing.T) {
+	c, err := kfake.NewCluster(kfake.NumBrokers(1))
+	require.NoError(t, err)
+	t.Cleanup(c.Close)
+	cfg := Config{Brokers: c.ListenAddrs(), Topic: testTopic}
+
+	var mu sync.Mutex
+	var failures []error
+	created := make(chan struct{})
+	result := make(chan error, 1)
+	go func() {
+		_, err := WaitForTopic(context.Background(), cfg, 10*time.Millisecond, time.Second, func(_ int, err error) {
+			mu.Lock()
+			defer mu.Unlock()
+			failures = append(failures, err)
+			if len(failures) == 2 {
+				close(created)
+			}
+		})
+		result <- err
+	}()
+	select {
+	case <-created:
+	case <-time.After(30 * time.Second):
+		t.Fatal("no failed attempts reported")
+	}
+	cl, err := kgo.NewClient(cfg.clientOpts()...)
+	require.NoError(t, err)
+	defer cl.Close()
+	_, err = kadm.NewClient(cl).CreateTopic(context.Background(), 1, 1, nil, testTopic)
+	require.NoError(t, err)
+	require.NoError(t, <-result)
+	mu.Lock()
+	defer mu.Unlock()
+	require.ErrorContains(t, failures[0], "UNKNOWN_TOPIC_OR_PARTITION")
+
+	// Nothing listening: it fails each attempt until its context ends.
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	attempts := 0
+	_, err = WaitForTopic(ctx, Config{Brokers: []string{"127.0.0.1:1"}, Topic: testTopic}, 10*time.Millisecond, time.Second,
+		func(int, error) { attempts++ })
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Positive(t, attempts)
+}
+
 func TestToKafkaRecord(t *testing.T) {
 	m := kafkaapi.Message{Key: []byte("k"), Value: []byte("v"), Headers: []kafkaapi.Header{{Key: "a", Value: []byte("1")}}}
 	r := ToKafkaRecord(testTopic, m, kgo.RecordHeader{Key: "dedupe-id", Value: []byte("x-0")})

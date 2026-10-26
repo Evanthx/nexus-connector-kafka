@@ -5,7 +5,6 @@ package kafkaapi
 import (
 	"encoding/json"
 	"fmt"
-	"unicode/utf8"
 
 	"github.com/nexus-rpc/sdk-go/nexus"
 )
@@ -211,8 +210,10 @@ func (m Message) MarshalJSON() ([]byte, error) {
 // ReadInput is generated from the corresponding JSON Schema definition.
 type ReadInput struct {
 	// Group Consumer group whose committed offsets mark where reading continues. Use one
-	// reader per group, and not a group any application consumes from live
-	Group string `json:"group"`
+	// reader per group, and not a group any application consumes from live. Required
+	// unless the Nexus worker has a consumer group of its own (KAFKA_GROUP); then leave it
+	// empty or set it to that group
+	Group *string `json:"group,omitempty"`
 	// BatchSize Most messages to return. 0 only acknowledges
 	BatchSize *int64 `json:"batchSize,omitempty"`
 	// TimeLimitSeconds How long to wait for the batch to fill. 0 returns at once with the
@@ -243,9 +244,6 @@ func (m ReadInput) TimeLimitSecondsOrDefault() int64 {
 // listing any violations.
 func (m ReadInput) Validate() error {
 	var errs []Violation
-	if n := utf8.RuneCountInString(m.Group); n < 1 {
-		errs = append(errs, Violation{"group", fmt.Sprintf("must have length >= 1, got %d", n)})
-	}
 	if m.BatchSize != nil && (*m.BatchSize < -integerCap || *m.BatchSize > integerCap) {
 		errs = append(errs, Violation{"batchSize", "exceeds ±(2^53-1) integer cap"})
 	}
@@ -296,11 +294,8 @@ func (m *ReadInput) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	_ = get
-	if v, ok := parseStringField(get("group"), "group", true, false, &errs); ok {
-		m.Group = v
-		if n := utf8.RuneCountInString(v); n < 1 {
-			errs = append(errs, Violation{"group", fmt.Sprintf("must have length >= 1, got %d", n)})
-		}
+	if v, ok := parseStringField(get("group"), "group", false, false, &errs); ok {
+		m.Group = &v
 	}
 	if v, ok := parseIntegerField(get("batchSize"), "batchSize", false, false, &errs); ok {
 		if v < 0 {
@@ -335,7 +330,9 @@ func (m ReadInput) MarshalJSON() ([]byte, error) {
 	var errs []Violation
 	addViolations(&errs, m.Validate())
 	out := map[string]json.RawMessage{}
-	marshalField(out, "group", m.Group, &errs)
+	if m.Group != nil {
+		marshalField(out, "group", *m.Group, &errs)
+	}
 	if m.BatchSize != nil {
 		marshalField(out, "batchSize", *m.BatchSize, &errs)
 	}

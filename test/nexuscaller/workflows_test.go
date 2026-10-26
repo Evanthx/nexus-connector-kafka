@@ -14,10 +14,11 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
-// fakeKafka serves read from a list of batches and records each read's ack.
+// fakeKafka serves read from a list of batches and records each read's consumer group and ack.
 type fakeKafka struct {
 	mu         sync.Mutex
 	batches    []kafkaapi.ReadOutput
+	groups     []string
 	acks       []string
 	timeLimits []int64
 	batchSizes []int64
@@ -31,6 +32,11 @@ func (f *fakeKafka) service() *nexus.Service {
 		if in.Ack != nil {
 			ack = *in.Ack
 		}
+		group := ""
+		if in.Group != nil {
+			group = *in.Group
+		}
+		f.groups = append(f.groups, group)
 		f.acks = append(f.acks, ack)
 		f.timeLimits = append(f.timeLimits, in.TimeLimitSecondsOrDefault())
 		f.batchSizes = append(f.batchSizes, in.BatchSizeOrDefault())
@@ -75,14 +81,20 @@ func TestReaderWorkflow(t *testing.T) {
 	shouldContinueAsNew = func(workflow.Context) bool { reads++; return reads == 2 }
 	t.Cleanup(func() { shouldContinueAsNew = original })
 
-	env.ExecuteWorkflow(ReaderWorkflow, ReaderInput{Group: "g", BatchSize: 10, TimeLimitSeconds: 30, Position: "p0"})
+	env.ExecuteWorkflow(ReaderWorkflow, ReaderInput{
+		Sources:   []Source{{Endpoint: CustomersEndpoint, Group: "g", Position: "p0"}},
+		BatchSize: 10, TimeLimitSeconds: 30,
+	})
 
 	require.True(t, env.IsWorkflowCompleted())
 	var can *workflow.ContinueAsNewError
 	require.ErrorAs(t, env.GetWorkflowError(), &can)
 	var next ReaderInput
 	require.NoError(t, converter.GetDefaultDataConverter().FromPayloads(can.Input, &next))
-	require.Equal(t, ReaderInput{Group: "g", BatchSize: 10, TimeLimitSeconds: 30, Position: "p2"}, next)
+	require.Equal(t, ReaderInput{
+		Sources:   []Source{{Endpoint: CustomersEndpoint, Group: "g", Position: "p2"}},
+		BatchSize: 10, TimeLimitSeconds: 30,
+	}, next)
 
 	require.Equal(t, []string{"p0", "p1"}, fake.acks)
 	require.ElementsMatch(t, []string{"a", "b", "c"}, processed)
@@ -102,9 +114,51 @@ func TestReaderWorkflow_Defaults(t *testing.T) {
 	shouldContinueAsNew = func(workflow.Context) bool { return true }
 	t.Cleanup(func() { shouldContinueAsNew = original })
 
-	env.ExecuteWorkflow(ReaderWorkflow, ReaderInput{Group: "g"})
+	env.ExecuteWorkflow(ReaderWorkflow, ReaderInput{Sources: []Source{{Endpoint: CustomersEndpoint, Group: "g"}}})
 	var can *workflow.ContinueAsNewError
 	require.ErrorAs(t, env.GetWorkflowError(), &can)
 	require.Equal(t, []int64{DefaultTimeLimitSeconds}, fake.timeLimits)
 	require.Equal(t, []int64{100}, fake.batchSizes)
+}
+
+// With two sources, each pass reads a batch from one, then a batch from the other, each with its
+// own consumer group and ack, and continue-as-new carries both positions. A source with no
+// consumer group leaves it out, for the endpoint's own to apply.
+func TestReaderWorkflow_ReadsEachSourceInTurn(t *testing.T) {
+	var ts testsuite.WorkflowTestSuite
+	env := ts.NewTestWorkflowEnvironment()
+	fake := &fakeKafka{batches: []kafkaapi.ReadOutput{
+		{Records: []kafkaapi.Record{record("event")}, Position: "customers-1"},
+		{Records: []kafkaapi.Record{record("order")}, Position: "orders-1"},
+	}}
+	env.RegisterNexusService(fake.service())
+	var mu sync.Mutex
+	var processed []string
+	env.RegisterActivityWithOptions(func(_ context.Context, rec kafkaapi.Record) error {
+		mu.Lock()
+		defer mu.Unlock()
+		processed = append(processed, string(rec.Value))
+		return nil
+	}, activity.RegisterOptions{Name: "ProcessRecord"})
+
+	original := shouldContinueAsNew
+	shouldContinueAsNew = func(workflow.Context) bool { return true }
+	t.Cleanup(func() { shouldContinueAsNew = original })
+
+	env.ExecuteWorkflow(ReaderWorkflow, ReaderInput{Sources: []Source{
+		{Endpoint: CustomersEndpoint, Group: "reader1", Position: "customers-0"},
+		{Endpoint: OrdersEndpoint, Position: "orders-0"},
+	}})
+	var can *workflow.ContinueAsNewError
+	require.ErrorAs(t, env.GetWorkflowError(), &can)
+	var next ReaderInput
+	require.NoError(t, converter.GetDefaultDataConverter().FromPayloads(can.Input, &next))
+	require.Equal(t, []Source{
+		{Endpoint: CustomersEndpoint, Group: "reader1", Position: "customers-1"},
+		{Endpoint: OrdersEndpoint, Position: "orders-1"},
+	}, next.Sources)
+
+	require.Equal(t, []string{"reader1", ""}, fake.groups)
+	require.Equal(t, []string{"customers-0", "orders-0"}, fake.acks)
+	require.Equal(t, []string{"event", "order"}, processed)
 }

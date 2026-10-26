@@ -34,6 +34,8 @@ func main() {
 // run streams until interrupted. It returns only after closing its connections, so leaving the
 // group hands this streamer's partitions to the others at once, even when it stops on an error.
 func run() error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	cfg, err := configFromEnv()
 	if err != nil {
 		return fmt.Errorf("settings: %w", err)
@@ -44,6 +46,18 @@ func run() error {
 	}
 	if opts.Namespace == "" {
 		opts.Namespace = defaultNamespace
+	}
+	address := opts.HostPort
+	if address == "" {
+		address = client.DefaultHostPort
+	}
+	// Logged before connecting, so it shows even if connecting fails.
+	log.Print(cfg.report(opts.Namespace, address))
+	if err := kafka.ConnectAtStartup(ctx, cfg.kafka); err != nil {
+		if ctx.Err() != nil {
+			return nil // stopped while waiting for Kafka
+		}
+		return err
 	}
 	c, err := client.Dial(opts)
 	if err != nil {
@@ -59,27 +73,28 @@ func run() error {
 		return err
 	}
 	defer member.Close()
-	deadLetters, err := kafka.NewWriter(cfg.kafka)
-	if err != nil {
-		return err
+	var deadLetters *kafka.Writer
+	if !cfg.deleteDeadLetters {
+		if deadLetters, err = kafka.NewWriter(cfg.kafka); err != nil {
+			return err
+		}
+		defer deadLetters.Close()
 	}
-	defer deadLetters.Close()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	s := &streamer{
-		member:          member,
-		starter:         starter,
-		deadLetters:     deadLetters,
-		identify:        member.Identity,
-		topic:           cfg.kafka.Topic,
-		group:           cfg.group,
-		deadLetterTopic: cfg.deadLetterTopic,
-		batchSize:       cfg.batchSize,
-		timeLimit:       cfg.timeLimit,
-		maxInputBytes:   cfg.maxInputBytes,
-		logger:          slog.Default(),
-		retryDelay:      backoff,
+		member:            member,
+		starter:           starter,
+		deadLetters:       deadLetters,
+		identify:          member.Identity,
+		topic:             cfg.kafka.Topic,
+		group:             cfg.group,
+		deadLetterTopic:   cfg.deadLetterTopic,
+		deleteDeadLetters: cfg.deleteDeadLetters,
+		batchSize:         cfg.batchSize,
+		timeLimit:         cfg.timeLimit,
+		maxInputBytes:     cfg.maxInputBytes,
+		logger:            slog.Default(),
+		retryDelay:        backoff,
 	}
 	log.Printf("Streaming topic %q as group %q to endpoint %q, operation %s/%s",
 		cfg.kafka.Topic, cfg.group, cfg.endpoint, cfg.service, cfg.operation)

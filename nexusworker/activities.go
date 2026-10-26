@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -39,7 +40,28 @@ type activities struct {
 	reader        *kafka.GroupReader
 	writer        *kafka.Writer
 	topic         string
-	maxBatchBytes int // the most bytes a read's result may encode to
+	group         string // the only consumer group reads may use (KAFKA_GROUP); "" lets callers choose
+	maxBatchBytes int    // the most bytes a read's result may encode to
+}
+
+// errInvalidGroup means a read names no consumer group, or one this worker doesn't serve.
+var errInvalidGroup = errors.New("invalid consumer group")
+
+// groupFor returns the consumer group a read uses, given the one it asked for ("" if none). A
+// worker with a consumer group of its own serves only that one, so a read may leave it out or
+// name it, but not name another. A worker without one serves any, so a read must name it.
+func (a *activities) groupFor(requested string) (string, error) {
+	switch {
+	case a.group == "" && requested == "":
+		return "", fmt.Errorf("%w: set group, the consumer group to read for: this endpoint has none of its own", errInvalidGroup)
+	case a.group == "":
+		return requested, nil
+	case requested == "" || requested == a.group:
+		return a.group, nil
+	default:
+		return "", fmt.Errorf("%w: this endpoint reads only consumer group %q; leave group empty or set it to %q, not %q",
+			errInvalidGroup, a.group, a.group, requested)
+	}
 }
 
 // Read acknowledges the previous batch, if in.Ack is set, and reads the next. It heartbeats every
@@ -48,13 +70,13 @@ type activities struct {
 func (a *activities) Read(ctx context.Context, in kafkaapi.ReadInput) (kafkaapi.ReadOutput, error) {
 	stop := heartbeat(ctx)
 	defer stop()
-	ack := ""
-	if in.Ack != nil {
-		ack = *in.Ack
+	group, err := a.groupFor(deref(in.Group))
+	if err != nil {
+		return kafkaapi.ReadOutput{}, applicationError(err)
 	}
 	res, err := a.reader.Read(ctx, kafka.ReadRequest{
-		Group:     in.Group,
-		Ack:       ack,
+		Group:     group,
+		Ack:       deref(in.Ack),
 		BatchSize: int(in.BatchSizeOrDefault()),
 		TimeLimit: time.Duration(in.TimeLimitSecondsOrDefault()) * time.Second,
 		MaxBytes:  recordBytes(a.maxBatchBytes),
@@ -62,8 +84,16 @@ func (a *activities) Read(ctx context.Context, in kafkaapi.ReadInput) (kafkaapi.
 	if err != nil {
 		return kafkaapi.ReadOutput{}, applicationError(err)
 	}
-	activity.GetLogger(ctx).Info("Read batch", "group", in.Group, "records", len(res.Records))
+	activity.GetLogger(ctx).Info("Read batch", "group", group, "records", len(res.Records))
 	return kafkaapi.ReadOutput{Records: res.Records, Position: res.Position}, nil
+}
+
+// deref returns *s, or "" if s is nil: an optional field left out.
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // heartbeat heartbeats every heartbeatInterval until stop is called. The first heartbeat comes

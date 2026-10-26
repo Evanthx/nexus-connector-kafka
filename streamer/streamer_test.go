@@ -381,7 +381,7 @@ func TestStreamer_UndeliverableGoesToTheDeadLetterTopic(t *testing.T) {
 		for _, h := range dl.Headers {
 			headers[h.Key] = string(h.Value)
 		}
-		require.Equal(t, fmt.Sprintf("events/0/%d", i), headers[kafka.DeadLetterSourceHeader])
+		require.Equal(t, fmt.Sprintf("%s/0/%d", testenv.Topic, i), headers[kafka.DeadLetterSourceHeader])
 		require.Equal(t, "g", headers[kafka.DeadLetterGroupHeader])
 		require.Contains(t, headers[kafka.DeadLetterReasonHeader], "input exceeds size limit")
 	}
@@ -433,6 +433,42 @@ func TestStreamer_IdentityIsCheckedForEveryBatch(t *testing.T) {
 	starter.mu.Lock()
 	defer starter.mu.Unlock()
 	require.Equal(t, operationID(sourceKey(second, cfg.Topic, "g"), starter.batches[1]), starter.ids[1])
+}
+
+// With DELETE_DEAD_LETTERS, a message that can't be delivered is deleted: nothing is written, and
+// the stream commits past it.
+func TestStreamer_DeleteDeadLetters(t *testing.T) {
+	cfg := testenv.Kafka(t)
+	produce(t, cfg, 0, "bad", "good")
+	starter := newFakeStarter()
+	starter.fail = func(input kafkaapi.ReceiveInput, _ int) error {
+		if string(input.Records[0].Value) == "bad" {
+			return fmt.Errorf("%w: input exceeds size limit", errUndeliverable)
+		}
+		return nil
+	}
+	r := stream(t, cfg, "g", starter, bigEnough, func(s *streamer) {
+		s.deleteDeadLetters = true
+		s.deadLetters = failingWriter{t}
+	})
+	starter.waitFor(t, 1)
+	require.Equal(t, []string{"good"}, starter.values())
+	require.Empty(t, deadLetters(t, cfg, 1), "nothing reaches the dead-letter topic")
+
+	r.stop()
+	produce(t, cfg, 0, "after")
+	next := newFakeStarter()
+	stream(t, cfg, "g", next, bigEnough)
+	next.waitFor(t, 1)
+	require.Equal(t, []string{"after"}, next.values(), "the deleted message was committed past")
+}
+
+// failingWriter fails the test if anything is written to the dead-letter topic.
+type failingWriter struct{ t *testing.T }
+
+func (w failingWriter) Write(context.Context, ...*kgo.Record) error {
+	w.t.Error("wrote to the dead-letter topic")
+	return nil
 }
 
 // A message too large to be an operation's input goes to the dead-letter topic without a start,
@@ -503,14 +539,19 @@ func TestConfigFromEnv(t *testing.T) {
 	t.Setenv("KAFKA_GROUP", "")
 	t.Setenv("KAFKA_DEAD_LETTER_TOPIC", "")
 	t.Setenv("STREAM_ENDPOINT", "")
+	t.Setenv("DELETE_DEAD_LETTERS", "")
 	_, err := configFromEnv()
-	require.EqualError(t, err, "set KAFKA_DEAD_LETTER_TOPIC, KAFKA_GROUP, STREAM_ENDPOINT")
+	require.EqualError(t, err, "set KAFKA_GROUP, STREAM_ENDPOINT")
 
 	t.Setenv("KAFKA_GROUP", "g")
-	t.Setenv("KAFKA_DEAD_LETTER_TOPIC", "events-dlq")
 	t.Setenv("STREAM_ENDPOINT", "ep")
+	_, err = configFromEnv()
+	require.ErrorContains(t, err, "set KAFKA_DEAD_LETTER_TOPIC, the topic undeliverable messages go to, or DELETE_DEAD_LETTERS=true")
+
+	t.Setenv("KAFKA_DEAD_LETTER_TOPIC", "events-dlq")
 	cfg, err := configFromEnv()
 	require.NoError(t, err)
+	require.False(t, cfg.deleteDeadLetters)
 	require.Equal(t, 100, cfg.batchSize)
 	require.Zero(t, cfg.timeLimit)
 	require.Equal(t, 24*time.Hour, cfg.operationTimeout)
@@ -527,4 +568,57 @@ func TestConfigFromEnv(t *testing.T) {
 	t.Setenv("KAFKA_DEAD_LETTER_TOPIC", "events")
 	_, err = configFromEnv()
 	require.ErrorContains(t, err, "must differ")
+}
+
+// DELETE_DEAD_LETTERS replaces KAFKA_DEAD_LETTER_TOPIC: one or the other, not both.
+func TestConfigFromEnv_DeleteDeadLetters(t *testing.T) {
+	t.Setenv("KAFKA_BROKERS", "localhost:9092")
+	t.Setenv("KAFKA_TOPIC", "events")
+	t.Setenv("KAFKA_GROUP", "g")
+	t.Setenv("STREAM_ENDPOINT", "ep")
+	t.Setenv("KAFKA_DEAD_LETTER_TOPIC", "")
+	t.Setenv("DELETE_DEAD_LETTERS", "true")
+	cfg, err := configFromEnv()
+	require.NoError(t, err)
+	require.True(t, cfg.deleteDeadLetters)
+
+	t.Setenv("KAFKA_DEAD_LETTER_TOPIC", "events-dlq")
+	_, err = configFromEnv()
+	require.ErrorContains(t, err, "not both")
+
+	t.Setenv("KAFKA_DEAD_LETTER_TOPIC", "")
+	t.Setenv("DELETE_DEAD_LETTERS", "yes please")
+	_, err = configFromEnv()
+	require.ErrorContains(t, err, `DELETE_DEAD_LETTERS must be true or false, not "yes please"`)
+}
+
+// The startup report shows every setting, marks the ones left to their defaults, never shows the
+// password, and says what the streamer will do with undeliverable messages.
+func TestReport(t *testing.T) {
+	t.Setenv("KAFKA_BROKERS", "localhost:9092")
+	t.Setenv("KAFKA_TOPIC", "events")
+	t.Setenv("KAFKA_USERNAME", "connector")
+	t.Setenv("KAFKA_PASSWORD", "secret-password")
+	t.Setenv("KAFKA_GROUP", "g")
+	t.Setenv("STREAM_ENDPOINT", "ep")
+	t.Setenv("KAFKA_DEAD_LETTER_TOPIC", "events-dlq")
+	t.Setenv("DELETE_DEAD_LETTERS", "")
+	t.Setenv("KAFKA_BATCH_SIZE", "")
+	cfg, err := configFromEnv()
+	require.NoError(t, err)
+	report := cfg.report("kafka-connector", "localhost:7233")
+	require.NotContains(t, report, "secret-password")
+	require.Contains(t, report, "KAFKA_PASSWORD is set")
+	require.Regexp(t, `KAFKA_BATCH_SIZE +100 \(default\)`, report)
+	require.Regexp(t, `KAFKA_GROUP +g\n`, report)
+	require.Contains(t, report, `Send messages that can't be delivered to the topic "events-dlq".`)
+	require.Contains(t, report, "can be delivered twice")
+
+	t.Setenv("KAFKA_DEAD_LETTER_TOPIC", "")
+	t.Setenv("DELETE_DEAD_LETTERS", "true")
+	cfg, err = configFromEnv()
+	require.NoError(t, err)
+	report = cfg.report("kafka-connector", "localhost:7233")
+	require.Contains(t, report, "Delete messages that can't be delivered")
+	require.Regexp(t, `KAFKA_DEAD_LETTER_TOPIC +\(not set\)`, report)
 }
