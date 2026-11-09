@@ -2,6 +2,7 @@
 
 - [Configure the streamer](#configure-the-streamer)
 - [Configure the Nexus worker](#configure-the-nexus-worker)
+- [Work out your settings in a browser](#work-out-your-settings-in-a-browser)
 - [Demo](#demo), a local Kafka and Temporal to try it with
 - [Method 1: stream messages into Temporal](#method-1-stream-messages-into-temporal)
 - [Method 2: read and write through the Nexus worker](#method-2-read-and-write-through-the-nexus-worker)
@@ -96,6 +97,51 @@ with them, including the task queue to point its endpoint at. Like the streamer,
 for Kafka to answer, logging a warning every 5 seconds until it does, before it takes requests.
 If Kafka goes away later, each read fails with the reason and is retried until its time limit
 plus 5 minutes run out.
+
+## Work out your settings in a browser
+
+`configui` is a page for working out the variables before you run either program:
+
+- It shows every variable the streamer or the Nexus worker reads, with what it does and its
+  default. Fields start with the values set in the terminal you started it from. Unset fields
+  are blank. Passwords show as asterisks and are never sent to the page.
+- **Test** sets the variables in the page's own process, then reads the topic's last message.
+  It uses the connector's own code for both steps, the way the programs would. The last message
+  is the newest of each partition's last message. Testing again reads the same message until a
+  newer one is written. Nothing is committed and no consumer group is joined, so testing doesn't
+  move anyone's position. If a step fails, the page shows its whole error: a bad setting, Kafka
+  unreachable, a failed login, or a missing topic.
+- At the bottom, **Variables to set** lists the `export` lines to use where the program runs.
+  It covers every variable you filled in; blank ones keep their defaults. It also warns about
+  required variables that aren't set. The page doesn't set anything outside its own process.
+
+Test checks only the Kafka settings. The other settings are checked when the streamer or Nexus
+worker starts.
+
+To try it against a local Kafka, run this from the repository root. It needs Docker:
+
+```bash
+test/kafka/scripts/configui.sh
+```
+
+The script does the following:
+
+1. Starts the Docker Kafka from the [Demo](#demo).
+2. Seeds it.
+3. Writes one more message to `customers`, `Last message, written <time>`.
+4. Starts the page with the local Kafka's settings already filled in.
+
+Open <http://localhost:8090> and press **Test**: the page shows that last message. Stop the page
+with Ctrl-C. [Tear down](#tear-down) removes the Kafka.
+
+For your own Kafka, export whatever you already have, then start the page:
+
+```bash
+go run ./configui               # http://localhost:8090; -addr localhost:9000 for another port
+```
+
+The page listens on localhost only, since it handles credentials and connects wherever it is
+told to.
 
 ## Demo
 
@@ -353,6 +399,7 @@ Stopping the dev server discards everything else, including the endpoints.
 | `kafka/` | Kafka code both methods share: connecting, reading in batches, writing, dead letters. No Temporal code. |
 | `streamer/` | Method 1: the program that streams each message into Temporal. |
 | `nexusworker/` | Method 2: the program that serves `read` and `write` as Nexus operations. |
+| `configui/` | A page for working out and testing the settings; see [Work out your settings in a browser](#work-out-your-settings-in-a-browser). |
 | `generated/kafkaapi/` | Go types for the contract, generated from `kafka.nexusrpc.yaml`. |
 | `test/` | Testing only: a receiver for the streamer, a caller for the Nexus worker, shared end-to-end test setup, and a local Kafka. |
 

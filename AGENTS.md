@@ -171,6 +171,14 @@ Failures that retrying can't fix are `ApplicationError`s:
 
 Other failures are retried: a read for its time limit plus 5 minutes, a write for 10 minutes.
 
+## Work out settings with the user
+
+`test/kafka/scripts/configui.sh`, or `go run ./configui` with the user's variables exported,
+serves a page on <http://localhost:8090>. It shows each variable with its help and default, and
+Test reads the topic's last message (`kafka.ReadLast`) with the connector's own code. If it
+fails, the page shows the whole error. It then lists the `export` lines for the program. It
+checks only the Kafka settings.
+
 ## Try it locally first
 
 README "Demo" runs everything with a local dev server and Docker Kafka (`test/kafka/`): both
@@ -201,7 +209,8 @@ Needs Go SDK v1.50 or later (`temporalnexus.StartActivity`, the standalone Nexus
   map to `ApplicationError`s. Both programs share it, so a change to reading affects both.
 - A new setting goes in the program's startup report too (`config.report` in `streamer/config.go`,
   `settings.report` in `nexusworker/main.go`, built with `kafka.Report` and `kafka.EnvSetting`)
-  and in README's Settings table. The report never shows the password.
+  and in README's Settings table. The report never shows the password. Add it, with its default
+  and help, to `configui/settings.go` as well.
 - For a test that guards a fix, revert the fix and confirm the test fails before calling it done.
   Existing guard tests were checked this way.
 
@@ -281,6 +290,18 @@ Needs Go SDK v1.50 or later (`temporalnexus.StartActivity`, the standalone Nexus
   throttle, so heartbeats aren't delayed.
 - `Write` adds the header `dedupe-id: <activityID>-<i>`.
 
+**`configui/`**
+- `settings.go` lists each program's variables (help, default, required, secret).
+- `main.go` serves the embedded `index.html` and two endpoints:
+  - `GET /api/settings`: the environment's values. Secrets are sent only as set or not set.
+  - `POST /api/test`: sets or unsets the program's variables with `os.Setenv`, under a mutex. A
+    secret named in `keepSecrets` is left alone. It then runs `kafka.ConfigFromEnv`,
+    `kafka.Identify` and `kafka.ReadLast`.
+- `localOnly` refuses a non-localhost `Host` and non-JSON POSTs, so other sites can't use it
+  through the browser.
+- `kafka.ReadLast` (`kafka/last.go`) reads each partition's last offset with no consumer group,
+  and keeps the message with the latest timestamp; on a tie, the higher partition.
+
 **`test/`** (test only)
 - `testenv`: kfake plus a dev server with both namespaces.
 - `nexuscaller`: `ReaderWorkflow` reads a list of `Source`s, one batch from each in turn, with ack
@@ -290,7 +311,7 @@ Needs Go SDK v1.50 or later (`temporalnexus.StartActivity`, the standalone Nexus
   because showing which topic is read is the point of the README demo.
   `shouldContinueAsNew` is a variable so tests can replace it.
 - `streamreceiver`: the example receiver.
-- `kafka/`: docker-compose plus seed, produce, and consume scripts. Seed writes 10 messages to
+- `kafka/`: docker-compose plus seed, produce, consume, and configui scripts. Seed writes 10 messages to
   `customers` and 3 to `orders`.
 
 ### Testing notes

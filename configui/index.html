@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kafka connector settings</title>
+<style>
+  :root {
+    --bg: #f7f7f8; --panel: #ffffff; --text: #1d1d1f; --muted: #5f6368; --border: #d9d9de;
+    --accent: #4b45d6; --ok-bg: #e8f5ec; --ok: #1b6b34; --err-bg: #fdecec; --err: #a12020;
+    --code-bg: #f0f0f3;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141416; --panel: #1d1d20; --text: #e8e8ea; --muted: #a0a0a8; --border: #34343a;
+      --accent: #8f8aff; --ok-bg: #16301f; --ok: #7fd69a; --err-bg: #3a1717; --err: #ff9a9a;
+      --code-bg: #26262b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  main { max-width: 900px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 24px; margin: 0 0 4px; }
+  h2 { font-size: 17px; margin: 28px 0 10px; }
+  p.lead { color: var(--muted); margin: 0 0 20px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+  .programs label { margin-right: 20px; font-weight: 600; cursor: pointer; }
+  .var { padding: 14px 0; border-top: 1px solid var(--border); }
+  .var:first-of-type { border-top: 0; }
+  .var-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+  .name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 600; }
+  .tag { font-size: 12px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--border); color: var(--muted); }
+  .tag.req { color: var(--accent); border-color: var(--accent); }
+  .help { color: var(--muted); font-size: 14px; margin: 4px 0 8px; }
+  .row { display: flex; gap: 8px; }
+  input[type=text], input[type=password] {
+    flex: 1; min-width: 0; padding: 8px 10px; font: 14px ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; }
+  input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  button { font: inherit; padding: 8px 14px; border-radius: 6px; border: 1px solid var(--border);
+           background: var(--panel); color: var(--text); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; padding: 10px 22px; }
+  button:disabled { opacity: .6; cursor: default; }
+  .actions { display: flex; align-items: center; gap: 12px; margin: 20px 0; }
+  #result { margin-top: 0; }
+  .ok { background: var(--ok-bg); color: var(--ok); }
+  .err { background: var(--err-bg); color: var(--err); }
+  .result-box { border-radius: 10px; padding: 14px 16px; }
+  pre { white-space: pre-wrap; word-break: break-word; margin: 8px 0 0;
+        font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  table.msg { border-collapse: collapse; margin-top: 10px; width: 100%; color: var(--text); }
+  table.msg td { padding: 4px 8px; vertical-align: top; border-top: 1px solid var(--border); }
+  table.msg td:first-child { color: var(--muted); width: 120px; white-space: nowrap; }
+  .exports { background: var(--code-bg); border-radius: 8px; padding: 12px; }
+  .missing { color: var(--err); margin-top: 10px; }
+  .note { color: var(--muted); font-size: 14px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Kafka connector settings</h1>
+  <p class="lead">Fill in the connector's environment variables, then <b>Test</b> them by reading the
+    topic's last message. Blank means unset: the program uses the default shown.</p>
+
+  <div class="panel programs" id="programs"></div>
+  <div id="sections"></div>
+
+  <div class="actions">
+    <button class="primary" id="test">Test</button>
+    <span class="note" id="test-note">Sets these variables in this page's server only, then reads the last message of KAFKA_TOPIC.</span>
+  </div>
+  <div id="result"></div>
+
+  <h2>Variables to set</h2>
+  <div class="panel">
+    <p class="note" style="margin-top:0">These variables are the ones that you will need to have set in
+      the worker. They are not set by this UI, but are here to help you configure the system.
+      Variables left blank use their defaults and aren't listed. Passwords are shown as asterisks.</p>
+    <pre class="exports" id="exports"></pre>
+    <div class="missing" id="missing"></div>
+  </div>
+</main>
+
+<script>
+"use strict";
+const state = { programs: [], program: "streamer", values: {}, secrets: {} };
+// secrets[name]: "kept" (set in the server, unchanged), "typed" (a new value in the field), or "unset".
+
+const $ = (id) => document.getElementById(id);
+const el = (tag, attrs = {}, ...children) => {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") e.className = v; else if (k.startsWith("on")) e[k] = v; else e.setAttribute(k, v);
+  }
+  for (const c of children) e.append(c);
+  return e;
+};
+
+function program() { return state.programs.find((p) => p.id === state.program); }
+
+function loadSettings(s) {
+  state.programs = s.programs;
+  state.values = { ...s.values };
+  for (const [name, set] of Object.entries(s.secretsSet)) state.secrets[name] = set ? "kept" : "unset";
+}
+
+function renderPrograms() {
+  const box = $("programs");
+  box.replaceChildren(el("span", { class: "note", style: "margin-right:16px" }, "Configure the"));
+  for (const p of state.programs) {
+    const input = el("input", { type: "radio", name: "program", value: p.id });
+    input.checked = p.id === state.program;
+    input.onchange = () => { state.program = p.id; render(); };
+    box.append(el("label", {}, input, " " + p.name + " ", el("span", { class: "note" }, "(" + p.command + ")")));
+  }
+}
+
+function renderVariables() {
+  const sections = new Map();
+  for (const v of program().variables) {
+    if (!sections.has(v.section)) sections.set(v.section, []);
+    sections.get(v.section).push(v);
+  }
+  const out = [];
+  for (const [title, vars] of sections) {
+    const panel = el("div", { class: "panel" });
+    for (const v of vars) panel.append(renderVariable(v));
+    out.push(el("h2", {}, title), panel);
+  }
+  $("sections").replaceChildren(...out);
+}
+
+function renderVariable(v) {
+  const head = el("div", { class: "var-head" }, el("span", { class: "name" }, v.name));
+  if (v.required) head.append(el("span", { class: "tag req" }, v.required === "yes" ? "required" : "required " + v.required));
+  if (v.default) head.append(el("span", { class: "tag" }, "default: " + v.default));
+  const row = el("div", { class: "row" });
+  if (v.secret) {
+    const input = el("input", { type: "password", autocomplete: "off", spellcheck: "false" });
+    const clear = el("button", { type: "button" }, "Clear");
+    const show = () => {
+      const s = state.secrets[v.name] || "unset";
+      input.placeholder = s === "kept" ? "******** (set; type to replace)" : "not set";
+      clear.disabled = s === "unset" && !input.value;
+    };
+    input.value = state.secrets[v.name] === "typed" ? (state.values[v.name] || "") : "";
+    input.oninput = () => {
+      state.values[v.name] = input.value;
+      state.secrets[v.name] = input.value ? "typed" : (state.secrets[v.name] === "typed" ? "unset" : state.secrets[v.name]);
+      show(); renderExports();
+    };
+    clear.onclick = () => { input.value = ""; state.values[v.name] = ""; state.secrets[v.name] = "unset"; show(); renderExports(); };
+    show();
+    row.append(input, clear);
+  } else {
+    const input = el("input", { type: "text", autocomplete: "off", spellcheck: "false", placeholder: v.default ? "blank: " + v.default : "" });
+    input.value = state.values[v.name] || "";
+    input.oninput = () => { state.values[v.name] = input.value; renderExports(); };
+    row.append(input);
+  }
+  return el("div", { class: "var" }, head, el("div", { class: "help" }, v.help), row);
+}
+
+function isSet(v) {
+  if (v.secret) return state.secrets[v.name] === "kept" || state.secrets[v.name] === "typed";
+  return (state.values[v.name] || "").trim() !== "";
+}
+
+function quote(s) { return /^[A-Za-z0-9_.,:\/@=+-]+$/.test(s) ? s : "'" + s.replace(/'/g, "'\\''") + "'"; }
+
+function renderExports() {
+  const vars = program().variables;
+  const lines = vars.filter(isSet).map((v) =>
+    "export " + v.name + "=" + (v.secret ? "********" : quote(state.values[v.name].trim())));
+  lines.push(program().command);
+  $("exports").textContent = lines.join("\n");
+  const missing = vars.filter((v) => v.required === "yes" && !isSet(v)).map((v) => v.name);
+  const dl = vars.find((v) => v.name === "KAFKA_DEAD_LETTER_TOPIC");
+  if (dl && !isSet(dl) && (state.values.DELETE_DEAD_LETTERS || "").trim().toLowerCase() !== "true") {
+    missing.push("KAFKA_DEAD_LETTER_TOPIC (or DELETE_DEAD_LETTERS=true)");
+  }
+  $("missing").textContent = missing.length ? "Required but not set: " + missing.join(", ") : "";
+}
+
+function render() { renderPrograms(); renderVariables(); renderExports(); }
+
+function showResult(r) {
+  const box = el("div", { class: "result-box " + (r.ok ? "ok" : "err") });
+  if (!r.ok) {
+    box.append(el("b", {}, "Failed: " + (r.step || "Test")), el("pre", {}, r.error || "(no error message)"));
+  } else if (r.empty) {
+    box.append(el("b", {}, "Connected" + (r.cluster ? " to cluster " + r.cluster : "") +
+      ". The topic has no messages to read."));
+  } else {
+    const m = r.message;
+    const rows = [
+      ["Partition", String(m.partition)], ["Offset", String(m.offset)], ["Timestamp", m.timestamp],
+      ["Key", m.key === "" ? "(none)" : m.key + (m.keyBase64 ? "  (base64: not UTF-8)" : "")],
+      ["Value", m.tombstone ? "(tombstone: null value)" : m.value + (m.valueBase64 ? "  (base64: not UTF-8)" : "")],
+    ];
+    for (const [k, v] of Object.entries(m.headers || {})) rows.push(["Header " + k, v]);
+    const table = el("table", { class: "msg" });
+    for (const [k, v] of rows) table.append(el("tr", {}, el("td", {}, k), el("td", {}, el("pre", { style: "margin:0" }, v))));
+    box.append(el("b", {}, "Read the topic's last message" + (r.cluster ? " (cluster " + r.cluster + ")" : "") + ":"), table);
+  }
+  $("result").replaceChildren(box);
+}
+
+async function runTest() {
+  const button = $("test");
+  button.disabled = true; button.textContent = "Testing…";
+  const values = {}, keepSecrets = {};
+  for (const v of program().variables) {
+    if (v.secret && state.secrets[v.name] === "kept") keepSecrets[v.name] = true;
+    else if (v.secret && state.secrets[v.name] !== "typed") values[v.name] = "";
+    else values[v.name] = state.values[v.name] || "";
+  }
+  try {
+    const resp = await fetch("/api/test", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ program: state.program, values, keepSecrets }),
+    });
+    if (!resp.ok) throw new Error("HTTP " + resp.status + ": " + await resp.text());
+    const r = await resp.json();
+    // Typed secrets are now set in the server; show them as set, like the others.
+    for (const [name, set] of Object.entries(r.settings.secretsSet)) state.secrets[name] = set ? "kept" : "unset";
+    for (const v of program().variables) if (v.secret) state.values[v.name] = "";
+    render();
+    showResult(r);
+  } catch (e) {
+    showResult({ ok: false, step: "Reach this page's server", error: String(e) });
+  } finally {
+    button.disabled = false; button.textContent = "Test";
+  }
+}
+
+$("test").onclick = runTest;
+fetch("/api/settings").then((r) => r.json()).then((s) => {
+  loadSettings(s);
+  // Start on the Nexus worker if only its settings are set.
+  if (!s.values.STREAM_ENDPOINT && (s.values.NEXUS_TASK_QUEUE || s.values.KAFKA_MAX_BATCH_BYTES)) state.program = "nexusworker";
+  render();
+}).catch((e) => showResult({ ok: false, step: "Load the current settings", error: String(e) }));
+</script>
+</body>
+</html>
