@@ -88,12 +88,12 @@ func startE2E(t *testing.T, rcv *receiver) e2e {
 	return e2e{kafkaCfg: kafkaCfg, starter: starter, receiver: rcv}
 }
 
-// The streamer delivers the messages to a service in another namespace, through the endpoint.
-func TestEndToEnd_StreamsIntoAnotherNamespace(t *testing.T) {
+// The relay delivers the messages to a service in another namespace, through the endpoint.
+func TestEndToEnd_RelaysIntoAnotherNamespace(t *testing.T) {
 	env := startE2E(t, &receiver{})
 	produce(t, env.kafkaCfg, 0, "m0", "m1")
 	produce(t, env.kafkaCfg, 2, "m2")
-	stream(t, env.kafkaCfg, "g", env.starter, bigEnough)
+	startRelay(t, env.kafkaCfg, "g", env.starter, bigEnough)
 	env.receiver.waitFor(t, 3)
 	require.ElementsMatch(t, []string{"m0", "m1", "m2"}, env.receiver.values())
 }

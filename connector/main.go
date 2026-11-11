@@ -1,6 +1,6 @@
-// Command nexusworker serves the connector's topic as the KafkaService Nexus service: read, to read
-// batches for a consumer group, and write, to write messages. Each call runs as a standalone
-// activity.
+// Command connector is the Nexus Connector. It serves the topic named by KAFKA_TOPIC as the
+// KafkaService Nexus service: read, to read batches for a consumer group, and write, to write
+// messages. Each call runs as a standalone activity.
 //
 // It reads the topic's settings from KAFKA_* environment variables (see kafka.ConfigFromEnv), and
 // its own (see settingsFromEnv). It connects to Temporal with the standard TEMPORAL_* variables
@@ -94,7 +94,7 @@ func main() {
 	}
 }
 
-// settings are the Nexus worker's settings besides the topic's.
+// settings are the connector's settings besides the topic's.
 type settings struct {
 	group         string        // KAFKA_GROUP: the only consumer group reads may use; empty lets each read name one
 	taskQueue     string        // NEXUS_TASK_QUEUE: the task queue the Nexus endpoint targets
@@ -125,7 +125,7 @@ func settingsFromEnv() (settings, error) {
 	return s, nil
 }
 
-// report is the configuration and what the Nexus worker will do with it, for the log when it
+// report is the configuration and what the connector will do with it, for the log when it
 // starts. cfg is the topic's settings; namespace and address are where it connects to Temporal.
 func (s settings) report(cfg kafka.Config, namespace, address string) string {
 	group := kafka.Setting{Name: "KAFKA_GROUP", Value: s.group}
@@ -141,7 +141,7 @@ func (s settings) report(cfg kafka.Config, namespace, address string) string {
 	}
 	sections := []kafka.Section{
 		cfg.Settings(),
-		{Title: "Nexus worker", Settings: []kafka.Setting{
+		{Title: "Connector", Settings: []kafka.Setting{
 			group,
 			kafka.EnvSetting("NEXUS_TASK_QUEUE", s.taskQueue),
 			kafka.EnvSetting("KAFKA_MAX_BATCH_BYTES", s.maxBatchBytes),
@@ -154,12 +154,12 @@ func (s settings) report(cfg kafka.Config, namespace, address string) string {
 	}
 	behavior := []string{
 		fmt.Sprintf("Serve the topic %q as the KafkaService Nexus service, with the operations read and write.", cfg.Topic),
-		fmt.Sprintf("Take Nexus requests and run writes on the task queue %q: point this worker's Nexus endpoint at it.", s.taskQueue),
+		fmt.Sprintf("Take Nexus requests and run writes on the task queue %q: point this connector's Nexus endpoint at it.", s.taskQueue),
 		fmt.Sprintf("Run reads on the task queue %q, up to %d at once.", readQueue(s.taskQueue), kafka.MaxConcurrentReads),
 		groupBehavior,
 		"A partition a consumer group has no committed offset for " + cfg.StartFromMeaning() + ".",
 		fmt.Sprintf("Return at most %d bytes of encoded messages per read.", recordBytes(s.maxBatchBytes)),
 		fmt.Sprintf("Write messages to the topic %q, each with a dedupe-id header.", cfg.Topic),
 	}
-	return kafka.Report("Nexus worker", sections, behavior)
+	return kafka.Report("connector", sections, behavior)
 }

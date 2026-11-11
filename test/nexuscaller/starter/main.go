@@ -63,7 +63,7 @@ func run(args []string) error {
 }
 
 // sources is the -source flag: each use adds one source, written endpoint=group, or just endpoint
-// when the endpoint's Nexus worker has a consumer group of its own.
+// when the endpoint's connector has a consumer group of its own.
 type sources []nexuscaller.Source
 
 func (s *sources) String() string { return fmt.Sprint(*s) }
@@ -78,7 +78,7 @@ func (s *sources) Set(v string) error {
 }
 
 // defaultSources are the README walkthrough's two endpoints: the customers topic, read for the
-// consumer group reader1, and the orders topic, whose Nexus worker sets its own consumer group.
+// consumer group reader1, and the orders topic, whose connector sets its own consumer group.
 var defaultSources = sources{
 	{Endpoint: nexuscaller.CustomersEndpoint, Group: "reader1"},
 	{Endpoint: nexuscaller.OrdersEndpoint},
@@ -89,12 +89,12 @@ var defaultSources = sources{
 //
 //   - -source (repeatable; default the walkthrough's two): where to read. Each is a Nexus endpoint,
 //     which decides the topic, and a consumer group, written endpoint=group. Leave the group out
-//     (just endpoint) when the endpoint's Nexus worker has a consumer group of its own
+//     (just endpoint) when the endpoint's connector has a consumer group of its own
 //     (KAFKA_GROUP); name one when it doesn't. The consumer group's committed offsets are where
 //     reading resumes, so a reader stopped and started again carries on where it left off.
 //   - -batch-size (default 10 here): the most messages one read returns. The read operation
 //     itself defaults to 100 and allows up to 10,000, and a batch also stops at about 2 MiB
-//     encoded (the nexusworker's KAFKA_MAX_BATCH_BYTES), Temporal's payload limit.
+//     encoded (the connector's KAFKA_MAX_BATCH_BYTES), Temporal's payload limit.
 //   - -time-limit (default 60 seconds): how long a read waits for its batch to fill before
 //     returning what it has. Reads are long polls, which is far cheaper on an idle topic than
 //     reading often, and at 60 seconds or less a read sends no heartbeats. The operation allows
@@ -102,7 +102,7 @@ var defaultSources = sources{
 func read(c client.Client, args []string) error {
 	flags := flag.NewFlagSet("read", flag.ContinueOnError)
 	var from sources
-	flags.Var(&from, "source", "endpoint=group, or endpoint alone if its Nexus worker sets the consumer group (repeatable)")
+	flags.Var(&from, "source", "endpoint=group, or endpoint alone if its connector sets the consumer group (repeatable)")
 	batchSize := flags.Int64("batch-size", 10, "most messages per batch")
 	timeLimit := flags.Int64("time-limit", nexuscaller.DefaultTimeLimitSeconds, "seconds a read waits for its batch to fill")
 	if err := flags.Parse(args); err != nil {
@@ -149,7 +149,7 @@ func readerID(from sources) string {
 
 // write runs a WriterWorkflow that writes each argument as one message, in order, and waits for
 // it. -endpoint (default kafka-customers-endpoint) chooses the Nexus endpoint, and so the topic. The
-// workflow calls that Nexus worker's write operation, which adds a dedupe-id header to each
+// workflow calls that connector's write operation, which adds a dedupe-id header to each
 // message so a consumer can drop a copy left by a retried write.
 func write(c client.Client, args []string) error {
 	flags := flag.NewFlagSet("write", flag.ContinueOnError)

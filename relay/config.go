@@ -13,23 +13,23 @@ import (
 	"github.com/temporalio/nexus-connector-kafka/kafka"
 )
 
-// config is the streamer's settings, read from the environment by configFromEnv.
+// config is the relay's settings, read from the environment by configFromEnv.
 type config struct {
 	kafka             kafka.Config
-	group             string        // KAFKA_GROUP: the consumer group the streamer joins
+	group             string        // KAFKA_GROUP: the consumer group the relay joins
 	deadLetterTopic   string        // KAFKA_DEAD_LETTER_TOPIC: where undeliverable messages go
 	deleteDeadLetters bool          // DELETE_DEAD_LETTERS: log and skip undeliverable messages instead
 	batchSize         int           // KAFKA_BATCH_SIZE: most messages per batch; 1 for exactly one operation per message
 	timeLimit         time.Duration // KAFKA_BATCH_TIME_LIMIT: how long a batch waits to fill
-	endpoint          string        // STREAM_ENDPOINT: the Nexus endpoint messages are sent to
-	service           string        // STREAM_SERVICE: the Nexus service
-	operation         string        // STREAM_OPERATION: the operation started for each batch
-	operationTimeout  time.Duration // STREAM_OPERATION_TIMEOUT: how long each operation may take
-	maxInputBytes     int           // STREAM_MAX_INPUT_BYTES: the largest encoded input sent to an operation
+	endpoint          string        // RELAY_ENDPOINT: the Nexus endpoint messages are sent to
+	service           string        // RELAY_SERVICE: the Nexus service
+	operation         string        // RELAY_OPERATION: the operation started for each batch
+	operationTimeout  time.Duration // RELAY_OPERATION_TIMEOUT: how long each operation may take
+	maxInputBytes     int           // RELAY_MAX_INPUT_BYTES: the largest encoded input sent to an operation
 }
 
 // defaultMaxInputBytes is under Temporal's 2 MiB payload limit by 64 KiB, the same reserve the
-// nexusworker keeps: the limit applies to the whole payload, metadata included, and the size
+// connector keeps: the limit applies to the whole payload, metadata included, and the size
 // counted here is an estimate of the encoded records.
 const defaultMaxInputBytes = 2*1024*1024 - 64*1024
 
@@ -42,15 +42,15 @@ func configFromEnv() (config, error) {
 		kafka:           kafkaCfg,
 		group:           os.Getenv("KAFKA_GROUP"),
 		deadLetterTopic: os.Getenv("KAFKA_DEAD_LETTER_TOPIC"),
-		endpoint:        os.Getenv("STREAM_ENDPOINT"),
-		service:         envOr("STREAM_SERVICE", kafkaapi.KafkaMessageReceiver.ServiceName),
-		operation:       envOr("STREAM_OPERATION", kafkaapi.KafkaMessageReceiver.Receive.Name()),
+		endpoint:        os.Getenv("RELAY_ENDPOINT"),
+		service:         envOr("RELAY_SERVICE", kafkaapi.KafkaMessageReceiver.ServiceName),
+		operation:       envOr("RELAY_OPERATION", kafkaapi.KafkaMessageReceiver.Receive.Name()),
 	}
 	if c.deleteDeadLetters, err = boolean("DELETE_DEAD_LETTERS"); err != nil {
 		return config{}, err
 	}
 	var missing []string
-	for name, v := range map[string]string{"KAFKA_GROUP": c.group, "STREAM_ENDPOINT": c.endpoint} {
+	for name, v := range map[string]string{"KAFKA_GROUP": c.group, "RELAY_ENDPOINT": c.endpoint} {
 		if v == "" {
 			missing = append(missing, name)
 		}
@@ -72,17 +72,17 @@ func configFromEnv() (config, error) {
 	if c.batchSize, err = positiveInt("KAFKA_BATCH_SIZE", 100); err != nil {
 		return config{}, err
 	}
-	if c.maxInputBytes, err = positiveInt("STREAM_MAX_INPUT_BYTES", defaultMaxInputBytes); err != nil {
+	if c.maxInputBytes, err = positiveInt("RELAY_MAX_INPUT_BYTES", defaultMaxInputBytes); err != nil {
 		return config{}, err
 	}
 	if c.timeLimit, err = duration("KAFKA_BATCH_TIME_LIMIT", 0); err != nil {
 		return config{}, err
 	}
-	if c.operationTimeout, err = duration("STREAM_OPERATION_TIMEOUT", 24*time.Hour); err != nil {
+	if c.operationTimeout, err = duration("RELAY_OPERATION_TIMEOUT", 24*time.Hour); err != nil {
 		return config{}, err
 	}
 	if c.operationTimeout == 0 {
-		return config{}, errors.New("STREAM_OPERATION_TIMEOUT must be more than 0")
+		return config{}, errors.New("RELAY_OPERATION_TIMEOUT must be more than 0")
 	}
 	return c, nil
 }
@@ -131,7 +131,7 @@ func duration(name string, def time.Duration) (time.Duration, error) {
 	return d, nil
 }
 
-// report is the configuration and what the streamer will do with it, for the log when it starts.
+// report is the configuration and what the relay will do with it, for the log when it starts.
 // namespace and address are where it connects to Temporal.
 func (c config) report(namespace, address string) string {
 	deadLetters := kafka.Setting{Name: "KAFKA_DEAD_LETTER_TOPIC", Value: c.deadLetterTopic}
@@ -140,17 +140,17 @@ func (c config) report(namespace, address string) string {
 	}
 	sections := []kafka.Section{
 		c.kafka.Settings(),
-		{Title: "Streamer", Settings: []kafka.Setting{
+		{Title: "Relay", Settings: []kafka.Setting{
 			{Name: "KAFKA_GROUP", Value: c.group},
 			deadLetters,
 			kafka.EnvSetting("DELETE_DEAD_LETTERS", c.deleteDeadLetters),
 			kafka.EnvSetting("KAFKA_BATCH_SIZE", c.batchSize),
 			kafka.EnvSetting("KAFKA_BATCH_TIME_LIMIT", c.timeLimit),
-			{Name: "STREAM_ENDPOINT", Value: c.endpoint},
-			kafka.EnvSetting("STREAM_SERVICE", c.service),
-			kafka.EnvSetting("STREAM_OPERATION", c.operation),
-			kafka.EnvSetting("STREAM_OPERATION_TIMEOUT", c.operationTimeout),
-			kafka.EnvSetting("STREAM_MAX_INPUT_BYTES", c.maxInputBytes),
+			{Name: "RELAY_ENDPOINT", Value: c.endpoint},
+			kafka.EnvSetting("RELAY_SERVICE", c.service),
+			kafka.EnvSetting("RELAY_OPERATION", c.operation),
+			kafka.EnvSetting("RELAY_OPERATION_TIMEOUT", c.operationTimeout),
+			kafka.EnvSetting("RELAY_MAX_INPUT_BYTES", c.maxInputBytes),
 		}},
 		{Title: "Temporal", Settings: []kafka.Setting{
 			{Name: "namespace", Value: namespace},
@@ -180,5 +180,5 @@ func (c config) report(namespace, address string) string {
 		duplicates,
 		undeliverable,
 	}
-	return kafka.Report("streamer", sections, behavior)
+	return kafka.Report("relay", sections, behavior)
 }

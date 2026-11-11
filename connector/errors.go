@@ -16,7 +16,7 @@ const (
 	// of the same name; or the caller's Nexus operation times out too soon to run it. Positions aren't signed: callers are trusted to pass back what a read
 	// returned.
 	ErrorTypeInvalidRequest = "InvalidRequest"
-	// ErrorTypeGroupInUse: the group has live members, such as a streamer, so its offsets can't
+	// ErrorTypeGroupInUse: the group has live members, such as a relay, so its offsets can't
 	// be committed from here. Use a group of its own.
 	ErrorTypeGroupInUse = "GroupInUse"
 	// ErrorTypeRecordTooLarge: the next record is larger than the batch byte limit on its own.

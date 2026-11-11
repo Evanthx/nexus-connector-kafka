@@ -12,10 +12,10 @@ import (
 	"go.temporal.io/sdk/worker"
 )
 
-// defaultTaskQueue is the Nexus worker's task queue unless NEXUS_TASK_QUEUE says otherwise.
+// defaultTaskQueue is the connector's task queue unless NEXUS_TASK_QUEUE says otherwise.
 const defaultTaskQueue = "nexus-connector-kafka"
 
-// readQueue is where read activities run, on a worker of their own: the Nexus worker's task queue
+// readQueue is where read activities run, on a worker of their own: the connector's task queue
 // with "-reads" added. A read can wait a minute or more for its batch, and reads are limited to as
 // many at once as the reader has consumers; on a queue of their own, waiting reads never hold up a
 // write.
@@ -95,7 +95,7 @@ func newService(a *activities, readTaskQueue string) *nexus.Service {
 	return svc
 }
 
-// newWorkers creates the Nexus worker's two workers. The first polls taskQueue, which the Nexus
+// newWorkers creates the connector's two workers. The first polls taskQueue, which the Nexus
 // endpoint targets: it serves the Nexus service and runs writes. The second polls readQueue(taskQueue)
 // and runs reads, no more at once than the reader has consumers, so a read never waits for one.
 func newWorkers(c client.Client, taskQueue string, a *activities) (nexusAndWrites, reads worker.Worker) {

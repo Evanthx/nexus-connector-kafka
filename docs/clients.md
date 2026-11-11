@@ -6,11 +6,11 @@ and a bad request fails in your code, with the field named, before it is sent.
 
 ## The contract
 
-The connector's operations are defined in one file, [`kafka.nexusrpc.yaml`](../kafka.nexusrpc.yaml),
-its *contract*. It names two services:
+The Kafka connector's operations are defined in one file,
+[`kafka.nexusrpc.yaml`](../kafka.nexusrpc.yaml), its *contract*. It names two services:
 
-- **`KafkaService`**, served by the Nexus worker: `read` and `write`.
-- **`KafkaMessageReceiver`**, which the streamer calls: `receive`, one call per partition batch.
+- **`KafkaService`**, served by the connector: `read` and `write`.
+- **`KafkaMessageReceiver`**, which the relay calls: `receive`, one call per partition batch.
   Implement this service to receive the topic's messages.
 
 The contract also defines every input and output type as JSON Schema. It is the source of truth for
@@ -25,7 +25,7 @@ it writes, for one language:
 - a service definition you pass to that language's Nexus client.
 
 It doesn't write the call itself; you still use your Temporal SDK's Nexus client, as in the
-[Nexus worker usage examples](../AGENTS.md#run-the-nexus-worker).
+[connector usage examples](../AGENTS.md#run-the-connector).
 
 ## Go
 
@@ -66,7 +66,7 @@ It generates all four into `.build/clients/<language>`, which is not committed.
 
 Any Nexus client can send the input as plain JSON. The fields are defined in
 [`kafka.nexusrpc.yaml`](../kafka.nexusrpc.yaml) and described in
-[AGENTS.md](../AGENTS.md#run-the-nexus-worker). A request that breaks the contract is rejected with
+[AGENTS.md](../AGENTS.md#run-the-connector). A request that breaks the contract is rejected with
 a `BAD_REQUEST` handler error.
 
 ## When the contract changes

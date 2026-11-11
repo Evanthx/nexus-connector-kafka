@@ -141,7 +141,7 @@ func TestGroupReader_ReadWithoutAckReturnsTheSameBatch(t *testing.T) {
 }
 
 // An ack commits the batch it ends: the read after it, and any later read without an ack, carry
-// on from there. A different reader (another worker process) sees the same commit.
+// on from there. A different reader (another connector process) sees the same commit.
 func TestGroupReader_AckCommits(t *testing.T) {
 	cfg := newCluster(t)
 	produce(t, cfg, 0, "m0", "m1", "m2", "m3", "m4")
@@ -339,7 +339,7 @@ func TestGroupReader_RejectsAnotherGroupsAck(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidPosition)
 }
 
-// A reader can't commit an ack for a group that has live members, such as a streamer's. (Its
+// A reader can't commit an ack for a group that has live members, such as a relay's. (Its
 // first read commits nothing: the member committed a start for every partition when it joined.)
 func TestGroupReader_GroupInUse(t *testing.T) {
 	cfg := newCluster(t)

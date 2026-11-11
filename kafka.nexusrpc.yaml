@@ -5,7 +5,7 @@ services:
   KafkaService:
     fqn: KafkaService
     x-go-name: KafkaService
-    description: "Reads from and writes to the connector's Kafka topic. Served by the nexusworker."
+    description: "Reads from and writes to one Kafka topic. Served by the Nexus Connector, which decides the topic."
     operations:
       read:
         fqn: read
@@ -25,7 +25,7 @@ services:
   KafkaMessageReceiver:
     fqn: KafkaMessageReceiver
     x-go-name: KafkaMessageReceiver
-    description: "The service the streamer delivers messages to. Implement it to receive the topic's messages."
+    description: "The service the Nexus Connector Relay delivers messages to. Implement it to receive the topic's messages."
     operations:
       receive:
         fqn: receive
@@ -84,7 +84,7 @@ $defs:
     properties:
       group:
         type: string
-        description: "Consumer group whose committed offsets mark where reading continues. Use one reader per group, and not a group any application consumes from live. Required unless the Nexus worker has a consumer group of its own (KAFKA_GROUP); then leave it empty or set it to that group"
+        description: "Consumer group whose committed offsets mark where reading continues. Use one reader per group, and not a group any application consumes from live. Required unless the Nexus Connector has a consumer group of its own (KAFKA_GROUP); then leave it empty or set it to that group"
       batchSize:
         type: integer
         minimum: 0
@@ -166,6 +166,6 @@ $defs:
 
   ReceiveOutput:
     type: object
-    description: "Empty: the streamer does not wait for a result."
+    description: "Empty: the Nexus Connector Relay does not wait for a result."
     properties: {}
     additionalProperties: false

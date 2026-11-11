@@ -108,21 +108,21 @@ func deadLetters(t *testing.T, cfg kafka.Config, n int) []*kgo.Record {
 	return out
 }
 
-// running is a streamer running in the background.
+// running is a relay running in the background.
 type running struct {
 	stop func()
 	done chan error
 }
 
-// stream starts a streamer for group with starter, and stops it when the test ends. options, if
-// any, change the streamer before it starts.
-func stream(t *testing.T, cfg kafka.Config, group string, starter operationStarter, maxInputBytes int, options ...func(*streamer)) running {
+// startRelay starts a relay for group with starter, and stops it when the test ends. options, if
+// any, change the relay before it starts.
+func startRelay(t *testing.T, cfg kafka.Config, group string, starter operationStarter, maxInputBytes int, options ...func(*relay)) running {
 	t.Helper()
 	member, err := kafka.NewGroupMember(cfg, group)
 	require.NoError(t, err)
 	writer, err := kafka.NewWriter(cfg)
 	require.NoError(t, err)
-	s := &streamer{
+	rl := &relay{
 		member:          member,
 		starter:         starter,
 		deadLetters:     writer,
@@ -137,11 +137,11 @@ func stream(t *testing.T, cfg kafka.Config, group string, starter operationStart
 		retryDelay:      func(int) time.Duration { return 10 * time.Millisecond },
 	}
 	for _, option := range options {
-		option(s)
+		option(rl)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	r := running{done: make(chan error, 1)}
-	go func() { r.done <- s.run(ctx) }()
+	go func() { r.done <- rl.run(ctx) }()
 	var once sync.Once
 	r.stop = func() {
 		once.Do(func() {
@@ -157,7 +157,7 @@ func stream(t *testing.T, cfg kafka.Config, group string, starter operationStart
 
 const bigEnough = 2 * 1024 * 1024
 
-// source is the streamer's source key for group, as main works it out.
+// source is the relay's source key for group, as main works it out.
 func source(t *testing.T, cfg kafka.Config, group string) string {
 	t.Helper()
 	id, err := kafka.Identify(context.Background(), cfg)
@@ -173,12 +173,12 @@ func opID(t *testing.T, cfg kafka.Config, partition, first, last int64) string {
 
 // Each partition's part of a batch is one operation, named by its offsets, and within a partition
 // messages start in order.
-func TestStreamer_DeliversEachPartitionInOrder(t *testing.T) {
+func TestRelay_DeliversEachPartitionInOrder(t *testing.T) {
 	cfg := testenv.Kafka(t)
 	produce(t, cfg, 0, "a0", "a1", "a2", "a3")
 	produce(t, cfg, 1, "b0", "b1")
 	starter := newFakeStarter()
-	stream(t, cfg, "g", starter, bigEnough)
+	startRelay(t, cfg, "g", starter, bigEnough)
 	starter.waitFor(t, 6)
 
 	var a, b []string
@@ -204,14 +204,14 @@ func TestStreamer_DeliversEachPartitionInOrder(t *testing.T) {
 }
 
 // A partition's records are split into as few operations as fit the input size limit.
-func TestStreamer_SplitsBatchesToFitTheInputLimit(t *testing.T) {
+func TestRelay_SplitsBatchesToFitTheInputLimit(t *testing.T) {
 	cfg := testenv.Kafka(t)
 	value := strings.Repeat("x", 300)
 	produce(t, cfg, 0, value, value, value, value, value)
 	// Room for two records; timestamps vary in length by a few bytes, far less than half a record.
 	recSize := kafka.EncodedSize(kafkaapi.Record{Topic: "events", Timestamp: "2026-10-23T00:00:00.123456789Z", Value: []byte(value)})
 	starter := newFakeStarter()
-	stream(t, cfg, "g", starter, inputOverhead+2*recSize+recSize/2)
+	startRelay(t, cfg, "g", starter, inputOverhead+2*recSize+recSize/2)
 	starter.waitFor(t, 5)
 
 	starter.mu.Lock()
@@ -227,33 +227,33 @@ func TestStreamer_SplitsBatchesToFitTheInputLimit(t *testing.T) {
 	require.Contains(t, starter.ids, opID(t, cfg, 0, 0, 1))
 }
 
-// A delivered batch is committed: a streamer started later for the group delivers only new
+// A delivered batch is committed: a relay started later for the group delivers only new
 // messages.
-func TestStreamer_RestartDoesNotRedeliver(t *testing.T) {
+func TestRelay_RestartDoesNotRedeliver(t *testing.T) {
 	cfg := testenv.Kafka(t)
 	produce(t, cfg, 0, "m0", "m1")
 	first := newFakeStarter()
-	r := stream(t, cfg, "g", first, bigEnough)
+	r := startRelay(t, cfg, "g", first, bigEnough)
 	first.waitFor(t, 2)
 	r.stop()
 
 	produce(t, cfg, 0, "m2")
 	second := newFakeStarter()
-	stream(t, cfg, "g", second, bigEnough)
+	startRelay(t, cfg, "g", second, bigEnough)
 	second.waitFor(t, 1)
 	// Anything redelivered would arrive with m2.
 	require.Never(t, func() bool { return len(second.values()) > 1 }, time.Second, 50*time.Millisecond)
 	require.Equal(t, []string{"m2"}, second.values())
 }
 
-// A streamer stopped mid-batch commits nothing, so the next one delivers the whole batch again. If
+// A relay stopped mid-batch commits nothing, so the next one delivers the whole batch again. If
 // the batch is the same, so is its operation ID: the operation already started matches.
-func TestStreamer_UncommittedBatchIsDeliveredAgainWithTheSameID(t *testing.T) {
+func TestRelay_UncommittedBatchIsDeliveredAgainWithTheSameID(t *testing.T) {
 	cfg := testenv.Kafka(t)
 	produce(t, cfg, 0, "m0", "m1", "m2")
 	stuck := newFakeStarter()
 	stuck.fail = func(kafkaapi.ReceiveInput, int) error { return errors.New("unavailable") }
-	r := stream(t, cfg, "g", stuck, bigEnough)
+	r := startRelay(t, cfg, "g", stuck, bigEnough)
 	id := opID(t, cfg, 0, 0, 2)
 	require.Eventually(t, func() bool {
 		stuck.mu.Lock()
@@ -263,7 +263,7 @@ func TestStreamer_UncommittedBatchIsDeliveredAgainWithTheSameID(t *testing.T) {
 	r.stop()
 
 	again := newFakeStarter()
-	stream(t, cfg, "g", again, bigEnough)
+	startRelay(t, cfg, "g", again, bigEnough)
 	again.waitFor(t, 3)
 	require.Equal(t, []string{"m0", "m1", "m2"}, again.values())
 	require.Equal(t, []string{opID(t, cfg, 0, 0, 2)}, again.ids)
@@ -271,7 +271,7 @@ func TestStreamer_UncommittedBatchIsDeliveredAgainWithTheSameID(t *testing.T) {
 
 // The duplicate the README warns about: a batch delivered again can end at a different offset,
 // so it gets a different operation ID and its messages start a second operation.
-func TestStreamer_RedeliveredBatchWithMoreMessagesIsANewOperation(t *testing.T) {
+func TestRelay_RedeliveredBatchWithMoreMessagesIsANewOperation(t *testing.T) {
 	cfg := testenv.Kafka(t)
 	produce(t, cfg, 0, "m0", "m1")
 	produce(t, cfg, 1, "other")
@@ -283,23 +283,23 @@ func TestStreamer_RedeliveredBatchWithMoreMessagesIsANewOperation(t *testing.T) 
 		}
 		return nil
 	}
-	r := stream(t, cfg, "g", stuck, bigEnough)
+	r := startRelay(t, cfg, "g", stuck, bigEnough)
 	stuck.waitFor(t, 2)
 	r.stop()
 	require.Equal(t, []string{opID(t, cfg, 0, 0, 1)}, stuck.ids)
 
 	produce(t, cfg, 0, "m2")
 	again := newFakeStarter()
-	stream(t, cfg, "g", again, bigEnough)
+	startRelay(t, cfg, "g", again, bigEnough)
 	again.waitFor(t, 4)
 	require.Contains(t, again.ids, opID(t, cfg, 0, 0, 2))
 	require.Subset(t, again.values(), []string{"m0", "m1"}, "m0 and m1 are delivered a second time")
 }
 
-// A batch that can't be delivered doesn't hold up a rebalance: when another streamer joins the
+// A batch that can't be delivered doesn't hold up a rebalance: when another relay joins the
 // group, the stuck one gives up its batch without committing it, so the partitions it hands over
 // are delivered by the newcomer and the ones it keeps are delivered again, not skipped.
-func TestStreamer_StuckBatchDoesNotBlockARebalance(t *testing.T) {
+func TestRelay_StuckBatchDoesNotBlockARebalance(t *testing.T) {
 	cfg := testenv.Kafka(t)
 	produce(t, cfg, 0, "a0", "a1")
 	produce(t, cfg, 1, "b0", "b1")
@@ -313,15 +313,15 @@ func TestStreamer_StuckBatchDoesNotBlockARebalance(t *testing.T) {
 		}
 		return nil
 	}
-	stream(t, cfg, "g", stuck, bigEnough)
+	startRelay(t, cfg, "g", stuck, bigEnough)
 	require.Eventually(t, func() bool {
 		stuck.mu.Lock()
 		defer stuck.mu.Unlock()
 		return len(stuck.attempts) > 0
-	}, 30*time.Second, 10*time.Millisecond, "the first streamer has a batch")
+	}, 30*time.Second, 10*time.Millisecond, "the first relay has a batch")
 
 	newcomer := newFakeStarter()
-	stream(t, cfg, "g", newcomer, bigEnough)
+	startRelay(t, cfg, "g", newcomer, bigEnough)
 	// Kafka's default rebalance timeout is a minute; a blocked rebalance would take that long.
 	newcomer.waitFor(t, 2)
 
@@ -334,11 +334,11 @@ func TestStreamer_StuckBatchDoesNotBlockARebalance(t *testing.T) {
 			}
 		}
 		return true
-	}, 30*time.Second, 50*time.Millisecond, "every message is delivered by one streamer or the other")
+	}, 30*time.Second, 50*time.Millisecond, "every message is delivered by one relay or the other")
 }
 
 // Errors other than an undeliverable message are retried until the start succeeds.
-func TestStreamer_RetriesUntilStarted(t *testing.T) {
+func TestRelay_RetriesUntilStarted(t *testing.T) {
 	cfg := testenv.Kafka(t)
 	produce(t, cfg, 0, "m0")
 	starter := newFakeStarter()
@@ -348,14 +348,14 @@ func TestStreamer_RetriesUntilStarted(t *testing.T) {
 		}
 		return nil
 	}
-	stream(t, cfg, "g", starter, bigEnough)
+	startRelay(t, cfg, "g", starter, bigEnough)
 	starter.waitFor(t, 1)
 	require.Equal(t, 3, starter.attempts[opID(t, cfg, 0, 0, 0)])
 }
 
 // Messages the server refuses go to the dead-letter topic, with headers saying where each came
 // from and why, and the stream carries on and commits past them.
-func TestStreamer_UndeliverableGoesToTheDeadLetterTopic(t *testing.T) {
+func TestRelay_UndeliverableGoesToTheDeadLetterTopic(t *testing.T) {
 	cfg := testenv.Kafka(t)
 	produce(t, cfg, 0, "bad0", "bad1")
 	produce(t, cfg, 1, "good")
@@ -366,7 +366,7 @@ func TestStreamer_UndeliverableGoesToTheDeadLetterTopic(t *testing.T) {
 		}
 		return nil
 	}
-	r := stream(t, cfg, "g", starter, bigEnough)
+	r := startRelay(t, cfg, "g", starter, bigEnough)
 	starter.waitFor(t, 1)
 	require.Equal(t, []string{"good"}, starter.values())
 
@@ -389,14 +389,14 @@ func TestStreamer_UndeliverableGoesToTheDeadLetterTopic(t *testing.T) {
 	r.stop()
 	produce(t, cfg, 0, "after")
 	next := newFakeStarter()
-	stream(t, cfg, "g", next, bigEnough)
+	startRelay(t, cfg, "g", next, bigEnough)
 	next.waitFor(t, 1)
 	require.Equal(t, []string{"after"}, next.values(), "the dead-lettered messages were committed past")
 }
 
 // Messages the server refuses as too large together are split until each part is accepted, so
 // none of them goes to the dead-letter topic.
-func TestStreamer_RefusedPartIsSplit(t *testing.T) {
+func TestRelay_RefusedPartIsSplit(t *testing.T) {
 	cfg := testenv.Kafka(t)
 	produce(t, cfg, 0, "m0", "m1", "m2", "m3")
 	starter := newFakeStarter()
@@ -406,21 +406,21 @@ func TestStreamer_RefusedPartIsSplit(t *testing.T) {
 		}
 		return nil
 	}
-	stream(t, cfg, "g", starter, bigEnough)
+	startRelay(t, cfg, "g", starter, bigEnough)
 	starter.waitFor(t, 4)
 	require.Equal(t, []string{"m0", "m1", "m2", "m3"}, starter.values(), "delivered in order")
 	require.Equal(t, []string{opID(t, cfg, 0, 0, 0), opID(t, cfg, 0, 1, 1), opID(t, cfg, 0, 2, 2), opID(t, cfg, 0, 3, 3)}, starter.ids)
 }
 
 // The topic's identity is asked for every batch, so a topic deleted and created again while the
-// streamer runs gets operation IDs of its own.
-func TestStreamer_IdentityIsCheckedForEveryBatch(t *testing.T) {
+// relay runs gets operation IDs of its own.
+func TestRelay_IdentityIsCheckedForEveryBatch(t *testing.T) {
 	cfg := testenv.Kafka(t)
 	var current atomic.Value
 	current.Store(kafka.TopicIdentity{Cluster: "c", TopicID: "first"})
 	starter := newFakeStarter()
-	stream(t, cfg, "g", starter, bigEnough, func(s *streamer) {
-		s.identify = func(context.Context) (kafka.TopicIdentity, error) { return current.Load().(kafka.TopicIdentity), nil }
+	startRelay(t, cfg, "g", starter, bigEnough, func(rl *relay) {
+		rl.identify = func(context.Context) (kafka.TopicIdentity, error) { return current.Load().(kafka.TopicIdentity), nil }
 	})
 
 	produce(t, cfg, 0, "m0")
@@ -437,7 +437,7 @@ func TestStreamer_IdentityIsCheckedForEveryBatch(t *testing.T) {
 
 // With DELETE_DEAD_LETTERS, a message that can't be delivered is deleted: nothing is written, and
 // the stream commits past it.
-func TestStreamer_DeleteDeadLetters(t *testing.T) {
+func TestRelay_DeleteDeadLetters(t *testing.T) {
 	cfg := testenv.Kafka(t)
 	produce(t, cfg, 0, "bad", "good")
 	starter := newFakeStarter()
@@ -447,9 +447,9 @@ func TestStreamer_DeleteDeadLetters(t *testing.T) {
 		}
 		return nil
 	}
-	r := stream(t, cfg, "g", starter, bigEnough, func(s *streamer) {
-		s.deleteDeadLetters = true
-		s.deadLetters = failingWriter{t}
+	r := startRelay(t, cfg, "g", starter, bigEnough, func(rl *relay) {
+		rl.deleteDeadLetters = true
+		rl.deadLetters = failingWriter{t}
 	})
 	starter.waitFor(t, 1)
 	require.Equal(t, []string{"good"}, starter.values())
@@ -458,7 +458,7 @@ func TestStreamer_DeleteDeadLetters(t *testing.T) {
 	r.stop()
 	produce(t, cfg, 0, "after")
 	next := newFakeStarter()
-	stream(t, cfg, "g", next, bigEnough)
+	startRelay(t, cfg, "g", next, bigEnough)
 	next.waitFor(t, 1)
 	require.Equal(t, []string{"after"}, next.values(), "the deleted message was committed past")
 }
@@ -473,11 +473,11 @@ func (w failingWriter) Write(context.Context, ...*kgo.Record) error {
 
 // A message too large to be an operation's input goes to the dead-letter topic without a start,
 // and no operation spans it: the messages on either side of it start separate operations.
-func TestStreamer_OversizedMessageGoesToTheDeadLetterTopic(t *testing.T) {
+func TestRelay_OversizedMessageGoesToTheDeadLetterTopic(t *testing.T) {
 	cfg := testenv.Kafka(t)
 	produce(t, cfg, 0, "small0", strings.Repeat("x", 500), "small1")
 	starter := newFakeStarter()
-	stream(t, cfg, "g", starter, 400)
+	startRelay(t, cfg, "g", starter, 400)
 	starter.waitFor(t, 2)
 	require.Equal(t, []string{"small0", "small1"}, starter.values())
 	require.Equal(t, []string{opID(t, cfg, 0, 0, 0), opID(t, cfg, 0, 2, 2)}, starter.ids)
@@ -508,7 +508,7 @@ func TestSourceKey(t *testing.T) {
 	require.NotEqual(t, key, sourceKey(kafka.TopicIdentity{Cluster: "cluster", TopicID: "recreated"}, "orders", "billing"))
 }
 
-// The streamer finds the topic's identity in Kafka.
+// The relay finds the topic's identity in Kafka.
 func TestIdentify(t *testing.T) {
 	cfg := testenv.Kafka(t)
 	id, err := kafka.Identify(context.Background(), cfg)
@@ -538,13 +538,13 @@ func TestConfigFromEnv(t *testing.T) {
 	t.Setenv("KAFKA_TOPIC", "events")
 	t.Setenv("KAFKA_GROUP", "")
 	t.Setenv("KAFKA_DEAD_LETTER_TOPIC", "")
-	t.Setenv("STREAM_ENDPOINT", "")
+	t.Setenv("RELAY_ENDPOINT", "")
 	t.Setenv("DELETE_DEAD_LETTERS", "")
 	_, err := configFromEnv()
-	require.EqualError(t, err, "set KAFKA_GROUP, STREAM_ENDPOINT")
+	require.EqualError(t, err, "set KAFKA_GROUP, RELAY_ENDPOINT")
 
 	t.Setenv("KAFKA_GROUP", "g")
-	t.Setenv("STREAM_ENDPOINT", "ep")
+	t.Setenv("RELAY_ENDPOINT", "ep")
 	_, err = configFromEnv()
 	require.ErrorContains(t, err, "set KAFKA_DEAD_LETTER_TOPIC, the topic undeliverable messages go to, or DELETE_DEAD_LETTERS=true")
 
@@ -575,7 +575,7 @@ func TestConfigFromEnv_DeleteDeadLetters(t *testing.T) {
 	t.Setenv("KAFKA_BROKERS", "localhost:9092")
 	t.Setenv("KAFKA_TOPIC", "events")
 	t.Setenv("KAFKA_GROUP", "g")
-	t.Setenv("STREAM_ENDPOINT", "ep")
+	t.Setenv("RELAY_ENDPOINT", "ep")
 	t.Setenv("KAFKA_DEAD_LETTER_TOPIC", "")
 	t.Setenv("DELETE_DEAD_LETTERS", "true")
 	cfg, err := configFromEnv()
@@ -593,14 +593,14 @@ func TestConfigFromEnv_DeleteDeadLetters(t *testing.T) {
 }
 
 // The startup report shows every setting, marks the ones left to their defaults, never shows the
-// password, and says what the streamer will do with undeliverable messages.
+// password, and says what the relay will do with undeliverable messages.
 func TestReport(t *testing.T) {
 	t.Setenv("KAFKA_BROKERS", "localhost:9092")
 	t.Setenv("KAFKA_TOPIC", "events")
 	t.Setenv("KAFKA_USERNAME", "connector")
 	t.Setenv("KAFKA_PASSWORD", "secret-password")
 	t.Setenv("KAFKA_GROUP", "g")
-	t.Setenv("STREAM_ENDPOINT", "ep")
+	t.Setenv("RELAY_ENDPOINT", "ep")
 	t.Setenv("KAFKA_DEAD_LETTER_TOPIC", "events-dlq")
 	t.Setenv("DELETE_DEAD_LETTERS", "")
 	t.Setenv("KAFKA_BATCH_SIZE", "")

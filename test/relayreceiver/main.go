@@ -1,4 +1,4 @@
-// Command streamreceiver receives the streamer's messages. For testing only.
+// Command relayreceiver receives the relay's messages. For testing only.
 //
 // It serves the KafkaMessageReceiver Nexus service. Each receive starts ReceiveWorkflow, which
 // logs the batch's messages. It connects with the standard TEMPORAL_* variables and the temporal CLI's
@@ -21,7 +21,7 @@ import (
 
 const (
 	defaultNamespace = "kafka-test"
-	// taskQueue is the receiver's task queue. The streamer's Nexus endpoint targets it.
+	// taskQueue is the receiver's task queue. The relay's Nexus endpoint targets it.
 	taskQueue = "kafka-receiver"
 )
 
@@ -36,7 +36,7 @@ const (
 //   - walk the batch and run an activity per message, in parallel or in order: each message
 //     retries on its own, but costs an Action.
 //
-// It doesn't loop. Each run handles one batch and returns. The loop is in the streamer, which
+// It doesn't loop. Each run handles one batch and returns. The loop is in the relay, which
 // starts a new receive operation, and so a new ReceiveWorkflow, for every batch it reads. The
 // worker in main keeps running and takes each one from the task queue.
 func ReceiveWorkflow(ctx workflow.Context, input kafkaapi.ReceiveInput) (kafkaapi.ReceiveOutput, error) {
@@ -77,7 +77,7 @@ func main() {
 	w.RegisterNexusService(svc)
 	w.RegisterWorkflow(ReceiveWorkflow)
 	log.Printf("Receiving on namespace %q, task queue %q", opts.Namespace, taskQueue)
-	// Run polls the task queue until interrupted: each batch the streamer delivers arrives as a
+	// Run polls the task queue until interrupted: each batch the relay delivers arrives as a
 	// receive operation, which starts a ReceiveWorkflow on this worker.
 	if err := w.Run(worker.InterruptCh()); err != nil {
 		log.Fatalf("Worker stopped: %v", err)

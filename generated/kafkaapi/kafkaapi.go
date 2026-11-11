@@ -9,7 +9,8 @@ import (
 	"github.com/nexus-rpc/sdk-go/nexus"
 )
 
-// Reads from and writes to the connector's Kafka topic. Served by the nexusworker.
+// Reads from and writes to one Kafka topic. Served by the Nexus Connector, which
+// decides the topic.
 var KafkaService = struct {
 	ServiceName string
 	// Acknowledge the previous batch, if given, then read the next batch for a consumer
@@ -23,8 +24,8 @@ var KafkaService = struct {
 	Write:       nexus.NewOperationReference[WriteInput, WriteOutput]("write"),
 }
 
-// The service the streamer delivers messages to. Implement it to receive the topic's
-// messages.
+// The service the Nexus Connector Relay delivers messages to. Implement it to receive
+// the topic's messages.
 var KafkaMessageReceiver = struct {
 	ServiceName string
 	// Receive a batch of messages from one partition of the topic.
@@ -211,8 +212,8 @@ func (m Message) MarshalJSON() ([]byte, error) {
 type ReadInput struct {
 	// Group Consumer group whose committed offsets mark where reading continues. Use one
 	// reader per group, and not a group any application consumes from live. Required
-	// unless the Nexus worker has a consumer group of its own (KAFKA_GROUP); then leave it
-	// empty or set it to that group
+	// unless the Nexus Connector has a consumer group of its own (KAFKA_GROUP); then leave
+	// it empty or set it to that group
 	Group *string `json:"group,omitempty"`
 	// BatchSize Most messages to return. 0 only acknowledges
 	BatchSize *int64 `json:"batchSize,omitempty"`
@@ -540,7 +541,7 @@ func (m ReceiveInput) MarshalJSON() ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// ReceiveOutput Empty: the streamer does not wait for a result.
+// ReceiveOutput Empty: the Nexus Connector Relay does not wait for a result.
 type ReceiveOutput struct {
 }
 

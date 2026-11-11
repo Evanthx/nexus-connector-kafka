@@ -1,9 +1,9 @@
 // Package nexuscaller is for testing only. Its workflows run in their own namespace and call the
-// nexusworker's KafkaService through Nexus endpoints, the way a real caller would: ReaderWorkflow
+// connector's KafkaService through Nexus endpoints, the way a real caller would: ReaderWorkflow
 // reads batches from one or more endpoints in a loop, and WriterWorkflow writes messages.
 //
-// Each Nexus worker serves one topic, so the endpoint a call goes to decides the topic. The
-// walkthrough in the README runs two Nexus workers on two topics, behind CustomersEndpoint and
+// Each connector serves one topic, so the endpoint a call goes to decides the topic. The
+// walkthrough in the README runs two connectors on two topics, behind CustomersEndpoint and
 // OrdersEndpoint, and one ReaderWorkflow that reads from both.
 package nexuscaller
 
@@ -22,10 +22,10 @@ const (
 	Namespace = "kafka-test"
 	// TaskQueue is the test caller worker's task queue.
 	TaskQueue = "kafka-nexuscaller"
-	// CustomersEndpoint routes to a Nexus worker serving the customers topic. That worker has no
+	// CustomersEndpoint routes to a connector serving the customers topic. That connector has no
 	// consumer group of its own, so each read names one.
 	CustomersEndpoint = "kafka-customers-endpoint"
-	// OrdersEndpoint routes to a second Nexus worker, serving the orders topic. That worker sets its
+	// OrdersEndpoint routes to a second connector, serving the orders topic. That connector sets its
 	// own consumer group (KAFKA_GROUP), so reads leave the group empty.
 	OrdersEndpoint = "kafka-orders-endpoint"
 )
@@ -34,16 +34,16 @@ const (
 // costs much less than reading often: while the topic is idle, each 60-second wait costs two
 // Actions (the read and its activity), where reading with no time limit and pausing 5 seconds
 // after each empty batch costs about three (the read, its activity, and a timer) every 5 seconds.
-// It is shorter than the nexusworker's 70-second heartbeat interval, so these reads send no
+// It is shorter than the connector's 70-second heartbeat interval, so these reads send no
 // heartbeats.
 const DefaultTimeLimitSeconds = 60
 
 // Source is one place ReaderWorkflow reads from.
 type Source struct {
-	// Endpoint is the Nexus endpoint to read through. Its Nexus worker decides the topic.
+	// Endpoint is the Nexus endpoint to read through. Its connector decides the topic.
 	Endpoint string
 	// Group is the consumer group to read for. Its committed offsets are where reading resumes.
-	// Leave it empty when the endpoint's Nexus worker has a consumer group of its own.
+	// Leave it empty when the endpoint's connector has a consumer group of its own.
 	Group string
 	// Position is where this source has been read up to. The next read from it acknowledges it.
 	// It is carried across continue-as-new.
@@ -133,7 +133,7 @@ func readBatch(ctx workflow.Context, source *Source, batchSize, timeLimitSeconds
 	err := kafkaService.ExecuteOperation(ctx, kafkaapi.KafkaService.Read, read, workflow.NexusOperationOptions{
 		// How long this workflow waits for the read, retries included. The read gives up 10
 		// seconds before this, or after its time limit plus five minutes if that comes first (or
-		// the Nexus worker's KAFKA_MAX_DURATION_MINUTES), and either way this workflow gets its
+		// the connector's KAFKA_MAX_DURATION_MINUTES), and either way this workflow gets its
 		// last error.
 		ScheduleToCloseTimeout: time.Duration(timeLimitSeconds)*time.Second + 10*time.Minute,
 	}).Get(ctx, &batch)
@@ -180,7 +180,7 @@ func ProcessRecord(ctx context.Context, rec kafkaapi.Record) error {
 
 // WriterInput starts WriterWorkflow.
 type WriterInput struct {
-	// Endpoint is the Nexus endpoint to write through. Its Nexus worker decides the topic.
+	// Endpoint is the Nexus endpoint to write through. Its connector decides the topic.
 	Endpoint string
 	// Messages are the messages to write, in order.
 	Messages []string
@@ -196,7 +196,7 @@ func WriterWorkflow(ctx workflow.Context, in WriterInput) (int64, error) {
 	}
 	var out kafkaapi.WriteOutput
 	err := kafkaService.ExecuteOperation(ctx, kafkaapi.KafkaService.Write, write, workflow.NexusOperationOptions{
-		// The write retries for up to ten minutes (or the Nexus worker's
+		// The write retries for up to ten minutes (or the connector's
 		// KAFKA_MAX_DURATION_MINUTES), and stops 10 seconds before this if that comes first.
 		ScheduleToCloseTimeout: 15 * time.Minute,
 	}).Get(ctx, &out)

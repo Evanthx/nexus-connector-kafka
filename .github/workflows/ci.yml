@@ -30,7 +30,7 @@ jobs:
       - name: Run workflowcheck
         run: go vet -vettool=$(go env GOPATH)/bin/workflowcheck ./...
 
-      # The end-to-end tests in streamer/ and nexusworker/ run a dev server with the temporal CLI.
+      # The end-to-end tests in relay/ and connector/ run a dev server with the temporal CLI.
       - name: Install the Temporal CLI
         run: |
           curl --silent --show-error --fail https://temporal.download/cli.sh | sh

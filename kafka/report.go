@@ -57,7 +57,7 @@ func (c Config) StartFromMeaning() string {
 }
 
 // Report formats a startup report: each section's settings, aligned, then what program (such as
-// "streamer") will do, one statement per line.
+// "relay") will do, one statement per line.
 func Report(program string, sections []Section, behavior []string) string {
 	width := 0
 	for _, section := range sections {

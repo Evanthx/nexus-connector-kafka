@@ -74,7 +74,7 @@ func TestTest_ReadsTheLastMessage(t *testing.T) {
 	cl.Close()
 
 	h := newServer()
-	req := testRequest{Program: "nexusworker", Values: map[string]string{"KAFKA_BROKERS": brokers, "KAFKA_TOPIC": "orders"}}
+	req := testRequest{Program: "connector", Values: map[string]string{"KAFKA_BROKERS": brokers, "KAFKA_TOPIC": "orders"}}
 	for range 2 { // the same message each time
 		resp := postTest(t, h, req)
 		require.True(t, resp.OK, resp.Error)
@@ -95,7 +95,7 @@ func resp(t *testing.T, h http.Handler) settingsResponse {
 
 func TestTest_ShowsTheWholeError(t *testing.T) {
 	clearEnv(t)
-	resp := postTest(t, newServer(), testRequest{Program: "streamer", Values: map[string]string{
+	resp := postTest(t, newServer(), testRequest{Program: "relay", Values: map[string]string{
 		"KAFKA_BROKERS": "localhost:1", "KAFKA_TOPIC": "orders", "KAFKA_START_FROM": "yesterday",
 	}})
 	require.False(t, resp.OK)
@@ -110,7 +110,7 @@ func TestTest_KeepsAnUnchangedSecretAndUnsetsBlanks(t *testing.T) {
 	t.Setenv("KAFKA_GROUP", "old-group")
 
 	postTest(t, newServer(), testRequest{
-		Program:     "streamer",
+		Program:     "relay",
 		Values:      map[string]string{"KAFKA_TOPIC": "orders", "TEMPORAL_API_KEY": ""},
 		KeepSecrets: map[string]bool{"KAFKA_PASSWORD": true},
 	})

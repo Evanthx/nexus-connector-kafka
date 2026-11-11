@@ -13,7 +13,7 @@ import (
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
-// ErrGroupInUse means the group has live members, such as a streamer or another application
+// ErrGroupInUse means the group has live members, such as a relay or another application
 // consuming from it, so Kafka won't accept commits from a reader that isn't one of them.
 var ErrGroupInUse = errors.New("the consumer group has live members")
 
@@ -268,7 +268,7 @@ func listBounds(ctx context.Context, admin *kadm.Client, topic string) (starts, 
 // and the partition's oldest and end offsets. A committed offset is used as is when it is still
 // in the log. Otherwise startFrom decides: the partition is new to the group, retention removed
 // the committed offset, or the topic was recreated so the offset is past the end. These are the
-// cases in which a streamer's Kafka client uses its reset offset too.
+// cases in which a relay's Kafka client uses its reset offset too.
 func startOffset(committed int64, known bool, oldest, end int64, startFrom StartFrom) int64 {
 	if known && committed >= oldest && committed <= end {
 		return committed

@@ -1,7 +1,7 @@
-// Command configui serves a page for working out the connector's environment variables. It shows
-// the variables set where it was started (passwords as asterisks), what each does and its default,
-// and lets you change them and test them by reading the topic's last message. It sets the
-// variables in its own process only; the page lists what to set for the streamer or Nexus worker.
+// Command configui serves a page for working out the environment variables of the connector or the
+// relay. It shows the variables set where it was started (passwords as asterisks), what each does
+// and its default, and lets you change them and test them by reading the topic's last message. It
+// sets the variables in its own process only; the page lists what to set for the program.
 //
 //	go run ./configui              # then open http://localhost:8090
 //	go run ./configui -addr localhost:9000

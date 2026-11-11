@@ -45,12 +45,12 @@ type activities struct {
 	maxDuration   time.Duration // the longest an operation may take (KAFKA_MAX_DURATION_MINUTES); 0 for the defaults
 }
 
-// errInvalidGroup means a read names no consumer group, or one this worker doesn't serve.
+// errInvalidGroup means a read names no consumer group, or one this connector doesn't serve.
 var errInvalidGroup = errors.New("invalid consumer group")
 
 // groupFor returns the consumer group a read uses, given the one it asked for ("" if none). A
-// worker with a consumer group of its own serves only that one, so a read may leave it out or
-// name it, but not name another. A worker without one serves any, so a read must name it.
+// connector with a consumer group of its own serves only that one, so a read may leave it out or
+// name it, but not name another. A connector without one serves any, so a read must name it.
 func (a *activities) groupFor(requested string) (string, error) {
 	switch {
 	case a.group == "" && requested == "":

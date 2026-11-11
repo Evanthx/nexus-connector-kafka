@@ -60,7 +60,7 @@
 <body>
 <main>
   <h1>Kafka connector settings</h1>
-  <p class="lead">Fill in the connector's environment variables, then <b>Test</b> them by reading the
+  <p class="lead">Fill in the program's environment variables, then <b>Test</b> them by reading the
     topic's last message. Blank means unset: the program uses the default shown.</p>
 
   <div class="panel programs" id="programs"></div>
@@ -75,7 +75,7 @@
   <h2>Variables to set</h2>
   <div class="panel">
     <p class="note" style="margin-top:0">These variables are the ones that you will need to have set in
-      the worker. They are not set by this UI, but are here to help you configure the system.
+      the program's environment. They are not set by this UI, but are here to help you configure the system.
       Variables left blank use their defaults and aren't listed. Passwords are shown as asterisks.</p>
     <pre class="exports" id="exports"></pre>
     <div class="missing" id="missing"></div>
@@ -84,7 +84,7 @@
 
 <script>
 "use strict";
-const state = { programs: [], program: "streamer", values: {}, secrets: {} };
+const state = { programs: [], program: "relay", values: {}, secrets: {} };
 // secrets[name]: "kept" (set in the server, unchanged), "typed" (a new value in the field), or "unset".
 
 const $ = (id) => document.getElementById(id);
@@ -238,8 +238,8 @@ async function runTest() {
 $("test").onclick = runTest;
 fetch("/api/settings").then((r) => r.json()).then((s) => {
   loadSettings(s);
-  // Start on the Nexus worker if only its settings are set.
-  if (!s.values.STREAM_ENDPOINT && (s.values.NEXUS_TASK_QUEUE || s.values.KAFKA_MAX_BATCH_BYTES)) state.program = "nexusworker";
+  // Start on the connector if only its settings are set.
+  if (!s.values.RELAY_ENDPOINT && (s.values.NEXUS_TASK_QUEUE || s.values.KAFKA_MAX_BATCH_BYTES)) state.program = "connector";
   render();
 }).catch((e) => showResult({ ok: false, step: "Load the current settings", error: String(e) }));
 </script>

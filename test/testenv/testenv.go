@@ -1,5 +1,6 @@
 // Package testenv is for tests only. It starts what the end-to-end tests need: an in-memory Kafka
-// and a Temporal dev server with the connector's and the test programs' namespaces.
+// and a Temporal dev server with the namespace the connector and the relay run in, and the test
+// programs' namespace.
 package testenv
 
 import (
@@ -18,15 +19,15 @@ import (
 )
 
 const (
-	// ConnectorNamespace is where the streamer and the nexusworker run.
+	// ConnectorNamespace is where the relay and the connector run.
 	ConnectorNamespace = "kafka-connector"
 	// TestNamespace is where the test programs run.
 	TestNamespace = "kafka-test"
 	// Topic is the topic Kafka starts with, with three partitions.
 	Topic = "customers"
-	// DeadLetterTopic is a second topic, for the streamer's dead letters.
+	// DeadLetterTopic is a second topic, for the relay's dead letters.
 	DeadLetterTopic = "customers-dead-letters"
-	// OrdersTopic is a second topic, with three partitions, for a second nexusworker.
+	// OrdersTopic is a second topic, with three partitions, for a second connector.
 	OrdersTopic = "orders"
 )
 
@@ -40,8 +41,8 @@ func Kafka(t *testing.T) kafka.Config {
 	return kafka.Config{Brokers: c.ListenAddrs(), Topic: Topic, StartFrom: kafka.StartFromOldest}
 }
 
-// Temporal starts a dev server with both namespaces and the dynamic config the connector needs,
-// and returns a client for each namespace. It skips the test if the temporal CLI isn't on the
+// Temporal starts a dev server with both namespaces and the dynamic config the connector and the
+// relay need, and returns a client for each namespace. It skips the test if the temporal CLI isn't on the
 // PATH, or with -short.
 func Temporal(t *testing.T) (connector, test client.Client) {
 	t.Helper()
@@ -59,9 +60,9 @@ func Temporal(t *testing.T) (connector, test client.Client) {
 		ClientOptions: &client.Options{Namespace: ConnectorNamespace},
 		ExtraArgs: []string{
 			"--namespace", TestNamespace,
-			// The nexusworker's operations complete through standalone activities' callbacks.
+			// The connector's operations complete through standalone activities' callbacks.
 			"--dynamic-config-value", "activity.enableCallbacks=true",
-			// The streamer starts standalone Nexus operations.
+			// The relay starts standalone Nexus operations.
 			"--dynamic-config-value", "nexusoperation.enableStandalone=true",
 		},
 	})

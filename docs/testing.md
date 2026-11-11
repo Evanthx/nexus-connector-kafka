@@ -17,15 +17,15 @@ What the tests cover:
   time limits, where a new group starts, groups in use, a topic created again), reading as a group
   member (commits, releasing a batch, a released first batch surviving a handoff, noticing a
   waiting rebalance, where it starts), fetch errors Kafka's client recovers from, and tombstones.
-- `streamer/`: delivery order, splitting batches to fit an input, commits, redelivery with the
+- `relay/`: delivery order, splitting batches to fit an input, commits, redelivery with the
   same operation IDs, the duplicate when a redelivered batch ends elsewhere, releasing a stuck
   batch for a rebalance, operation IDs' source key and its check on every batch, splitting a
   refused operation, which refusals count as undeliverable, retries, and the dead-letter topic.
   Its end-to-end tests start a dev server and deliver to a receiver in another namespace.
-- `nexusworker/`: that a read heartbeats before it reaches Kafka, which consumer groups a read may
+- `connector/`: that a read heartbeats before it reaches Kafka, which consumer groups a read may
   use, and that reads waiting for their batches don't hold up writes. Its end-to-end tests write
   and read across namespaces through the endpoint, refuse reads for the wrong consumer group, and
-  run the test caller's `ReaderWorkflow` against two Nexus workers serving two topics.
+  run the test caller's `ReaderWorkflow` against two connectors serving two topics.
 - `test/nexuscaller/`: that `ReaderWorkflow` acknowledges every batch, reads its sources in turn,
   and carries their positions across continue-as-new.
 
@@ -54,7 +54,7 @@ temporal server start-dev \
   --namespace kafka-test
 ```
 
-`kafka-connector` is where the streamer and the Nexus worker run, and `kafka-test` is where the
+`kafka-connector` is where the relay and the connector run, and `kafka-test` is where the
 test programs run. The Web UI is at <http://localhost:8233>.
 
 ### 2. Start Kafka and seed it (terminal 2)
@@ -66,7 +66,7 @@ test/kafka/scripts/seed.sh
 
 This starts a single-node Kafka on `localhost:9092` that requires a SASL/SCRAM login, and returns
 when it is up. The seed script creates two topics with 3 partitions each, `customers` and `orders`,
-plus `customers-dead-letters` for the streamer. It writes 10 messages to `customers` and 3 to
+plus `customers-dead-letters` for the relay. It writes 10 messages to `customers` and 3 to
 `orders`. The settings are in [`test/kafka/.env`](../test/kafka/.env).
 
 ## Method 1: stream messages into Temporal
@@ -78,18 +78,18 @@ temporal operator nexus endpoint create \
   --name kafka-receiver-endpoint \
   --target-namespace kafka-test \
   --target-task-queue kafka-receiver
-go run ./test/streamreceiver
+go run ./test/relayreceiver
 ```
 
-### 4. Start the streamer (terminal 3)
+### 4. Start the relay (terminal 3)
 
 ```bash
 set -a; source test/kafka/.env; set +a
-export KAFKA_GROUP=streamer KAFKA_DEAD_LETTER_TOPIC=customers-dead-letters STREAM_ENDPOINT=kafka-receiver-endpoint
-go run ./streamer
+export KAFKA_GROUP=relay KAFKA_DEAD_LETTER_TOPIC=customers-dead-letters RELAY_ENDPOINT=kafka-receiver-endpoint
+go run ./relay
 ```
 
-The streamer delivers the 10 seeded messages as one batch per partition. Terminal 2 logs each one:
+The relay delivers the 10 seeded messages as one batch per partition. Terminal 2 logs each one:
 
 ```
 INFO  Received message ... WorkflowID kafka-batch-customers-0-0-2 ... topic customers partition 0 offset 0 value seed message 1 of 10
@@ -103,18 +103,18 @@ Open another terminal; steps 9 and 10 use it too.
 test/kafka/scripts/produce.sh "hello from the console producer"
 ```
 
-Terminal 2 logs it within a second or two. **Leave the streamer running** before you go on.
+Terminal 2 logs it within a second or two. **Leave the relay running** before you go on.
 
 In the Web UI, `kafka-connector` shows one standalone Nexus operation per batch under Nexus, and
 `kafka-test` shows the `ReceiveWorkflow` each one started.
 
-## Method 2: read and write through the Nexus worker
+## Method 2: read and write through the connector
 
-Keep everything from steps 1 to 5 running. Each Nexus worker serves one topic behind a Nexus
-endpoint. Here two Nexus workers serve the two topics: `kafka-customers-endpoint` routes to
+Keep everything from steps 1 to 5 running. Each connector serves one topic behind a Nexus
+endpoint. Here two connectors serve the two topics: `kafka-customers-endpoint` routes to
 `customers`, and `kafka-orders-endpoint` routes to `orders`.
 
-### 6. Start a Nexus worker for the customers topic (terminal 4)
+### 6. Start a connector for the customers topic (terminal 4)
 
 ```bash
 temporal operator nexus endpoint create \
@@ -123,12 +123,12 @@ temporal operator nexus endpoint create \
   --target-task-queue nexus-connector-kafka \
   --description-file ./endpoint-description.md
 set -a; source test/kafka/.env; set +a
-go run ./nexusworker
+go run ./connector
 ```
 
 `KAFKA_GROUP` isn't set, so each read must name its own consumer group.
 
-### 7. Start a second Nexus worker for the orders topic (terminal 5)
+### 7. Start a second connector for the orders topic (terminal 5)
 
 ```bash
 temporal operator nexus endpoint create \
@@ -138,7 +138,7 @@ temporal operator nexus endpoint create \
   --description-file ./endpoint-description.md
 set -a; source test/kafka/.env; set +a
 export KAFKA_TOPIC=orders KAFKA_GROUP=orders-reader NEXUS_TASK_QUEUE=nexus-connector-kafka-orders
-go run ./nexusworker
+go run ./connector
 ```
 
 `KAFKA_GROUP` is set, so every read through this endpoint uses the consumer group `orders-reader`.
@@ -188,7 +188,7 @@ go run ./test/nexuscaller/starter write -endpoint kafka-orders-endpoint "first o
 ```
 
 Each command starts a `WriterWorkflow` and waits for it. Watch the reader in terminal 6 log the
-new messages on its next read. The streamer in terminal 2 also logs the two `customers` messages.
+new messages on its next read. The receiver in terminal 2 also logs the two `customers` messages, delivered by the relay.
 
 Each written message has a `dedupe-id` header; see them with `test/kafka/scripts/consume.sh [topic]`.
 

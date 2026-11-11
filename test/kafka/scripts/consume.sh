@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Prints every message in a topic, with its headers, then exits. Use it to see the dead-letter
-# topic, or the dedupe-id headers on messages the nexusworker wrote.
+# topic, or the dedupe-id headers on messages the connector wrote.
 #
 # Usage: test/kafka/scripts/consume.sh [topic]    (default: the topic in .env)
 set -euo pipefail

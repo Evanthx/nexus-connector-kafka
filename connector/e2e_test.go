@@ -65,7 +65,7 @@ func newHarness(t *testing.T) harness {
 }
 
 // start is newHarness serving the customers topic through CustomersEndpoint, with no consumer group of
-// its own. maxBatchBytes is the nexusworker's batch byte limit.
+// its own. maxBatchBytes is the connector's batch byte limit.
 func start(t *testing.T, maxBatchBytes int) harness {
 	t.Helper()
 	h := newHarness(t)
@@ -73,7 +73,7 @@ func start(t *testing.T, maxBatchBytes int) harness {
 	return h
 }
 
-// serve runs a nexusworker for cfg's topic on taskQueue, behind a Nexus endpoint, as one process
+// serve runs a connector for cfg's topic on taskQueue, behind a Nexus endpoint, as one process
 // of main would, with group as its KAFKA_GROUP.
 func (h harness) serve(t *testing.T, endpoint, taskQueue string, cfg kafka.Config, group string, maxBatchBytes int) {
 	t.Helper()
@@ -250,7 +250,7 @@ func TestEndToEnd_InvalidAck(t *testing.T) {
 	requireErrorType(t, err, ErrorTypeInvalidRequest)
 }
 
-// A group with a live member, such as a streamer's, can't be committed for, and the caller is told
+// A group with a live member, such as a relay's, can't be committed for, and the caller is told
 // so at once rather than after retries.
 func TestEndToEnd_GroupInUse(t *testing.T) {
 	h := start(t, defaultMaxBatchBytes)
@@ -320,9 +320,9 @@ func TestEndToEnd_ReaderWorkflow(t *testing.T) {
 	require.ElementsMatch(t, messages, got)
 }
 
-// Two nexusworkers serve two topics through two endpoints, as two processes of main would, and one
+// Two connectors serve two topics through two endpoints, as two processes of main would, and one
 // ReaderWorkflow reads each topic through its endpoint: the customers topic for a consumer group the
-// reader names, and the orders topic for the consumer group its nexusworker sets.
+// reader names, and the orders topic for the consumer group its connector sets.
 func TestEndToEnd_TwoEndpointsTwoTopics(t *testing.T) {
 	h := newHarness(t)
 	h.serve(t, nexuscaller.CustomersEndpoint, defaultTaskQueue, h.kafkaCfg, "", defaultMaxBatchBytes)
@@ -378,8 +378,8 @@ func TestEndToEnd_TwoEndpointsTwoTopics(t *testing.T) {
 	}
 }
 
-// A nexusworker with a consumer group of its own serves only that consumer group: a read may leave
-// group empty or name it, but naming another is refused at once. A nexusworker without one
+// A connector with a consumer group of its own serves only that consumer group: a read may leave
+// group empty or name it, but naming another is refused at once. A connector without one
 // refuses a read that names none.
 func TestEndToEnd_ConsumerGroupIsChecked(t *testing.T) {
 	h := newHarness(t)

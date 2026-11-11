@@ -14,7 +14,7 @@ import (
 )
 
 // nexusStarter starts each batch's operation as a standalone Nexus operation. It doesn't wait
-// for the operation to finish: the streamer only sends messages in.
+// for the operation to finish: the relay only sends messages in.
 type nexusStarter struct {
 	client    client.NexusClient
 	operation string

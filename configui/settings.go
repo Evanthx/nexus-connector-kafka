@@ -1,7 +1,7 @@
 package main
 
 // variable is one environment variable the page shows: what it does and its default, for a
-// program. Keep these in step with README's Settings table and the programs' config code.
+// program. Keep these in step with the full settings reference in docs/setup.md and the programs' config code.
 type variable struct {
 	Name     string `json:"name"`
 	Section  string `json:"section"`
@@ -11,7 +11,8 @@ type variable struct {
 	Secret   bool   `json:"secret"` // shown as asterisks, never sent to the page
 }
 
-// program is a way to run the connector, and the variables it reads.
+// program is one of the Kafka connector's two programs, the connector or the relay, and the
+// variables it reads.
 type program struct {
 	ID        string     `json:"id"`
 	Name      string     `json:"name"`
@@ -43,40 +44,40 @@ var temporalVariables = []variable{
 
 var programs = []program{
 	{
-		ID: "streamer", Name: "Streamer", Command: "go run ./streamer",
+		ID: "relay", Name: "Nexus Connector Relay", Command: "go run ./relay",
 		Variables: concat(kafkaVariables, []variable{
-			{Name: "KAFKA_GROUP", Section: "Streamer", Required: "yes",
-				Help: "The consumer group the streamer joins. Streamers with the same group share the topic's partitions. Don't share it with a Nexus worker reader or any other consumer."},
-			{Name: "KAFKA_DEAD_LETTER_TOPIC", Section: "Streamer", Required: "unless DELETE_DEAD_LETTERS is true",
+			{Name: "KAFKA_GROUP", Section: "Relay", Required: "yes",
+				Help: "The consumer group the relay joins. Relays with the same group share the topic's partitions. Don't share it with a connector reader or any other consumer."},
+			{Name: "KAFKA_DEAD_LETTER_TOPIC", Section: "Relay", Required: "unless DELETE_DEAD_LETTERS is true",
 				Help: "An existing topic, other than KAFKA_TOPIC, for messages too large to deliver. Set this or DELETE_DEAD_LETTERS=true, not both."},
-			{Name: "DELETE_DEAD_LETTERS", Section: "Streamer", Default: "false",
+			{Name: "DELETE_DEAD_LETTERS", Section: "Relay", Default: "false",
 				Help: "true to log and skip messages too large to deliver, instead of writing them to KAFKA_DEAD_LETTER_TOPIC."},
-			{Name: "KAFKA_BATCH_SIZE", Section: "Streamer", Default: "100",
+			{Name: "KAFKA_BATCH_SIZE", Section: "Relay", Default: "100",
 				Help: "The most messages in one batch, and so in one Nexus operation per partition. Set 1 for one operation per message, which also rules out a message being delivered twice."},
-			{Name: "KAFKA_BATCH_TIME_LIMIT", Section: "Streamer", Default: "0 (deliver as soon as there are messages)",
+			{Name: "KAFKA_BATCH_TIME_LIMIT", Section: "Relay", Default: "0 (deliver as soon as there are messages)",
 				Help: "How long a batch waits to fill, such as 500ms or 1s. Waiting makes fewer, fuller batches on a quiet topic, which costs fewer operations."},
-			{Name: "STREAM_ENDPOINT", Section: "Streamer", Required: "yes",
-				Help: "The Nexus endpoint the streamer delivers batches to. It routes to the receiver you implement."},
-			{Name: "STREAM_SERVICE", Section: "Streamer", Default: "KafkaMessageReceiver",
+			{Name: "RELAY_ENDPOINT", Section: "Relay", Required: "yes",
+				Help: "The Nexus endpoint the relay delivers batches to. It routes to the receiver you implement."},
+			{Name: "RELAY_SERVICE", Section: "Relay", Default: "KafkaMessageReceiver",
 				Help: "The Nexus service the receiver serves."},
-			{Name: "STREAM_OPERATION", Section: "Streamer", Default: "receive",
+			{Name: "RELAY_OPERATION", Section: "Relay", Default: "receive",
 				Help: "The operation started for each batch."},
-			{Name: "STREAM_OPERATION_TIMEOUT", Section: "Streamer", Default: "24h",
+			{Name: "RELAY_OPERATION_TIMEOUT", Section: "Relay", Default: "24h",
 				Help: "How long each operation may take, such as 30m or 24h. More than 0."},
-			{Name: "STREAM_MAX_INPUT_BYTES", Section: "Streamer", Default: "2031616 (2 MiB less 64 KiB)",
+			{Name: "RELAY_MAX_INPUT_BYTES", Section: "Relay", Default: "2031616 (2 MiB less 64 KiB)",
 				Help: "The largest encoded batch sent to one operation. Larger batches are split; a single larger message goes to the dead-letter topic."},
 		}, temporalVariables),
 	},
 	{
-		ID: "nexusworker", Name: "Nexus worker", Command: "go run ./nexusworker",
+		ID: "connector", Name: "Nexus Connector", Command: "go run ./connector",
 		Variables: concat(kafkaVariables, []variable{
-			{Name: "KAFKA_GROUP", Section: "Nexus worker", Default: "none: each read names its consumer group",
-				Help: "Set it to make every read through this worker use this one consumer group. Leave it blank to let each read name its own."},
-			{Name: "NEXUS_TASK_QUEUE", Section: "Nexus worker", Default: "nexus-connector-kafka",
-				Help: "The task queue the Nexus endpoint targets. Reads run on this name with -reads added. Give each Nexus worker for another topic or consumer group its own."},
-			{Name: "KAFKA_MAX_BATCH_BYTES", Section: "Nexus worker", Default: "2097152 (2 MiB)",
+			{Name: "KAFKA_GROUP", Section: "Connector", Default: "none: each read names its consumer group",
+				Help: "Set it to make every read through this connector use this one consumer group. Leave it blank to let each read name its own."},
+			{Name: "NEXUS_TASK_QUEUE", Section: "Connector", Default: "nexus-connector-kafka",
+				Help: "The task queue the Nexus endpoint targets. Reads run on this name with -reads added. Give each connector for another topic or consumer group its own."},
+			{Name: "KAFKA_MAX_BATCH_BYTES", Section: "Connector", Default: "2097152 (2 MiB)",
 				Help: "The most bytes a read's result may encode to. Temporal's payload limit is 2 MiB by default."},
-			{Name: "KAFKA_MAX_DURATION_MINUTES", Section: "Nexus worker", Default: "10 for a write; a read's time limit plus 5 for a read",
+			{Name: "KAFKA_MAX_DURATION_MINUTES", Section: "Connector", Default: "10 for a write; a read's time limit plus 5 for a read",
 				Help: "The longest an operation may keep retrying, in whole minutes, at least 1. Either way it stops 10 seconds before the caller's Nexus operation times out."},
 		}, temporalVariables),
 	},

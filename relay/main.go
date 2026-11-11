@@ -1,7 +1,7 @@
-// Command streamer streams the connector's topic into Temporal. It joins a consumer group and
-// starts one standalone Nexus operation per partition of each batch, through a Nexus endpoint. It
-// only sends messages in: it doesn't wait for results. Run several to share the topic's
-// partitions.
+// Command relay is the Nexus Connector Relay. It streams the topic named by KAFKA_TOPIC into
+// Temporal: it joins a consumer group and starts one standalone Nexus operation per partition of
+// each batch, through a Nexus endpoint. It only sends messages in: it doesn't wait for results. Run
+// several to share the topic's partitions.
 //
 // Settings come from the environment: see configFromEnv and kafka.ConfigFromEnv. It connects to
 // Temporal with the standard TEMPORAL_* variables and the temporal CLI's profile file; the
@@ -32,7 +32,7 @@ func main() {
 }
 
 // run streams until interrupted. It returns only after closing its connections, so leaving the
-// group hands this streamer's partitions to the others at once, even when it stops on an error.
+// group hands this relay's partitions to the others at once, even when it stops on an error.
 func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -81,7 +81,7 @@ func run() error {
 		defer deadLetters.Close()
 	}
 
-	s := &streamer{
+	r := &relay{
 		member:            member,
 		starter:           starter,
 		deadLetters:       deadLetters,
@@ -98,7 +98,7 @@ func run() error {
 	}
 	log.Printf("Streaming topic %q as group %q to endpoint %q, operation %s/%s",
 		cfg.kafka.Topic, cfg.group, cfg.endpoint, cfg.service, cfg.operation)
-	if err := s.run(ctx); err != nil {
+	if err := r.run(ctx); err != nil {
 		return fmt.Errorf("streaming stopped: %w", err)
 	}
 	return nil

@@ -75,8 +75,8 @@ func TestHeartbeatTiming(t *testing.T) {
 	require.Equal(t, 2*heartbeatInterval, readOptions("r", readQueue(defaultTaskQueue), kafkaapi.ReadInput{Group: ptr("g")}, time.Minute).HeartbeatTimeout)
 }
 
-// A worker with a consumer group of its own serves only that one; a worker without one needs each
-// read to name one.
+// A connector with a consumer group of its own serves only that one; a connector without one
+// needs each read to name one.
 func TestGroupFor(t *testing.T) {
 	fixed := &activities{group: "fixed"}
 	for _, requested := range []string{"", "fixed"} {
@@ -130,7 +130,7 @@ func TestSettingsFromEnv(t *testing.T) {
 	}
 }
 
-// The startup report says which consumer groups this Nexus worker serves and where to point its
+// The startup report says which consumer groups this connector serves and where to point its
 // endpoint, and never shows the password.
 func TestReport(t *testing.T) {
 	cfg := kafka.Config{Brokers: []string{"localhost:9092"}, Topic: "orders", Username: "connector", Password: "secret-password", StartFrom: kafka.StartFromOldest}
@@ -140,7 +140,7 @@ func TestReport(t *testing.T) {
 	report := fixed.report(cfg, "kafka-connector", "localhost:7233")
 	require.NotContains(t, report, "secret-password")
 	require.Contains(t, report, `Serve only the consumer group "orders-reader"`)
-	require.Contains(t, report, `point this worker's Nexus endpoint at it`)
+	require.Contains(t, report, `point this connector's Nexus endpoint at it`)
 	require.Contains(t, report, `"nexus-connector-kafka-orders-reads"`)
 	require.Regexp(t, `KAFKA_MAX_BATCH_BYTES +2097152 \(default\)`, report)
 
