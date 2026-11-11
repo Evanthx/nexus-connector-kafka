@@ -24,33 +24,34 @@ func readQueue(taskQueue string) string {
 }
 
 // readOptions are the options for the activity behind one read, on readTaskQueue. An attempt may
-// take the read's time limit plus a minute; the whole read, with retries, the time limit plus five
-// minutes. A worker that dies is noticed within the heartbeat timeout, twice the heartbeat
+// take the read's time limit plus a minute; the whole read, with retries, total (from
+// readScheduleToClose). A worker that dies is noticed within the heartbeat timeout, twice the heartbeat
 // interval, or at the start-to-close timeout if that comes first, as it does for a read of a
 // minute or less.
-func readOptions(requestID, readTaskQueue string, in kafkaapi.ReadInput) client.StartActivityOptions {
-	timeLimit := time.Duration(in.TimeLimitSecondsOrDefault()) * time.Second
+func readOptions(requestID, readTaskQueue string, in kafkaapi.ReadInput, total time.Duration) client.StartActivityOptions {
 	return client.StartActivityOptions{
 		ID:                     "kafka-read-" + requestID,
 		TaskQueue:              readTaskQueue,
-		StartToCloseTimeout:    timeLimit + time.Minute,
-		ScheduleToCloseTimeout: timeLimit + 5*time.Minute,
+		StartToCloseTimeout:    readAttempt(in),
+		ScheduleToCloseTimeout: total,
 		HeartbeatTimeout:       2 * heartbeatInterval,
 	}
 }
 
-// writeOptions are the options for the activity behind one write. Its ID is also the prefix of
-// each message's dedupe-id.
-func writeOptions(requestID string) client.StartActivityOptions {
+// writeOptions are the options for the activity behind one write, which may take total in all
+// (from writeScheduleToClose). Its ID is also the prefix of each message's dedupe-id.
+func writeOptions(requestID string, total time.Duration) client.StartActivityOptions {
 	return client.StartActivityOptions{
 		ID:                     "kafka-write-" + requestID,
 		StartToCloseTimeout:    time.Minute,
-		ScheduleToCloseTimeout: 10 * time.Minute,
+		ScheduleToCloseTimeout: total,
 	}
 }
 
 // newService builds the KafkaService Nexus service. Each operation starts one standalone
-// activity and completes when it does. The activity ID comes from the Nexus request ID, so a
+// activity and completes when it does. The activity stops trying shortly before the caller's
+// operation times out, so the caller gets its last error; an operation whose caller has too
+// little time left is refused before any activity starts. The activity ID comes from the Nexus request ID, so a
 // retried start of the same operation reaches the same activity. Reads run on readTaskQueue.
 func newService(a *activities, readTaskQueue string) *nexus.Service {
 	read := temporalnexus.MustNewTemporalOperation(temporalnexus.TemporalOperationOptions[kafkaapi.ReadInput, kafkaapi.ReadOutput]{
@@ -62,6 +63,10 @@ func newService(a *activities, readTaskQueue string) *nexus.Service {
 			if err == nil && in.Ack != nil {
 				err = a.reader.CheckAck(group, *in.Ack)
 			}
+			var total time.Duration
+			if err == nil {
+				total, err = readScheduleToClose(in, a.maxDuration, opts.Header.Get(nexus.HeaderOperationTimeout))
+			}
 			if err != nil {
 				return temporalnexus.TemporalOperationResult[kafkaapi.ReadOutput]{}, &nexus.HandlerError{
 					Type:  nexus.HandlerErrorTypeBadRequest,
@@ -69,13 +74,20 @@ func newService(a *activities, readTaskQueue string) *nexus.Service {
 				}
 			}
 			in.Group = &group
-			return temporalnexus.StartActivity(ctx, nc, readOptions(opts.RequestID, readTaskQueue, in), a.Read, in)
+			return temporalnexus.StartActivity(ctx, nc, readOptions(opts.RequestID, readTaskQueue, in, total), a.Read, in)
 		},
 	})
 	write := temporalnexus.MustNewTemporalOperation(temporalnexus.TemporalOperationOptions[kafkaapi.WriteInput, kafkaapi.WriteOutput]{
 		Name: kafkaapi.KafkaService.Write.Name(),
 		Start: func(ctx context.Context, nc temporalnexus.NexusClient, in kafkaapi.WriteInput, opts temporalnexus.StartTemporalOperationOptions) (temporalnexus.TemporalOperationResult[kafkaapi.WriteOutput], error) {
-			return temporalnexus.StartActivity(ctx, nc, writeOptions(opts.RequestID), a.Write, in)
+			total, err := writeScheduleToClose(a.maxDuration, opts.Header.Get(nexus.HeaderOperationTimeout))
+			if err != nil {
+				return temporalnexus.TemporalOperationResult[kafkaapi.WriteOutput]{}, &nexus.HandlerError{
+					Type:  nexus.HandlerErrorTypeBadRequest,
+					Cause: applicationError(err),
+				}
+			}
+			return temporalnexus.StartActivity(ctx, nc, writeOptions(opts.RequestID, total), a.Write, in)
 		},
 	})
 	svc := nexus.NewService(kafkaapi.KafkaService.ServiceName)

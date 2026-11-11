@@ -13,7 +13,7 @@ import (
 const (
 	// ErrorTypeInvalidRequest: the read names no consumer group, or one this endpoint doesn't serve;
 	// or the ack isn't a well-formed position for this group and topic, or is from an earlier topic
-	// of the same name. Positions aren't signed: callers are trusted to pass back what a read
+	// of the same name; or the caller's Nexus operation times out too soon to run it. Positions aren't signed: callers are trusted to pass back what a read
 	// returned.
 	ErrorTypeInvalidRequest = "InvalidRequest"
 	// ErrorTypeGroupInUse: the group has live members, such as a streamer, so its offsets can't
@@ -31,7 +31,7 @@ const (
 func applicationError(err error) error {
 	errType := ""
 	switch {
-	case errors.Is(err, kafka.ErrInvalidPosition), errors.Is(err, errInvalidGroup):
+	case errors.Is(err, kafka.ErrInvalidPosition), errors.Is(err, errInvalidGroup), errors.Is(err, errInvalidTimeout):
 		errType = ErrorTypeInvalidRequest
 	case errors.Is(err, kafka.ErrGroupInUse):
 		errType = ErrorTypeGroupInUse

@@ -84,6 +84,7 @@ CLI's profile file.
    | `KAFKA_USERNAME`, `KAFKA_PASSWORD` | If needed. |
    | `KAFKA_GROUP` | Optional. Set it to pin every read to one consumer group. Leave it unset to make each read name its own. |
    | `NEXUS_TASK_QUEUE` | Default `nexus-connector-kafka`. Give each Nexus worker for a different topic or consumer group its own. |
+   | `KAFKA_MAX_DURATION_MINUTES` | Optional. Longest a read or write retries, in whole minutes. Default 10 for a write, a read's time limit plus 5 for a read. |
 
 2. **Create a Nexus endpoint** that targets the connector's namespace and `NEXUS_TASK_QUEUE`
    exactly. Reads run on a second queue, `<NEXUS_TASK_QUEUE>-reads`; never target that one.
@@ -164,12 +165,16 @@ Failures that retrying can't fix are `ApplicationError`s:
 
 | Type | Cause | Fix |
 |---|---|---|
-| `InvalidRequest` | No consumer group named when the worker has none; a different one named when it has `KAFKA_GROUP`; a malformed `ack`, or one from a topic since deleted and recreated. | Fix the request. For a recreated topic, read without `ack`. |
+| `InvalidRequest` | No consumer group named when the worker has none; a different one named when it has `KAFKA_GROUP`; a malformed `ack`, or one from a topic since deleted and recreated; a caller's Nexus timeout too short to run the operation. | Fix the request. For a recreated topic, read without `ack`. For a timeout, give the call a longer one. |
 | `GroupInUse` | The consumer group has live members, such as a streamer. | Use another consumer group. |
 | `RecordTooLarge` | The next message doesn't fit in a read's result (`KAFKA_MAX_BATCH_BYTES`, 2 MiB). | It blocks that consumer group: tell the user. |
 | `Rejected` | Kafka refused a write, such as a message over the broker's size limit. | Fix the message. |
 
-Other failures are retried: a read for its time limit plus 5 minutes, a write for 10 minutes.
+Other failures are retried: a read for its time limit plus 5 minutes, a write for 10 minutes, or
+`KAFKA_MAX_DURATION_MINUTES` for either (a read never less than its time limit plus a minute).
+Retries stop 10 seconds before the caller's Nexus operation times out, if that comes first, so the
+caller gets the last error rather than a timeout. A caller timeout under a read's time limit plus
+10 seconds, or a write's 10 seconds, is refused at once with `InvalidRequest`.
 
 ## Work out settings with the user
 

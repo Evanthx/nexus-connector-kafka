@@ -40,8 +40,9 @@ type activities struct {
 	reader        *kafka.GroupReader
 	writer        *kafka.Writer
 	topic         string
-	group         string // the only consumer group reads may use (KAFKA_GROUP); "" lets callers choose
-	maxBatchBytes int    // the most bytes a read's result may encode to
+	group         string        // the only consumer group reads may use (KAFKA_GROUP); "" lets callers choose
+	maxBatchBytes int           // the most bytes a read's result may encode to
+	maxDuration   time.Duration // the longest an operation may take (KAFKA_MAX_DURATION_MINUTES); 0 for the defaults
 }
 
 // errInvalidGroup means a read names no consumer group, or one this worker doesn't serve.

@@ -30,6 +30,18 @@ func readOnce(ctx workflow.Context, endpoint string, in kafkaapi.ReadInput) (kaf
 	return out, err
 }
 
+// readWithin and writeWithin call read and write through endpoint once with the given Nexus
+// operation timeout.
+func readWithin(ctx workflow.Context, endpoint string, in kafkaapi.ReadInput, timeout time.Duration) error {
+	c := workflow.NewNexusClient(endpoint, kafkaapi.KafkaService.ServiceName)
+	return c.ExecuteOperation(ctx, kafkaapi.KafkaService.Read, in, workflow.NexusOperationOptions{ScheduleToCloseTimeout: timeout}).Get(ctx, nil)
+}
+
+func writeWithin(ctx workflow.Context, endpoint string, in kafkaapi.WriteInput, timeout time.Duration) error {
+	c := workflow.NewNexusClient(endpoint, kafkaapi.KafkaService.ServiceName)
+	return c.ExecuteOperation(ctx, kafkaapi.KafkaService.Write, in, workflow.NexusOperationOptions{ScheduleToCloseTimeout: timeout}).Get(ctx, nil)
+}
+
 type harness struct {
 	kafkaCfg  kafka.Config // for the customers topic
 	connector client.Client
@@ -44,6 +56,8 @@ func newHarness(t *testing.T) harness {
 	connector, test := testenv.Temporal(t)
 	caller := worker.New(test, nexuscaller.TaskQueue, worker.Options{})
 	caller.RegisterWorkflow(readOnce)
+	caller.RegisterWorkflow(readWithin)
+	caller.RegisterWorkflow(writeWithin)
 	caller.RegisterWorkflow(nexuscaller.WriterWorkflow)
 	require.NoError(t, caller.Start())
 	t.Cleanup(caller.Stop)
@@ -181,9 +195,45 @@ func TestEndToEnd_ReadWaitsForNewMessages(t *testing.T) {
 		written <- err
 	})
 	t.Cleanup(func() { require.NoError(t, <-written) })
-	out, err := h.read(t, kafkaapi.ReadInput{Group: ptr("g"), BatchSize: ptr(int64(1)), TimeLimitSeconds: ptr(int64(60))})
+	// The time limit must leave 10 seconds of readOnce's one-minute timeout, or the read is refused.
+	out, err := h.read(t, kafkaapi.ReadInput{Group: ptr("g"), BatchSize: ptr(int64(1)), TimeLimitSeconds: ptr(int64(30))})
 	require.NoError(t, err)
 	require.Equal(t, []string{"late"}, values(out.Records))
+}
+
+// A read or write whose caller's Nexus operation times out too soon to run it is refused before
+// any activity starts: a read needs its time limit plus 10 seconds, a write more than 10 seconds.
+func TestEndToEnd_CallerTimeoutTooShort(t *testing.T) {
+	h := start(t, defaultMaxBatchBytes)
+	for _, tc := range []struct {
+		name    string
+		wf      any
+		in      any
+		timeout time.Duration
+		wantMsg string
+	}{
+		{"read", readWithin, kafkaapi.ReadInput{Group: ptr("g"), TimeLimitSeconds: ptr(int64(30))}, 35 * time.Second,
+			"it needs more than timeLimitSeconds (30s) plus 10s"},
+		{"write", writeWithin, kafkaapi.WriteInput{Messages: []kafkaapi.Message{{Value: []byte("m")}}}, 8 * time.Second,
+			"it needs more than 10s"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run, err := h.test.ExecuteWorkflow(context.Background(), client.StartWorkflowOptions{TaskQueue: nexuscaller.TaskQueue},
+				tc.wf, nexuscaller.CustomersEndpoint, tc.in, tc.timeout)
+			require.NoError(t, err)
+			err = run.Get(context.Background(), nil)
+			var handlerErr *nexus.HandlerError
+			require.ErrorAs(t, err, &handlerErr)
+			require.Equal(t, nexus.HandlerErrorTypeBadRequest, handlerErr.Type)
+			requireErrorType(t, err, ErrorTypeInvalidRequest)
+			var appErr *temporal.ApplicationError
+			require.ErrorAs(t, err, &appErr)
+			require.Contains(t, appErr.Message(), tc.wantMsg)
+		})
+	}
+	out, err := h.read(t, kafkaapi.ReadInput{Group: ptr("g")})
+	require.NoError(t, err)
+	require.Empty(t, out.Records, "the refused write wrote nothing")
 }
 
 // An ack from another group is rejected before any activity starts.

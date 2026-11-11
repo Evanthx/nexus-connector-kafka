@@ -72,7 +72,7 @@ func TestRead_ShortReadDoesNotHeartbeat(t *testing.T) {
 func TestHeartbeatTiming(t *testing.T) {
 	read := time.Duration(nexuscaller.DefaultTimeLimitSeconds) * time.Second
 	require.Less(t, read, heartbeatInterval)
-	require.Equal(t, 2*heartbeatInterval, readOptions("r", readQueue(defaultTaskQueue), kafkaapi.ReadInput{Group: ptr("g")}).HeartbeatTimeout)
+	require.Equal(t, 2*heartbeatInterval, readOptions("r", readQueue(defaultTaskQueue), kafkaapi.ReadInput{Group: ptr("g")}, time.Minute).HeartbeatTimeout)
 }
 
 // A worker with a consumer group of its own serves only that one; a worker without one needs each
@@ -101,6 +101,7 @@ func TestSettingsFromEnv(t *testing.T) {
 	t.Setenv("KAFKA_GROUP", "")
 	t.Setenv("NEXUS_TASK_QUEUE", "")
 	t.Setenv("KAFKA_MAX_BATCH_BYTES", "")
+	t.Setenv(maxDurationEnvVar, "")
 	s, err := settingsFromEnv()
 	require.NoError(t, err)
 	require.Equal(t, settings{taskQueue: defaultTaskQueue, maxBatchBytes: defaultMaxBatchBytes}, s)
@@ -116,6 +117,17 @@ func TestSettingsFromEnv(t *testing.T) {
 	t.Setenv("KAFKA_MAX_BATCH_BYTES", "100")
 	_, err = settingsFromEnv()
 	require.ErrorContains(t, err, "KAFKA_MAX_BATCH_BYTES")
+	t.Setenv("KAFKA_MAX_BATCH_BYTES", "")
+
+	t.Setenv(maxDurationEnvVar, "90")
+	s, err = settingsFromEnv()
+	require.NoError(t, err)
+	require.Equal(t, 90*time.Minute, s.maxDuration)
+	for _, bad := range []string{"0", "-1", "1.5", "1h", " 2"} {
+		t.Setenv(maxDurationEnvVar, bad)
+		_, err = settingsFromEnv()
+		require.ErrorContains(t, err, maxDurationEnvVar, "value %q", bad)
+	}
 }
 
 // The startup report says which consumer groups this Nexus worker serves and where to point its

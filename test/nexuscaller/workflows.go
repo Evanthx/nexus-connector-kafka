@@ -131,9 +131,10 @@ func readBatch(ctx workflow.Context, source *Source, batchSize, timeLimitSeconds
 		source.Endpoint, timeLimitSeconds))
 	var batch kafkaapi.ReadOutput
 	err := kafkaService.ExecuteOperation(ctx, kafkaapi.KafkaService.Read, read, workflow.NexusOperationOptions{
-		// How long this workflow waits for the read, retries included. The read itself gives up
-		// after its time limit plus five minutes; this allows ten, so the read's own limit is
-		// what ends a failing read.
+		// How long this workflow waits for the read, retries included. The read gives up 10
+		// seconds before this, or after its time limit plus five minutes if that comes first (or
+		// the Nexus worker's KAFKA_MAX_DURATION_MINUTES), and either way this workflow gets its
+		// last error.
 		ScheduleToCloseTimeout: time.Duration(timeLimitSeconds)*time.Second + 10*time.Minute,
 	}).Get(ctx, &batch)
 	if err != nil {
@@ -195,7 +196,8 @@ func WriterWorkflow(ctx workflow.Context, in WriterInput) (int64, error) {
 	}
 	var out kafkaapi.WriteOutput
 	err := kafkaService.ExecuteOperation(ctx, kafkaapi.KafkaService.Write, write, workflow.NexusOperationOptions{
-		// The write itself retries for up to ten minutes; this waits a little longer.
+		// The write retries for up to ten minutes (or the Nexus worker's
+		// KAFKA_MAX_DURATION_MINUTES), and stops 10 seconds before this if that comes first.
 		ScheduleToCloseTimeout: 15 * time.Minute,
 	}).Get(ctx, &out)
 	if err != nil {

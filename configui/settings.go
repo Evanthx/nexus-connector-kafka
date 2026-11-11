@@ -76,6 +76,8 @@ var programs = []program{
 				Help: "The task queue the Nexus endpoint targets. Reads run on this name with -reads added. Give each Nexus worker for another topic or consumer group its own."},
 			{Name: "KAFKA_MAX_BATCH_BYTES", Section: "Nexus worker", Default: "2097152 (2 MiB)",
 				Help: "The most bytes a read's result may encode to. Temporal's payload limit is 2 MiB by default."},
+			{Name: "KAFKA_MAX_DURATION_MINUTES", Section: "Nexus worker", Default: "10 for a write; a read's time limit plus 5 for a read",
+				Help: "The longest an operation may keep retrying, in whole minutes, at least 1. Either way it stops 10 seconds before the caller's Nexus operation times out."},
 		}, temporalVariables),
 	},
 }

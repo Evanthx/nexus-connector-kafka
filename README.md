@@ -96,7 +96,7 @@ When it starts, the Nexus worker logs every setting, marking the defaults, and w
 with them, including the task queue to point its endpoint at. Like the streamer, it then waits
 for Kafka to answer, logging a warning every 5 seconds until it does, before it takes requests.
 If Kafka goes away later, each read fails with the reason and is retried until its time limit
-plus 5 minutes run out.
+plus 5 minutes run out, or until shortly before its caller's timeout (see [The Nexus worker](#the-nexus-worker)).
 
 ## Work out your settings in a browser
 
@@ -647,13 +647,17 @@ write can write a message twice. Each message gets a `dedupe-id` header,
 
 | Type | When |
 |---|---|
-| `InvalidRequest` | The read names no consumer group when the Nexus worker has none of its own, or names a different one when it has; or the `ack` isn't a well-formed position for this group and topic. These are rejected before any activity starts, as a `BAD_REQUEST` Nexus error. Also an `ack` from before the topic was deleted and created again. |
+| `InvalidRequest` | The read names no consumer group when the Nexus worker has none of its own, or names a different one when it has; or the `ack` isn't a well-formed position for this group and topic. These are rejected before any activity starts, as a `BAD_REQUEST` Nexus error, as is a caller's Nexus timeout too short to run the operation (see below). Also an `ack` from before the topic was deleted and created again. |
 | `GroupInUse` | The group has live members. |
 | `RecordTooLarge` | The next message doesn't fit in a result on its own. |
 | `Rejected` | Kafka refused the write, for example because a message is larger than the broker allows. |
 
 Other failures are retried. A read retries for its time limit plus 5 minutes, and a write for 10
-minutes. Retrying a read is safe: it commits the same `ack` again and reads the same batch again.
+minutes; `KAFKA_MAX_DURATION_MINUTES` on the Nexus worker sets one limit for both instead (a read
+never gets less than its time limit plus a minute). Retries also stop 10 seconds before the
+caller's Nexus operation times out, if that comes first, so the caller gets the last error rather
+than a timeout. A caller whose timeout is no more than a read's time limit plus 10 seconds, or 10
+seconds for a write, is refused at once with `InvalidRequest`. Retrying a read is safe: it commits the same `ack` again and reads the same batch again.
 
 ### The test caller
 
@@ -714,6 +718,7 @@ CLI's profile file. The namespace defaults to `kafka-connector`.
 | `KAFKA_USERNAME`, `KAFKA_PASSWORD` | both | SASL/SCRAM-SHA-256 login. Leave unset for no authentication. |
 | `KAFKA_START_FROM` | both | `oldest` (default) or `newest`; see [Where reading starts](#where-reading-starts). |
 | `KAFKA_MAX_BATCH_BYTES` | Nexus worker | Most bytes a read's result encodes to. Default 2097152. |
+| `KAFKA_MAX_DURATION_MINUTES` | Nexus worker | Longest a read or write retries, in whole minutes, at least 1. Default: 10 for a write, a read's time limit plus 5 for a read. Retries also stop 10 seconds before the caller's timeout. |
 | `KAFKA_GROUP` | streamer | The consumer group to join. Required. |
 | `KAFKA_GROUP` | Nexus worker | The only consumer group reads may use; see [The Nexus worker](#the-nexus-worker). Unset, each read names one. |
 | `NEXUS_TASK_QUEUE` | Nexus worker | The task queue its Nexus endpoint targets. Reads run on this name with `-reads` added. Default `nexus-connector-kafka`. |

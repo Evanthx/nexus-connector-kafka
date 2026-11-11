@@ -19,6 +19,7 @@ import (
 	"os/signal"
 	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/temporalio/nexus-connector-kafka/kafka"
 	"go.temporal.io/sdk/client"
@@ -81,7 +82,7 @@ func main() {
 	}
 	defer c.Close()
 
-	a := &activities{reader: reader, writer: writer, topic: cfg.Topic, group: s.group, maxBatchBytes: s.maxBatchBytes}
+	a := &activities{reader: reader, writer: writer, topic: cfg.Topic, group: s.group, maxBatchBytes: s.maxBatchBytes, maxDuration: s.maxDuration}
 	w, reads := newWorkers(c, s.taskQueue, a)
 	if err := reads.Start(); err != nil {
 		log.Fatalf("Failed to start the read worker: %v", err)
@@ -95,13 +96,15 @@ func main() {
 
 // settings are the Nexus worker's settings besides the topic's.
 type settings struct {
-	group         string // KAFKA_GROUP: the only consumer group reads may use; empty lets each read name one
-	taskQueue     string // NEXUS_TASK_QUEUE: the task queue the Nexus endpoint targets
-	maxBatchBytes int    // KAFKA_MAX_BATCH_BYTES: the most bytes a read's result may encode to
+	group         string        // KAFKA_GROUP: the only consumer group reads may use; empty lets each read name one
+	taskQueue     string        // NEXUS_TASK_QUEUE: the task queue the Nexus endpoint targets
+	maxBatchBytes int           // KAFKA_MAX_BATCH_BYTES: the most bytes a read's result may encode to
+	maxDuration   time.Duration // KAFKA_MAX_DURATION_MINUTES: the longest an operation may take; 0 for the defaults
 }
 
 // settingsFromEnv reads KAFKA_GROUP (optional), NEXUS_TASK_QUEUE (default nexus-connector-kafka),
-// and KAFKA_MAX_BATCH_BYTES (default 2 MiB, Temporal's payload limit).
+// KAFKA_MAX_BATCH_BYTES (default 2 MiB, Temporal's payload limit), and KAFKA_MAX_DURATION_MINUTES
+// (default: 10 minutes for a write, a read's time limit plus 5 minutes for a read).
 func settingsFromEnv() (settings, error) {
 	s := settings{group: os.Getenv("KAFKA_GROUP"), taskQueue: os.Getenv("NEXUS_TASK_QUEUE"), maxBatchBytes: defaultMaxBatchBytes}
 	if s.taskQueue == "" {
@@ -114,6 +117,11 @@ func settingsFromEnv() (settings, error) {
 		}
 		s.maxBatchBytes = n
 	}
+	maxDuration, err := readMaxDuration()
+	if err != nil {
+		return settings{}, err
+	}
+	s.maxDuration = maxDuration
 	return s, nil
 }
 
@@ -127,12 +135,17 @@ func (s settings) report(cfg kafka.Config, namespace, address string) string {
 		group.Value = "(not set: each read names its consumer group)"
 		groupBehavior = "Serve any consumer group: each read must name one; a read without one is refused."
 	}
+	maxDuration := kafka.Setting{Name: maxDurationEnvVar, Value: "(not set: 10m for a write, a read's time limit plus 5m for a read)"}
+	if s.maxDuration > 0 {
+		maxDuration.Value = s.maxDuration.String()
+	}
 	sections := []kafka.Section{
 		cfg.Settings(),
 		{Title: "Nexus worker", Settings: []kafka.Setting{
 			group,
 			kafka.EnvSetting("NEXUS_TASK_QUEUE", s.taskQueue),
 			kafka.EnvSetting("KAFKA_MAX_BATCH_BYTES", s.maxBatchBytes),
+			maxDuration,
 		}},
 		{Title: "Temporal", Settings: []kafka.Setting{
 			{Name: "namespace", Value: namespace},
