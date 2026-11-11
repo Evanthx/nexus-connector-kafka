@@ -1,7 +1,15 @@
 # AGENTS.md
 
-Instructions for AI agents that set up and run this connector. README.md has the full explanations;
-this file has what you need to act, and the mistakes to avoid.
+Instructions for AI agents that set up and run this connector. The `docs/` directory has the full
+user-facing documentation; this file has what you need to act, and the mistakes to avoid.
+
+| Doc | What is in it |
+|---|---|
+| [`docs/setup.md`](docs/setup.md) | Prerequisites, environment variables, creating endpoints, running the programs, configui, full settings reference. |
+| [`docs/testing.md`](docs/testing.md) | Demo walkthrough with a local dev server and Docker Kafka, unit tests. |
+| [`docs/clients.md`](docs/clients.md) | The contract, and generating typed clients for Go, Python, TypeScript, and Java. |
+| [`docs/how-it-works.md`](docs/how-it-works.md) | Folders, the contract, the streamer and Nexus worker in depth, cost, possible future changes. |
+| [`docs/troubleshooting.md`](docs/troubleshooting.md) | Startup diagnostics, error types, consumer group rules, known limitations. |
 
 ## What this is
 
@@ -71,7 +79,7 @@ CLI's profile file.
 
    Optional: `KAFKA_START_FROM` (`oldest`, the default, or `newest`), `KAFKA_BATCH_SIZE` (100),
    `KAFKA_BATCH_TIME_LIMIT` (0; `1s` lets batches fill on a quiet topic, which costs fewer
-   operations), `STREAM_OPERATION_TIMEOUT` (`24h`). The README's Settings table has the rest.
+   operations), `STREAM_OPERATION_TIMEOUT` (`24h`). `docs/setup.md` has the full settings table.
 6. **Scale out** by running more streamers with the same `KAFKA_GROUP`, up to one per partition.
 
 ## Run the Nexus worker
@@ -135,7 +143,7 @@ CLI's profile file.
     --query 'ExecutionStatus IN ("Failed", "TimedOut", "Canceled", "Terminated")'
   ```
 
-  README "When an operation fails" says how to replay them.
+  `docs/troubleshooting.md` has the replay steps.
 
 ## Check it is working
 
@@ -186,9 +194,9 @@ checks only the Kafka settings.
 
 ## Try it locally first
 
-README "Demo" runs everything with a local dev server and Docker Kafka (`test/kafka/`): both
-methods, two Nexus workers on two topics, and the example caller and receiver. Run it top to
-bottom without stopping programs in between.
+`docs/testing.md` has the full demo walkthrough with a local dev server and Docker Kafka
+(`test/kafka/`): both methods, two Nexus workers on two topics, and the example caller and
+receiver. Run it top to bottom without stopping programs in between.
 
 ## Changing the code
 
@@ -198,6 +206,7 @@ bottom without stopping programs in between.
 make test              # go test -race; end-to-end tests need `temporal` on PATH (no Docker: Kafka is kfake)
 go test -short ./...   # skip the end-to-end (dev server) tests
 go test ./kafka -run TestGroupReader_AckCommits -v
+make clients           # generate Go, Python, TypeScript and Java callers into .build/clients/ (not committed)
 make generate          # regenerate generated/kafkaapi from kafka.nexusrpc.yaml (downloads nexgen to .build/)
 make lint              # golangci-lint
 make ci                # vet, workflowcheck, lint, test

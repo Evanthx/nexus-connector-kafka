@@ -1,4 +1,4 @@
-.PHONY: generate build test lint fmt vet workflowcheck ci
+.PHONY: generate clients build test lint fmt vet workflowcheck ci
 
 # nexgen is downloaded from its GitHub release into .build/ the first time it is needed.
 NEXGEN_VERSION := 0.2.9
@@ -8,7 +8,7 @@ NEXGEN := .build/nexgen-$(NEXGEN_VERSION)
 
 $(NEXGEN):
 	mkdir -p .build
-	curl -sSfL https://github.com/temporalio/nexgen/releases/download/v$(NEXGEN_VERSION)/nexgen-v$(NEXGEN_VERSION)-$(NEXGEN_ARCH)-$(NEXGEN_OS).tar.gz | tar -xz -C .build nexgen
+	curl --silent --show-error --fail --location https://github.com/temporalio/nexgen/releases/download/v$(NEXGEN_VERSION)/nexgen-v$(NEXGEN_VERSION)-$(NEXGEN_ARCH)-$(NEXGEN_OS).tar.gz | tar --extract --gzip --directory .build nexgen
 	mv .build/nexgen $@
 
 # nexgen never deletes files, so a stale one from an earlier run would stay behind.
@@ -16,6 +16,14 @@ generate: $(NEXGEN)
 	rm -rf generated/kafkaapi
 	$(NEXGEN) go kafka.nexusrpc.yaml --output generated/kafkaapi
 	gofmt -w generated/kafkaapi
+
+# Generates callers in every language nexgen supports, to show what they look like. Not committed.
+clients: $(NEXGEN)
+	rm -rf .build/clients
+	$(NEXGEN) go kafka.nexusrpc.yaml --output .build/clients/go/kafkaapi
+	$(NEXGEN) python kafka.nexusrpc.yaml --output .build/clients/python/kafkaapi
+	$(NEXGEN) typescript kafka.nexusrpc.yaml --output .build/clients/typescript/kafkaapi
+	$(NEXGEN) java kafka.nexusrpc.yaml --output .build/clients/java/kafkaapi --package-name com.example.kafkaapi
 
 build:
 	go build ./...

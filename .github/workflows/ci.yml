@@ -33,7 +33,7 @@ jobs:
       # The end-to-end tests in streamer/ and nexusworker/ run a dev server with the temporal CLI.
       - name: Install the Temporal CLI
         run: |
-          curl -sSf https://temporal.download/cli.sh | sh
+          curl --silent --show-error --fail https://temporal.download/cli.sh | sh
           echo "$HOME/.temporalio/bin" >> "$GITHUB_PATH"
 
       - name: Run tests
