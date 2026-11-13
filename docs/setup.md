@@ -54,7 +54,7 @@ call it.
 | `KAFKA_GROUP` | The consumer group the relay joins. Relays with the same consumer group share the topic's partitions. |
 | `KAFKA_DEAD_LETTER_TOPIC` | An existing topic for messages that can't be delivered. Or leave it unset and set `DELETE_DEAD_LETTERS=true` to delete them instead. |
 | `RELAY_ENDPOINT` | The Nexus endpoint to deliver to. It routes to the service that receives the messages, `KafkaMessageReceiver.receive`. |
-| `TEMPORAL_ADDRESS`, `TEMPORAL_NAMESPACE` | Your Temporal server and namespace (default `kafka-connector`), plus `TEMPORAL_API_KEY` for Temporal Cloud. The namespace needs standalone Nexus operations. |
+| `TEMPORAL_ADDRESS`, `TEMPORAL_NAMESPACE` | Your Temporal server and namespace (default `connectors`), plus `TEMPORAL_API_KEY` for Temporal Cloud. The namespace needs standalone Nexus operations. |
 
 Then run:
 
@@ -78,7 +78,7 @@ The connector serves the topic as `KafkaService` with `read` and `write` operati
 | `KAFKA_USERNAME`, `KAFKA_PASSWORD` | A SASL/SCRAM-SHA-256 login, if your Kafka needs one. |
 | `KAFKA_GROUP` | Optional. The only consumer group reads may use. Leave it unset to let each read name its own. |
 | `NEXUS_TASK_QUEUE` | The task queue to serve (default `nexus-connector-kafka`). Give each connector for a different topic or consumer group its own. |
-| `TEMPORAL_ADDRESS`, `TEMPORAL_NAMESPACE` | Your Temporal server and namespace (default `kafka-connector`), plus `TEMPORAL_API_KEY` for Temporal Cloud. The namespace needs standalone activities with completion callbacks. |
+| `TEMPORAL_ADDRESS`, `TEMPORAL_NAMESPACE` | Your Temporal server and namespace (default `connectors`), plus `TEMPORAL_API_KEY` for Temporal Cloud. The namespace needs standalone activities with completion callbacks. |
 
 Then run:
 
@@ -95,7 +95,7 @@ Target the connector's namespace and `NEXUS_TASK_QUEUE` exactly. Reads run on a 
 ```bash
 temporal operator nexus endpoint create \
   --name <endpoint> \
-  --target-namespace kafka-connector \
+  --target-namespace connectors \
   --target-task-queue nexus-connector-kafka \
   --description-file ./endpoint-description.md
 ```
@@ -108,11 +108,11 @@ The namespace the connector and the relay run in needs two dynamic config values
 temporal server start-dev \
   --dynamic-config-value activity.enableCallbacks=true \
   --dynamic-config-value nexusoperation.enableStandalone=true \
-  --namespace kafka-connector \
+  --namespace connectors \
   --namespace kafka-test
 ```
 
-`kafka-connector` is where the relay and the connector run. `kafka-test` is where test
+The `connectors` namespace is where the relay and the connector run. `kafka-test` is where test
 programs run. On Temporal Cloud, confirm with Temporal that both features are enabled for your
 namespace.
 
@@ -141,6 +141,14 @@ Both programs connect to Temporal the way the `temporal` CLI does: set `TEMPORAL
 namespace's gRPC endpoint, `TEMPORAL_NAMESPACE` to your namespace name, and `TEMPORAL_API_KEY`
 to an API key. TLS settings (`TEMPORAL_TLS_*`) and the CLI's profile file also work.
 
+The namespace defaults to `connectors`. To use another, including `default`, set
+`TEMPORAL_NAMESPACE` or the profile file's `namespace`; the variable wins if both are set.
+
+All Nexus connectors default to the same `connectors` namespace. They are kept apart by task
+queue: each connector serves its own (`NEXUS_TASK_QUEUE`, default `nexus-connector-kafka`). Two
+Kafka connectors in one namespace, such as one per topic, need different `NEXUS_TASK_QUEUE`
+values.
+
 The namespace the connector and the relay run in needs:
 - **Standalone Nexus operations** (for the relay)
 - **Standalone activities with completion callbacks** (for the connector)
@@ -150,7 +158,7 @@ Confirm with Temporal that both are enabled for your namespace before running.
 ## Full settings reference
 
 Both programs connect to Temporal with `TEMPORAL_ADDRESS`, `TEMPORAL_NAMESPACE` (default
-`kafka-connector`), `TEMPORAL_API_KEY`, `TEMPORAL_TLS_*`, and the CLI's profile file.
+`connectors`), `TEMPORAL_API_KEY`, `TEMPORAL_TLS_*`, and the CLI's profile file.
 
 | Variable | Used by | Meaning |
 |---|---|---|

@@ -5,7 +5,7 @@
 //
 // Settings come from the environment: see configFromEnv and kafka.ConfigFromEnv. It connects to
 // Temporal with the standard TEMPORAL_* variables and the temporal CLI's profile file; the
-// namespace defaults to kafka-connector.
+// namespace defaults to connectors.
 package main
 
 import (
@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/temporalio/nexus-connector-kafka/kafka"
@@ -22,7 +23,7 @@ import (
 	"go.temporal.io/sdk/contrib/envconfig"
 )
 
-const defaultNamespace = "kafka-connector"
+const defaultNamespace = "connectors"
 
 func main() {
 	if err := run(); err != nil {
@@ -36,22 +37,41 @@ func main() {
 func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Check the relay's configuration and the connection to Temporal before stopping on
+	// either, so one run reports every problem rather than only the first.
+	var problems []string
 	cfg, err := configFromEnv()
 	if err != nil {
-		return fmt.Errorf("settings: %w", err)
+		problems = append(problems, "Invalid relay configuration:\n"+indent(err.Error()))
 	}
 	opts, err := envconfig.LoadDefaultClientOptions()
 	if err != nil {
-		return fmt.Errorf("temporal client settings: %w", err)
+		problems = append(problems, "Failed to load Temporal client configuration:\n"+indent(err.Error()))
 	}
 	if opts.Namespace == "" {
 		opts.Namespace = defaultNamespace
 	}
+	var c client.Client
+	if err == nil {
+		c, err = client.Dial(opts)
+		if err != nil {
+			problems = append(problems, "Failed to connect to Temporal:\n"+indent(err.Error()))
+		}
+	}
+	if len(problems) > 0 {
+		if c != nil {
+			c.Close()
+		}
+		return fmt.Errorf("the relay can't start:\n%s", strings.Join(problems, "\n"))
+	}
+	defer c.Close()
+
 	address := opts.HostPort
 	if address == "" {
 		address = client.DefaultHostPort
 	}
-	// Logged before connecting, so it shows even if connecting fails.
+	// Logged before connecting to Kafka, so it shows even if Kafka is slow to answer.
 	log.Print(cfg.report(opts.Namespace, address))
 	if err := kafka.ConnectAtStartup(ctx, cfg.kafka); err != nil {
 		if ctx.Err() != nil {
@@ -59,11 +79,6 @@ func run() error {
 		}
 		return err
 	}
-	c, err := client.Dial(opts)
-	if err != nil {
-		return fmt.Errorf("create Temporal client: %w", err)
-	}
-	defer c.Close()
 	starter, err := newNexusStarter(c, cfg)
 	if err != nil {
 		return err
@@ -102,4 +117,9 @@ func run() error {
 		return fmt.Errorf("streaming stopped: %w", err)
 	}
 	return nil
+}
+
+// indent prefixes each line of s with "  - ", one line per problem errors.Join reported.
+func indent(s string) string {
+	return "  - " + strings.ReplaceAll(s, "\n", "\n  - ")
 }

@@ -130,6 +130,15 @@ func TestSettingsFromEnv(t *testing.T) {
 	}
 }
 
+// settingsFromEnv collects all invalid values in one error rather than stopping at the first.
+func TestSettingsFromEnv_ReportsEveryInvalidValue(t *testing.T) {
+	t.Setenv("KAFKA_MAX_BATCH_BYTES", "100") // too small (≤ resultReserve)
+	t.Setenv(maxDurationEnvVar, "0")          // must be ≥ 1
+	_, err := settingsFromEnv()
+	require.ErrorContains(t, err, "KAFKA_MAX_BATCH_BYTES")
+	require.ErrorContains(t, err, maxDurationEnvVar)
+}
+
 // The startup report says which consumer groups this connector serves and where to point its
 // endpoint, and never shows the password.
 func TestReport(t *testing.T) {
@@ -137,7 +146,7 @@ func TestReport(t *testing.T) {
 	t.Setenv("NEXUS_TASK_QUEUE", "nexus-connector-kafka-orders")
 	t.Setenv("KAFKA_MAX_BATCH_BYTES", "")
 	fixed := settings{group: "orders-reader", taskQueue: "nexus-connector-kafka-orders", maxBatchBytes: defaultMaxBatchBytes}
-	report := fixed.report(cfg, "kafka-connector", "localhost:7233")
+	report := fixed.report(cfg, "connectors", "localhost:7233")
 	require.NotContains(t, report, "secret-password")
 	require.Contains(t, report, `Serve only the consumer group "orders-reader"`)
 	require.Contains(t, report, `point this connector's Nexus endpoint at it`)
@@ -145,6 +154,6 @@ func TestReport(t *testing.T) {
 	require.Regexp(t, `KAFKA_MAX_BATCH_BYTES +2097152 \(default\)`, report)
 
 	open := settings{taskQueue: defaultTaskQueue, maxBatchBytes: defaultMaxBatchBytes}
-	report = open.report(cfg, "kafka-connector", "localhost:7233")
+	report = open.report(cfg, "connectors", "localhost:7233")
 	require.Contains(t, report, "Serve any consumer group: each read must name one")
 }

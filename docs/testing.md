@@ -50,11 +50,11 @@ Run every command from the repository root.
 temporal server start-dev \
   --dynamic-config-value activity.enableCallbacks=true \
   --dynamic-config-value nexusoperation.enableStandalone=true \
-  --namespace kafka-connector \
+  --namespace connectors \
   --namespace kafka-test
 ```
 
-`kafka-connector` is where the relay and the connector run, and `kafka-test` is where the
+The `connectors` namespace is where the relay and the connector run, and `kafka-test` is where the
 test programs run. The Web UI is at <http://localhost:8233>.
 
 ### 2. Start Kafka and seed it (terminal 2)
@@ -105,8 +105,8 @@ test/kafka/scripts/produce.sh "hello from the console producer"
 
 Terminal 2 logs it within a second or two. **Leave the relay running** before you go on.
 
-In the Web UI, `kafka-connector` shows one standalone Nexus operation per batch under Nexus, and
-`kafka-test` shows the `ReceiveWorkflow` each one started.
+In the Web UI, the `connectors` namespace shows one standalone Nexus operation per batch under
+Nexus, and `kafka-test` shows the `ReceiveWorkflow` each one started.
 
 ## Method 2: read and write through the connector
 
@@ -119,7 +119,7 @@ endpoint. Here two connectors serve the two topics: `kafka-customers-endpoint` r
 ```bash
 temporal operator nexus endpoint create \
   --name kafka-customers-endpoint \
-  --target-namespace kafka-connector \
+  --target-namespace connectors \
   --target-task-queue nexus-connector-kafka \
   --description-file ./endpoint-description.md
 set -a; source test/kafka/.env; set +a
@@ -133,7 +133,7 @@ go run ./connector
 ```bash
 temporal operator nexus endpoint create \
   --name kafka-orders-endpoint \
-  --target-namespace kafka-connector \
+  --target-namespace connectors \
   --target-task-queue nexus-connector-kafka-orders \
   --description-file ./endpoint-description.md
 set -a; source test/kafka/.env; set +a

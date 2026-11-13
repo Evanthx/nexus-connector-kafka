@@ -44,7 +44,7 @@ same topic with separate consumer groups.
 └──────────────────────────────┘            │   batch)                        │
                                             └─────────────────────────────────┘
 
- namespace: kafka-test                       namespace: kafka-connector
+ namespace: kafka-test                       namespace: connectors
 ┌──────────────────────────────┐  Nexus     ┌─────────────────────────────────┐
 │ your workflow                │──────────▶ │ connector: KafkaService         │
 │  read(group, ack) in a loop  │  endpoint  │  read  → standalone activity    │

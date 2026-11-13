@@ -20,7 +20,7 @@ import (
 
 const (
 	// ConnectorNamespace is where the relay and the connector run.
-	ConnectorNamespace = "kafka-connector"
+	ConnectorNamespace = "connectors"
 	// TestNamespace is where the test programs run.
 	TestNamespace = "kafka-test"
 	// Topic is the topic Kafka starts with, with three partitions.

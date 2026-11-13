@@ -36,7 +36,7 @@ var kafkaVariables = []variable{
 var temporalVariables = []variable{
 	{Name: "TEMPORAL_ADDRESS", Section: "Temporal", Default: "localhost:7233",
 		Help: "The Temporal server's host:port. For Temporal Cloud, your namespace's gRPC endpoint. TLS settings (TEMPORAL_TLS_*) and the temporal CLI's profile file also work, as for the temporal CLI; this page doesn't show them."},
-	{Name: "TEMPORAL_NAMESPACE", Section: "Temporal", Default: "kafka-connector",
+	{Name: "TEMPORAL_NAMESPACE", Section: "Temporal", Default: "connectors",
 		Help: "The Temporal namespace the program connects to."},
 	{Name: "TEMPORAL_API_KEY", Section: "Temporal", Default: "none", Secret: true,
 		Help: "A Temporal Cloud API key, if the namespace uses API key authentication."},

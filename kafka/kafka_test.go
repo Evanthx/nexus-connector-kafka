@@ -701,5 +701,6 @@ func TestConfigFromEnv(t *testing.T) {
 	t.Setenv("KAFKA_TOPIC", "")
 	t.Setenv("KAFKA_BROKERS", "")
 	_, err = ConfigFromEnv()
-	require.EqualError(t, err, fmt.Sprintf("set %s and %s", "KAFKA_BROKERS", "KAFKA_TOPIC"))
+	require.EqualError(t, err, fmt.Sprintf("set %s and %s", "KAFKA_BROKERS", "KAFKA_TOPIC")+
+		"\nKAFKA_START_FROM must be oldest or newest, not \"latest\"", "every invalid value is reported")
 }

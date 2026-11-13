@@ -541,7 +541,7 @@ func TestConfigFromEnv(t *testing.T) {
 	t.Setenv("RELAY_ENDPOINT", "")
 	t.Setenv("DELETE_DEAD_LETTERS", "")
 	_, err := configFromEnv()
-	require.EqualError(t, err, "set KAFKA_GROUP, RELAY_ENDPOINT")
+	require.ErrorContains(t, err, "set KAFKA_GROUP, RELAY_ENDPOINT")
 
 	t.Setenv("KAFKA_GROUP", "g")
 	t.Setenv("RELAY_ENDPOINT", "ep")
@@ -606,7 +606,7 @@ func TestReport(t *testing.T) {
 	t.Setenv("KAFKA_BATCH_SIZE", "")
 	cfg, err := configFromEnv()
 	require.NoError(t, err)
-	report := cfg.report("kafka-connector", "localhost:7233")
+	report := cfg.report("connectors", "localhost:7233")
 	require.NotContains(t, report, "secret-password")
 	require.Contains(t, report, "KAFKA_PASSWORD is set")
 	require.Regexp(t, `KAFKA_BATCH_SIZE +100 \(default\)`, report)
@@ -618,7 +618,7 @@ func TestReport(t *testing.T) {
 	t.Setenv("DELETE_DEAD_LETTERS", "true")
 	cfg, err = configFromEnv()
 	require.NoError(t, err)
-	report = cfg.report("kafka-connector", "localhost:7233")
+	report = cfg.report("connectors", "localhost:7233")
 	require.Contains(t, report, "Delete messages that can't be delivered")
 	require.Regexp(t, `KAFKA_DEAD_LETTER_TOPIC +\(not set\)`, report)
 }

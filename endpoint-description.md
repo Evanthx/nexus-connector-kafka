@@ -1,4 +1,4 @@
-# nexus-connector-kafka
+# Kafka Connector
 
 Reads from and writes to one Kafka topic. The `KafkaService` service has two operations:
 

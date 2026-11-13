@@ -42,8 +42,11 @@ Each process serves one topic. For several topics, run one process per topic.
   SASL mechanisms are not supported: tell the user instead of working around it.
 
 Both programs connect to Temporal like the `temporal` CLI: `TEMPORAL_ADDRESS`,
-`TEMPORAL_NAMESPACE` (default `kafka-connector`), `TEMPORAL_API_KEY`, `TEMPORAL_TLS_*`, and the
-CLI's profile file.
+`TEMPORAL_NAMESPACE` (default `connectors`), `TEMPORAL_API_KEY`, `TEMPORAL_TLS_*`, and the
+CLI's profile file. `connectors` applies only when neither the variable nor the profile sets a
+namespace; any name works, including `default`. Nexus connectors share the `connectors`
+namespace and are kept apart by task queue, so two Kafka connectors in one namespace need
+different `NEXUS_TASK_QUEUE` values.
 
 ## Run the relay
 
@@ -100,7 +103,7 @@ CLI's profile file.
 
    ```bash
    temporal operator nexus endpoint create --name <endpoint> \
-     --target-namespace kafka-connector --target-task-queue nexus-connector-kafka \
+     --target-namespace connectors --target-task-queue nexus-connector-kafka \
      --description-file ./endpoint-description.md
    ```
 
@@ -148,7 +151,18 @@ CLI's profile file.
 
 ## Check it is working
 
-Both programs log, at startup:
+Both programs check their configuration and connect to Temporal at startup, before waiting for
+Kafka. If anything fails, the program reports every problem in one message and exits:
+
+```
+The connector can't start:
+Invalid connector configuration:
+  - KAFKA_MAX_BATCH_BYTES must be a number of bytes greater than 65536, not "100"
+Failed to connect to Temporal:
+  - failed reaching server: ... connection refused
+```
+
+If configuration and Temporal are OK, both programs log:
 
 1. A configuration report: every setting, defaults marked, the password shown only as set or not,
    then what the program will do. Read it back to the user to confirm the setup.
@@ -159,7 +173,6 @@ Both programs log, at startup:
    - `UNKNOWN_TOPIC_OR_PARTITION` means the topic doesn't exist.
 
    Fix the cause; the program carries on by itself once Kafka answers.
-3. Only after that does it connect to Temporal. A Temporal connection error exits the program.
 
 Then:
 - **Relay:** `INFO Delivered batch records=N` per batch. `temporal nexus operation list

@@ -103,7 +103,7 @@ still ends unsuccessfully if the receiving service fails it, it is cancelled or 
 runs past `RELAY_OPERATION_TIMEOUT`. To find these:
 
 ```bash
-temporal nexus operation list --namespace kafka-connector \
+temporal nexus operation list --namespace connectors \
   --query 'ExecutionStatus IN ("Failed", "TimedOut", "Canceled", "Terminated")'
 ```
 

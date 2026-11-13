@@ -34,10 +34,7 @@ type config struct {
 const defaultMaxInputBytes = 2*1024*1024 - 64*1024
 
 func configFromEnv() (config, error) {
-	kafkaCfg, err := kafka.ConfigFromEnv()
-	if err != nil {
-		return config{}, err
-	}
+	kafkaCfg, kafkaErr := kafka.ConfigFromEnv()
 	c := config{
 		kafka:           kafkaCfg,
 		group:           os.Getenv("KAFKA_GROUP"),
@@ -46,8 +43,15 @@ func configFromEnv() (config, error) {
 		service:         envOr("RELAY_SERVICE", kafkaapi.KafkaMessageReceiver.ServiceName),
 		operation:       envOr("RELAY_OPERATION", kafkaapi.KafkaMessageReceiver.Receive.Name()),
 	}
+	var errs []error
+	if kafkaErr != nil {
+		errs = append(errs, kafkaErr)
+	}
+	var err error
+	deleteDeadLettersOK := true
 	if c.deleteDeadLetters, err = boolean("DELETE_DEAD_LETTERS"); err != nil {
-		return config{}, err
+		errs = append(errs, err)
+		deleteDeadLettersOK = false
 	}
 	var missing []string
 	for name, v := range map[string]string{"KAFKA_GROUP": c.group, "RELAY_ENDPOINT": c.endpoint} {
@@ -57,34 +61,36 @@ func configFromEnv() (config, error) {
 	}
 	if len(missing) > 0 {
 		slices.Sort(missing)
-		return config{}, fmt.Errorf("set %s", strings.Join(missing, ", "))
+		errs = append(errs, fmt.Errorf("set %s", strings.Join(missing, ", ")))
 	}
-	switch {
-	case c.deadLetterTopic == "" && !c.deleteDeadLetters:
-		return config{}, errors.New("set KAFKA_DEAD_LETTER_TOPIC, the topic undeliverable messages go to, " +
-			"or DELETE_DEAD_LETTERS=true to delete them instead")
-	case c.deadLetterTopic != "" && c.deleteDeadLetters:
-		return config{}, errors.New("set KAFKA_DEAD_LETTER_TOPIC or DELETE_DEAD_LETTERS=true, not both: " +
-			"undeliverable messages either go to that topic or are deleted")
-	case c.deadLetterTopic == c.kafka.Topic:
-		return config{}, errors.New("KAFKA_DEAD_LETTER_TOPIC must differ from KAFKA_TOPIC")
+	if deleteDeadLettersOK {
+		switch {
+		case c.deadLetterTopic == "" && !c.deleteDeadLetters:
+			errs = append(errs, errors.New("set KAFKA_DEAD_LETTER_TOPIC, the topic undeliverable messages go to, "+
+				"or DELETE_DEAD_LETTERS=true to delete them instead"))
+		case c.deadLetterTopic != "" && c.deleteDeadLetters:
+			errs = append(errs, errors.New("set KAFKA_DEAD_LETTER_TOPIC or DELETE_DEAD_LETTERS=true, not both: "+
+				"undeliverable messages either go to that topic or are deleted"))
+		case c.deadLetterTopic != "" && c.deadLetterTopic == os.Getenv("KAFKA_TOPIC"):
+			// KAFKA_TOPIC from the environment: c.kafka is empty when kafka.ConfigFromEnv failed.
+			errs = append(errs, errors.New("KAFKA_DEAD_LETTER_TOPIC must differ from KAFKA_TOPIC"))
+		}
 	}
 	if c.batchSize, err = positiveInt("KAFKA_BATCH_SIZE", 100); err != nil {
-		return config{}, err
+		errs = append(errs, err)
 	}
 	if c.maxInputBytes, err = positiveInt("RELAY_MAX_INPUT_BYTES", defaultMaxInputBytes); err != nil {
-		return config{}, err
+		errs = append(errs, err)
 	}
 	if c.timeLimit, err = duration("KAFKA_BATCH_TIME_LIMIT", 0); err != nil {
-		return config{}, err
+		errs = append(errs, err)
 	}
 	if c.operationTimeout, err = duration("RELAY_OPERATION_TIMEOUT", 24*time.Hour); err != nil {
-		return config{}, err
+		errs = append(errs, err)
+	} else if c.operationTimeout == 0 {
+		errs = append(errs, errors.New("RELAY_OPERATION_TIMEOUT must be more than 0"))
 	}
-	if c.operationTimeout == 0 {
-		return config{}, errors.New("RELAY_OPERATION_TIMEOUT must be more than 0")
-	}
-	return c, nil
+	return c, errors.Join(errs...)
 }
 
 func envOr(name, def string) string {

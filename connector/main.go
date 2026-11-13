@@ -4,7 +4,7 @@
 //
 // It reads the topic's settings from KAFKA_* environment variables (see kafka.ConfigFromEnv), and
 // its own (see settingsFromEnv). It connects to Temporal with the standard TEMPORAL_* variables
-// and the temporal CLI's profile file; the namespace defaults to kafka-connector.
+// and the temporal CLI's profile file; the namespace defaults to connectors.
 //
 // One process serves one topic through one Nexus endpoint. To serve another topic, or the same
 // topic for a fixed consumer group, run another process with its own KAFKA_TOPIC or KAFKA_GROUP
@@ -13,11 +13,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -28,19 +30,41 @@ import (
 )
 
 const (
-	defaultNamespace     = "kafka-connector"
+	defaultNamespace     = "connectors"
 	defaultMaxBatchBytes = 2 * 1024 * 1024
 )
 
 func main() {
-	cfg, err := kafka.ConfigFromEnv()
-	if err != nil {
-		log.Fatalf("Kafka settings: %v", err)
+	// Check the connector's configuration and the connection to Temporal before stopping on
+	// either, so one run reports every problem rather than only the first.
+	var problems []string
+	cfg, kafkaErr := kafka.ConfigFromEnv()
+	s, settingsErr := settingsFromEnv()
+	if err := errors.Join(kafkaErr, settingsErr); err != nil {
+		problems = append(problems, "Invalid connector configuration:\n"+indent(err.Error()))
 	}
-	s, err := settingsFromEnv()
+	opts, err := envconfig.LoadDefaultClientOptions()
 	if err != nil {
-		log.Fatal(err)
+		problems = append(problems, "Failed to load Temporal client configuration:\n"+indent(err.Error()))
 	}
+	if opts.Namespace == "" {
+		opts.Namespace = defaultNamespace
+	}
+	var c client.Client
+	if err == nil {
+		c, err = client.Dial(opts)
+		if err != nil {
+			problems = append(problems, "Failed to connect to Temporal:\n"+indent(err.Error()))
+		}
+	}
+	if len(problems) > 0 {
+		if c != nil {
+			c.Close()
+		}
+		log.Fatalf("The connector can't start:\n%s", strings.Join(problems, "\n"))
+	}
+	defer c.Close()
+
 	// Records encode larger than Kafka sends them (base64 in JSON), so a fetch of this size holds
 	// a full batch or more.
 	reader, err := kafka.NewGroupReader(cfg, recordBytes(s.maxBatchBytes))
@@ -54,18 +78,11 @@ func main() {
 	}
 	defer writer.Close()
 
-	opts, err := envconfig.LoadDefaultClientOptions()
-	if err != nil {
-		log.Fatalf("Temporal client settings: %v", err)
-	}
-	if opts.Namespace == "" {
-		opts.Namespace = defaultNamespace
-	}
 	address := opts.HostPort
 	if address == "" {
 		address = client.DefaultHostPort
 	}
-	// Logged before connecting, so it shows even if connecting fails.
+	// Logged before connecting to Kafka, so it shows even if Kafka is slow to answer.
 	log.Print(s.report(cfg, opts.Namespace, address))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -76,11 +93,6 @@ func main() {
 		}
 		log.Fatal(err)
 	}
-	c, err := client.Dial(opts)
-	if err != nil {
-		log.Fatalf("Failed to create Temporal client: %v", err)
-	}
-	defer c.Close()
 
 	a := &activities{reader: reader, writer: writer, topic: cfg.Topic, group: s.group, maxBatchBytes: s.maxBatchBytes, maxDuration: s.maxDuration}
 	w, reads := newWorkers(c, s.taskQueue, a)
@@ -92,6 +104,11 @@ func main() {
 	if err := w.Run(worker.InterruptCh()); err != nil {
 		log.Fatalf("Worker stopped: %v", err)
 	}
+}
+
+// indent prefixes each line of s with "  - ", one line per problem errors.Join reported.
+func indent(s string) string {
+	return "  - " + strings.ReplaceAll(s, "\n", "\n  - ")
 }
 
 // settings are the connector's settings besides the topic's.
@@ -110,19 +127,21 @@ func settingsFromEnv() (settings, error) {
 	if s.taskQueue == "" {
 		s.taskQueue = defaultTaskQueue
 	}
+	var errs []error
 	if v := os.Getenv("KAFKA_MAX_BATCH_BYTES"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n <= resultReserve {
-			return settings{}, fmt.Errorf("KAFKA_MAX_BATCH_BYTES must be a number of bytes greater than %d, not %q", resultReserve, v)
+			errs = append(errs, fmt.Errorf("KAFKA_MAX_BATCH_BYTES must be a number of bytes greater than %d, not %q", resultReserve, v))
+		} else {
+			s.maxBatchBytes = n
 		}
-		s.maxBatchBytes = n
 	}
 	maxDuration, err := readMaxDuration()
 	if err != nil {
-		return settings{}, err
+		errs = append(errs, err)
 	}
 	s.maxDuration = maxDuration
-	return s, nil
+	return s, errors.Join(errs...)
 }
 
 // report is the configuration and what the connector will do with it, for the log when it

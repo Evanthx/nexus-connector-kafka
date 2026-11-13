@@ -9,6 +9,7 @@ package kafka
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -61,16 +62,20 @@ func ConfigFromEnv() (Config, error) {
 	if c.Topic == "" {
 		missing = append(missing, "KAFKA_TOPIC")
 	}
+	var errs []error
 	if len(missing) > 0 {
 		slices.Sort(missing)
-		return Config{}, fmt.Errorf("set %s", strings.Join(missing, " and "))
+		errs = append(errs, fmt.Errorf("set %s", strings.Join(missing, " and ")))
 	}
 	switch c.StartFrom {
 	case "":
 		c.StartFrom = StartFromOldest
 	case StartFromOldest, StartFromNewest:
 	default:
-		return Config{}, fmt.Errorf("KAFKA_START_FROM must be %s or %s, not %q", StartFromOldest, StartFromNewest, c.StartFrom)
+		errs = append(errs, fmt.Errorf("KAFKA_START_FROM must be %s or %s, not %q", StartFromOldest, StartFromNewest, c.StartFrom))
+	}
+	if err := errors.Join(errs...); err != nil {
+		return Config{}, err
 	}
 	return c, nil
 }

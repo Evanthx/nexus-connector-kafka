@@ -19,8 +19,20 @@ Common reasons:
 | `SASL_AUTHENTICATION_FAILED` | Username or password wrong. | Check `KAFKA_USERNAME` and `KAFKA_PASSWORD`. |
 | `UNKNOWN_TOPIC_OR_PARTITION` | Topic doesn't exist. | Create the topic or check `KAFKA_TOPIC`. |
 
-Once Kafka answers, it logs `Connected to Kafka brokers=... topic=... cluster=...`. Only then
-does it connect to Temporal. A Temporal connection error exits the program.
+Once Kafka answers, it logs `Connected to Kafka brokers=... topic=... cluster=...`.
+
+Before waiting for Kafka, both programs verify their configuration and connect to Temporal.
+If anything fails, the program reports every problem in one message rather than stopping at the
+first:
+
+```
+The connector can't start:
+Invalid connector configuration:
+  - KAFKA_MAX_BATCH_BYTES must be a number of bytes greater than 65536, not "100"
+  - KAFKA_MAX_DURATION_MINUTES must be a whole number of minutes, at least 1, not "0"
+Failed to connect to Temporal:
+  - failed reaching server: ... connection refused
+```
 
 ## Errors from `read` and `write`
 
@@ -60,7 +72,7 @@ A batch is committed once Temporal accepts its operation. Find operations that e
 unsuccessfully:
 
 ```bash
-temporal nexus operation list --namespace kafka-connector \
+temporal nexus operation list --namespace connectors \
   --query 'ExecutionStatus IN ("Failed", "TimedOut", "Canceled", "Terminated")'
 ```
 
