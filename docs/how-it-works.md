@@ -7,9 +7,9 @@ Nexus Connector Relay, called the relay.
 
 | Folder | What is in it |
 |---|---|
-| `kafka/` | Kafka code both methods share: connecting, reading in batches, writing, dead letters. No Temporal code. `settings.go` declares the Kafka variables both programs read. |
+| `kafka/` | Kafka code both programs share: connecting, reading in batches, writing, dead letters. No Temporal code. `settings.go` declares the Kafka variables both programs read. |
 | `relay/` | Method 1: the relay, which streams each message into Temporal. |
-| `connector/` | Method 2: the connector, which serves `read` and `write` as Nexus operations. |
+| `connector/` | Method 2: the connector, which serves `write` as a Nexus operation. |
 | `setup/` | Every environment variable each program reads (`setup.Relay`, `setup.Connector`), with its help, default and check, and the Temporal client options. The programs load their configuration through it. |
 | `settings/` | Declaring and reading environment variables: `Program`, `Variable`, `Env` (the process's or a map). The only code that reads the process's environment; a test fails if any other does. Also generates the tables in `docs/setup.md`. The same in every Go connector repo. |
 | `configui/` | The setup page (`make configui`): shows `setup.Relay` and `setup.Connector`, tests values without changing any environment, and lists the `export` lines; see [Setup](setup.md#work-out-your-settings-in-a-browser). Not part of either program. `configui/gendocs` writes `docs/setup.md`'s tables (`make docs`). |
@@ -23,7 +23,7 @@ description for the connector's Nexus endpoint.
 
 [`kafka.nexusrpc.yaml`](../kafka.nexusrpc.yaml) defines two Nexus services:
 
-- **`KafkaService`**, served by the connector: `read` and `write`.
+- **`KafkaService`**, served by the connector: `write`.
 - **`KafkaMessageReceiver`**, which the relay calls: `receive`, one call per batch, with the
   batch's messages from one partition in offset order. You implement it to receive the topic's
   messages.
@@ -43,14 +43,10 @@ downloads nexgen into `.build/` the first time. CI fails if the generated code i
 
 ## Reading in batches
 
-Both methods read in batches, with the same rule. Given a batch size and a time limit, a read
-returns as soon as it has the batch size. Otherwise it returns what it has when the time limit
-passes. With no time limit, it returns what Kafka has right away:
-
-- **The connector** returns the messages already in the topic, up to the batch size, or an
-  empty batch if there are none.
-- **The relay** waits until Kafka has messages, then returns the first ones Kafka sends, up to
-  the batch size.
+The relay reads in batches. Given a batch size (`KAFKA_BATCH_SIZE`) and a time limit
+(`KAFKA_BATCH_TIME_LIMIT`), a batch is complete as soon as it has the batch size. Otherwise it
+holds what has arrived when the time limit passes. With no time limit, the relay waits until Kafka
+has messages, then takes the first ones Kafka sends, up to the batch size.
 
 Messages from one partition are always in order.
 
@@ -59,8 +55,8 @@ Messages from one partition are always in order.
 A group that has committed offsets continues after them. For a partition the group has no
 committed offset for (a new group, or a partition added to the topic), `KAFKA_START_FROM` decides:
 `oldest`, the default, starts at the oldest message still in the topic, and `newest` reads only
-messages written from then on. Both methods commit a start chosen this way before reading from it,
-so a retried read starts at the same place even with `newest`.
+messages written from then on. The relay commits a start chosen this way before reading from it,
+so a relay that stops before its first commit starts at the same place even with `newest`.
 
 ## The relay
 
@@ -117,46 +113,15 @@ See [Troubleshooting](troubleshooting.md#when-a-relay-operation-fails) for how t
 choose it. To serve several topics, run a connector for each, every one with its own
 `NEXUS_TASK_QUEUE` and a Nexus endpoint that targets it.
 
-**The consumer group.** A connector started with `KAFKA_GROUP` serves only that consumer group;
-a read that names another fails with `InvalidRequest`. A connector without `KAFKA_GROUP` serves
-any consumer group, and a read must name one. The connector never joins the group: it uses the
-group only to store offsets, so any connector process can serve any read.
-
-**`read(group, batchSize, timeLimitSeconds, ack)`** returns a batch of records and a `position`.
-Pass the position back as `ack` on your next read. A read with an `ack` commits it first, then
-reads from there. See [Usage](../AGENTS.md#run-the-connector) for the read loop pattern.
-
-**One reader per group.** Two readers of one group read the same batches. Make the caller's
-workflow ID name its endpoint and consumer group to prevent a second from starting.
-
-**Don't use a group that has live members**, such as the relay's. Kafka won't let a non-member
-commit for such a group, so reads fail with `GroupInUse`.
-
-**Reads and writes run on separate task queues.** The endpoint targets `NEXUS_TASK_QUEUE`
-(`nexus-connector-kafka` by default), where Nexus operations and writes run. Reads run on the same
-name with `-reads` added, capped at 8 concurrent readers so a read never waits for a consumer.
+**One task queue.** The endpoint targets `NEXUS_TASK_QUEUE` (`nexus-connector-kafka` by default).
+One worker on it runs the Nexus operations and the writes.
 
 **`write(messages)`** writes messages in order and waits for Kafka to acknowledge them. Each
 message gets a `dedupe-id` header, `<activity ID>-<index>`, the same on every retry attempt.
+[`test/nexuscaller/workflows.go`](../test/nexuscaller/workflows.go) (`WriterWorkflow`) shows a
+call.
 
-**Each read heartbeats** every 70 seconds until it returns, starting 70 seconds in. A read that
-returns within 70 seconds sends no heartbeat (each heartbeat is a billable Action). A worker that
-dies during such a read is noticed at its start-to-close timeout instead.
-
-**Batch size in bytes.** A read's result is at most `KAFKA_MAX_BATCH_BYTES` (2 MiB by default).
-A message too large to fit on its own fails with `RecordTooLarge` and blocks the group's reads.
-
-## The test caller
-
-[`test/nexuscaller/workflows.go`](../test/nexuscaller/workflows.go) shows how to read in a loop
-from one or more Nexus endpoints. `ReaderWorkflow` takes a list of sources, each an endpoint and a
-consumer group. Each pass reads a batch from each source in turn, processes its messages in parallel
-(one activity each), and acknowledges the batch on its next read. When Temporal suggests it
-(because the history is getting long), it continues as new and passes each source's position to the
-new run.
-
-One activity per message shows messages processed in parallel, but it is the expensive choice:
-see [Cost](#cost).
+**The connector doesn't read.** To consume the topic, run the relay.
 
 ## Cost
 
@@ -164,25 +129,25 @@ Temporal Cloud bills by [Action](https://docs.temporal.io/evaluate/cloud/actions
 
 - **The relay:** one standalone Nexus operation per partition in each batch, plus whatever the
   receiving service starts. It costs nothing while the topic is idle.
-- **The connector:** each `read` or `write` is one Action for the Nexus operation and one for
-  the activity behind it, plus one per heartbeat (none for reads that return within 70 seconds).
+- **The connector:** each `write` is one Action for the Nexus operation and one for the activity
+  behind it.
 
 With full batches, the Kafka connector's share is small. What decides the bill:
 
 - **Process a batch, not a message.** One activity or workflow per message costs one Action per
   message. Passing a batch to one activity costs one Action per batch.
-- **Long-poll with `read`.** Give reads a time limit (such as the test caller's 60 seconds) rather
-  than reading with no time limit and pausing after an empty batch. A 60-second read costs about
-  120 Actions per hour while idle; a 5-second pause loop costs about 2,200.
 - **Let the relay's batches fill.** With `KAFKA_BATCH_TIME_LIMIT` 0, a quiet topic's batches
   hold a message or two. A time limit such as `1s` lets batches fill at the cost of that delay.
 
 ## Possible future changes
 
-- **Keep a group's consumer between reads.** A connector process could keep the consumer a read used,
-  with what it fetched beyond the batch still buffered, and give it to the next read for that group
-  if that read's `ack` matches where it stopped. Worth doing if measurements show reads fetching
-  much more than they return.
+- **Reading at a workflow's own pace.** The connector once had a `read` operation: a workflow read
+  a batch, then acknowledged it on its next read. It was removed because it can't guarantee one
+  reader per consumer group (Kafka gives that only to live members, and the connector committed
+  from outside the group), or that a batch is ever acknowledged (that depends on the caller calling
+  again). It could come back with a single owner per group, such as a Temporal workflow that
+  serializes the group's reads, if there is demand. A read with no consumer group that commits
+  nothing, like `kafka.ReadLast`, would also be safe, for ad-hoc reads.
 - **Completion callbacks for the relay.** Once the Go SDK supports them, the relay could
   write replies to Kafka when an operation completes — but only replies, not messages that originate
   in the caller.

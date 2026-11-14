@@ -15,7 +15,6 @@ import (
 // SettingsSection is the Kafka variables, in the order the setup page and the docs show them.
 var SettingsSection = &settings.Section{Title: "Kafka", Variables: []*settings.Variable{
 	brokersSetting.Variable, topicSetting.Variable, usernameSetting.Variable, passwordSetting.Variable,
-	startFromSetting.Variable,
 }}
 
 var brokersSetting = settings.Define(settings.Variable{
@@ -55,7 +54,9 @@ var passwordSetting = settings.Define(settings.Variable{
 	Help:    "The password for `KAFKA_USERNAME`. The startup report shows only whether it is set.",
 }, text)
 
-var startFromSetting = settings.Define(settings.Variable{
+// StartFromSetting is KAFKA_START_FROM. Only the relay reads it, since only the relay consumes
+// with a consumer group, so it is in the relay's section rather than SettingsSection.
+var StartFromSetting = settings.Define(settings.Variable{
 	Name:    "KAFKA_START_FROM",
 	Default: string(StartFromOldest),
 	Help: "Where a consumer group with no committed offset starts reading a partition: `oldest`, every " +
@@ -73,14 +74,14 @@ var startFromSetting = settings.Define(settings.Variable{
 })
 
 // ConfigFrom is the Kafka configuration in vals, which the Load of a program with SettingsSection
-// made.
+// made. StartFrom is set only if the program has StartFromSetting too.
 func ConfigFrom(vals *settings.Values) Config {
 	return Config{
 		Brokers:   brokersSetting.From(vals),
 		Topic:     topicSetting.From(vals),
 		Username:  usernameSetting.From(vals),
 		Password:  passwordSetting.From(vals),
-		StartFrom: startFromSetting.From(vals),
+		StartFrom: StartFromSetting.From(vals),
 	}
 }
 

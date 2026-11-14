@@ -28,7 +28,6 @@ first:
 ```
 The connector can't start:
 Invalid connector configuration:
-  - KAFKA_MAX_BATCH_BYTES must be a number of bytes greater than 65536, not "100"
   - KAFKA_MAX_DURATION_MINUTES must be a whole number of minutes, at least 1, not "0"
 Failed to connect to Temporal:
   - failed reaching server: ... connection refused
@@ -38,37 +37,26 @@ To find these problems before starting either program, use the
 [setup page](setup.md#work-out-your-settings-in-a-browser) (`make configui`): its **Test** makes
 the same checks, and connects to Kafka and reads the topic's last message.
 
-## Errors from `read` and `write`
+## Errors from `write`
 
 Failures that retrying can't fix are `ApplicationError`s:
 
 | Type | Cause | Fix |
 |---|---|---|
-| `InvalidRequest` | No consumer group named when the connector has none; a different one named when it has `KAFKA_GROUP`; a malformed `ack`; an `ack` from before the topic was deleted and recreated; a caller's Nexus timeout too short to run the operation. | Fix the request. For a recreated topic, read without `ack`. For a timeout, give the call a longer one. |
-| `GroupInUse` | The consumer group has live members, such as a relay. | Use another consumer group. |
-| `RecordTooLarge` | The next message doesn't fit in a read's result (`KAFKA_MAX_BATCH_BYTES`, 2 MiB). | The message blocks that consumer group. Report to the user. |
+| `InvalidRequest` | The caller's Nexus operation timeout is 10 seconds or less, too short to run a write. | Give the call a longer timeout. |
 | `Rejected` | Kafka refused a write, such as a message over the broker's size limit. | Fix the message. |
 
-Other failures are retried: a read for its time limit plus 5 minutes, a write for 10 minutes, or
-`KAFKA_MAX_DURATION_MINUTES` for either. Retries stop 10 seconds before the caller's Nexus
-operation times out, if that comes first.
+Other failures are retried for 10 minutes, or `KAFKA_MAX_DURATION_MINUTES`. Retries stop 10
+seconds before the caller's Nexus operation times out, if that comes first.
 
 ## Consumer group rules
 
-**Never share a consumer group between the relay and a connector reader**, or with any live
-Kafka consumer. Reads then fail with `GroupInUse`. Each consumer group gets every message, so
-separate groups can read the same topic independently.
-
-**One reader per consumer group.** Two readers of one group read the same batches. Use the
-caller's workflow ID to name its endpoint and consumer group, so a second can't start. The test
-caller does this.
+**Never share the relay's consumer group** with any other live Kafka consumer. Each consumer group
+gets every message, so separate groups can read the same topic independently.
 
 **Kafka forgets an idle group's offsets** after `offsets.retention.minutes` (7 days by default)
-since the group's last commit. A reader that stops for longer starts again where `KAFKA_START_FROM`
-says.
-
-**A topic deleted and created again** causes an `ack` returned before then to fail with
-`InvalidRequest`. Read without an `ack` to start over.
+since the group's last commit. A relay group that stops for longer starts again where
+`KAFKA_START_FROM` says.
 
 ## When a relay operation fails
 
@@ -108,8 +96,6 @@ relay's log to diagnose a stalled stream.
 
 - **One topic** per connector or relay process, set by `KAFKA_TOPIC`.
 - **SASL/SCRAM-SHA-256 or no authentication.** TLS and other SASL mechanisms aren't supported yet.
-- **A message too large for a read's result blocks its group** in the connector. The message
-  stays the group's next message; the group can't read past it.
 - **The dead-letter topic is only for messages Temporal refuses.** The relay doesn't see
   failures inside the operations it starts.
 - **`write` can't write a tombstone.** A message's `value` is always bytes, so `write` has no way

@@ -1,14 +1,13 @@
 // Command connector is the Nexus Connector. It serves the topic named by KAFKA_TOPIC as the
-// KafkaService Nexus service: read, to read batches for a consumer group, and write, to write
-// messages. Each call runs as a standalone activity.
+// KafkaService Nexus service, whose one operation, write, writes messages to it. Each call runs as
+// a standalone activity. To consume the topic, use the relay.
 //
 // Every environment variable it reads is listed in setup.Connector: the topic's KAFKA_* settings
 // and its own. It connects to Temporal with the standard TEMPORAL_* variables and the temporal
 // CLI's profile file; the namespace defaults to connectors.
 //
-// One process serves one topic through one Nexus endpoint. To serve another topic, or the same
-// topic for a fixed consumer group, run another process with its own KAFKA_TOPIC or KAFKA_GROUP
-// and NEXUS_TASK_QUEUE, behind an endpoint of its own.
+// One process serves one topic through one Nexus endpoint. To serve another topic, run another
+// process with its own KAFKA_TOPIC and NEXUS_TASK_QUEUE, behind an endpoint of its own.
 package main
 
 import (
@@ -27,9 +26,6 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 )
-
-// defaultMaxBatchBytes is KAFKA_MAX_BATCH_BYTES unless set.
-const defaultMaxBatchBytes = setup.DefaultMaxBatchBytes
 
 func main() {
 	// Check the connector's configuration and the connection to Temporal before stopping on
@@ -59,13 +55,6 @@ func main() {
 	}
 	defer c.Close()
 
-	// Records encode larger than Kafka sends them (base64 in JSON), so a fetch of this size holds
-	// a full batch or more.
-	reader, err := kafka.NewGroupReader(cfg, recordBytes(s.maxBatchBytes))
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer reader.Close()
 	writer, err := kafka.NewWriter(cfg)
 	if err != nil {
 		log.Fatal(err)
@@ -88,13 +77,9 @@ func main() {
 		log.Fatal(err)
 	}
 
-	a := &activities{reader: reader, writer: writer, topic: cfg.Topic, group: s.group, maxBatchBytes: s.maxBatchBytes, maxDuration: s.maxDuration}
-	w, reads := newWorkers(c, s.taskQueue, a)
-	if err := reads.Start(); err != nil {
-		log.Fatalf("Failed to start the read worker: %v", err)
-	}
-	defer reads.Stop()
-	log.Printf("Serving topic %q on task queues %q and %q", cfg.Topic, s.taskQueue, readQueue(s.taskQueue))
+	a := &activities{writer: writer, topic: cfg.Topic, maxDuration: s.maxDuration}
+	w := newWorker(c, s.taskQueue, a)
+	log.Printf("Serving topic %q on task queue %q", cfg.Topic, s.taskQueue)
 	if err := w.Run(worker.InterruptCh()); err != nil {
 		log.Fatalf("Worker stopped: %v", err)
 	}
@@ -107,10 +92,8 @@ func indent(s string) string {
 
 // config is the connector's settings besides the topic's.
 type config struct {
-	group         string        // KAFKA_GROUP: the only consumer group reads may use; empty lets each read name one
-	taskQueue     string        // NEXUS_TASK_QUEUE: the task queue the Nexus endpoint targets
-	maxBatchBytes int           // KAFKA_MAX_BATCH_BYTES: the most bytes a read's result may encode to
-	maxDuration   time.Duration // KAFKA_MAX_DURATION_MINUTES: the longest an operation may take; 0 for the defaults
+	taskQueue   string        // NEXUS_TASK_QUEUE: the task queue the Nexus endpoint targets
+	maxDuration time.Duration // KAFKA_MAX_DURATION_MINUTES: the longest a write may take; 0 for the default
 }
 
 // configFrom checks every variable the connector reads (setup.Connector) in env, reporting every
@@ -121,10 +104,8 @@ func configFrom(env settings.Env) (kafka.Config, config, error) {
 		return kafka.Config{}, config{}, err
 	}
 	return kafka.ConfigFrom(vals), config{
-		group:         setup.ConnectorGroup.From(vals),
-		taskQueue:     setup.TaskQueue.From(vals),
-		maxBatchBytes: setup.MaxBatchBytes.From(vals),
-		maxDuration:   setup.MaxDuration.From(vals),
+		taskQueue:   setup.TaskQueue.From(vals),
+		maxDuration: setup.MaxDuration.From(vals),
 	}, nil
 }
 
@@ -132,23 +113,14 @@ func configFrom(env settings.Env) (kafka.Config, config, error) {
 // starts. env is what s and cfg, the topic's settings, were read from; namespace and address are
 // where it connects to Temporal.
 func (s config) report(env settings.Env, cfg kafka.Config, namespace, address string) string {
-	group := kafka.Setting{Name: "KAFKA_GROUP", Value: s.group}
-	groupBehavior := fmt.Sprintf("Serve only the consumer group %q: a read may leave group empty or name it; "+
-		"a read naming another consumer group is refused.", s.group)
-	if s.group == "" {
-		group.Value = "(not set: each read names its consumer group)"
-		groupBehavior = "Serve any consumer group: each read must name one; a read without one is refused."
-	}
-	maxDuration := kafka.Setting{Name: setup.MaxDuration.Name, Value: "(not set: 10m for a write, a read's time limit plus 5m for a read)"}
+	maxDuration := kafka.Setting{Name: setup.MaxDuration.Name, Value: "10m (default)"}
 	if s.maxDuration > 0 {
 		maxDuration.Value = s.maxDuration.String()
 	}
 	sections := []kafka.Section{
 		cfg.Settings(env),
 		{Title: "Connector", Settings: []kafka.Setting{
-			group,
 			kafka.EnvSetting(env, "NEXUS_TASK_QUEUE", s.taskQueue),
-			kafka.EnvSetting(env, "KAFKA_MAX_BATCH_BYTES", s.maxBatchBytes),
 			maxDuration,
 		}},
 		{Title: "Temporal", Settings: []kafka.Setting{
@@ -157,12 +129,8 @@ func (s config) report(env settings.Env, cfg kafka.Config, namespace, address st
 		}},
 	}
 	behavior := []string{
-		fmt.Sprintf("Serve the topic %q as the KafkaService Nexus service, with the operations read and write.", cfg.Topic),
+		fmt.Sprintf("Serve the topic %q as the KafkaService Nexus service, with the operation write.", cfg.Topic),
 		fmt.Sprintf("Take Nexus requests and run writes on the task queue %q: point this connector's Nexus endpoint at it.", s.taskQueue),
-		fmt.Sprintf("Run reads on the task queue %q, up to %d at once.", readQueue(s.taskQueue), kafka.MaxConcurrentReads),
-		groupBehavior,
-		"A partition a consumer group has no committed offset for " + cfg.StartFromMeaning() + ".",
-		fmt.Sprintf("Return at most %d bytes of encoded messages per read.", recordBytes(s.maxBatchBytes)),
 		fmt.Sprintf("Write messages to the topic %q, each with a dedupe-id header.", cfg.Topic),
 	}
 	return kafka.Report("connector", sections, behavior)

@@ -19,11 +19,10 @@ called the connector here, and the Nexus Connector Relay, called the relay.
 | Program | Use it to | How it reaches Temporal |
 |---|---|---|
 | `relay/` | Move every message from Kafka into Temporal as it arrives. | Joins a Kafka consumer group and starts one standalone Nexus operation per partition of each batch, through a Nexus endpoint, on a service you implement: `KafkaMessageReceiver.receive`. One-way: it never receives results. |
-| `connector/` | Let workflows write to Kafka, or pull messages at their own pace. | Serves `KafkaService.read` and `KafkaService.write` as Nexus operations behind a Nexus endpoint. Workflows call them. |
+| `connector/` | Let workflows write to Kafka. | Serves `KafkaService.write` as a Nexus operation behind a Nexus endpoint. Workflows call it. |
 
-Choose by the user's need. To trigger Temporal work from every message, use the relay. To write
-to Kafka, or to read from a workflow loop, use the connector. They can run side by side on one
-topic, with different consumer groups.
+Choose by the user's need. To consume a topic, use the relay: it is the only way to read. To
+write to Kafka, use the connector. They can run side by side on one topic.
 
 Each process serves one topic. For several topics, run one process per topic.
 
@@ -85,7 +84,8 @@ selected Temporal profile file sets beside each `TEMPORAL_*` field.
    | `KAFKA_DEAD_LETTER_TOPIC` | An existing topic, different from `KAFKA_TOPIC`. Or `DELETE_DEAD_LETTERS=true` instead. |
    | `RELAY_ENDPOINT` | The endpoint from step 3. |
 
-   Optional: `KAFKA_START_FROM` (`oldest`, the default, or `newest`), `KAFKA_BATCH_SIZE` (100),
+   Optional: `KAFKA_START_FROM` (`oldest`, the default, or `newest`; where a new consumer group
+   starts), `KAFKA_BATCH_SIZE` (100),
    `KAFKA_BATCH_TIME_LIMIT` (0; `1s` lets batches fill on a quiet topic, which costs fewer
    operations), `RELAY_OPERATION_TIMEOUT` (`24h`). `docs/setup.md` lists every variable.
 6. **Scale out** by running more relays with the same `KAFKA_GROUP`, up to one per partition.
@@ -98,12 +98,11 @@ selected Temporal profile file sets beside each `TEMPORAL_*` field.
    |---|---|
    | `KAFKA_BROKERS`, `KAFKA_TOPIC` | As for the relay. Callers can't choose another topic. |
    | `KAFKA_USERNAME`, `KAFKA_PASSWORD` | If needed. |
-   | `KAFKA_GROUP` | Optional. Set it to pin every read to one consumer group. Leave it unset to make each read name its own. |
-   | `NEXUS_TASK_QUEUE` | Default `nexus-connector-kafka`. Give each connector for a different topic or consumer group its own. |
-   | `KAFKA_MAX_DURATION_MINUTES` | Optional. Longest a read or write retries, in whole minutes. Default 10 for a write, a read's time limit plus 5 for a read. |
+   | `NEXUS_TASK_QUEUE` | Default `nexus-connector-kafka`. Give each connector for a different topic its own. |
+   | `KAFKA_MAX_DURATION_MINUTES` | Optional. Longest a write retries, in whole minutes. Default 10. |
 
 2. **Create a Nexus endpoint** that targets the connector's namespace and `NEXUS_TASK_QUEUE`
-   exactly. Reads run on a second queue, `<NEXUS_TASK_QUEUE>-reads`; never target that one.
+   exactly.
 
    ```bash
    temporal operator nexus endpoint create --name <endpoint> \
@@ -112,33 +111,16 @@ selected Temporal profile file sets beside each `TEMPORAL_*` field.
    ```
 
 3. **Call it from a workflow** with a Nexus client for `KafkaService` on that endpoint.
-   `test/nexuscaller/workflows.go` (`ReaderWorkflow`, `WriterWorkflow`) is a working Go example
-   to copy. The read loop:
-   - Call `read` with `group` (unless the connector set `KAFKA_GROUP`), `batchSize`, and
-     `timeLimitSeconds`. The first read has no `ack`; it starts from the consumer group's
-     committed offsets.
-   - Process `records`, then pass the returned `position` as `ack` on the next read. The ack is
-     committed before reading, so acknowledging costs no extra call. Never build or edit a
-     position: it is opaque.
-   - To acknowledge the final batch without reading more, call `read` with the `ack` and
-     `batchSize: 0`.
-   - Use a `timeLimitSeconds` of 60 or less: reads long-poll, and reads over 70 seconds start
-     sending billable heartbeats.
-   - Continue as new when Temporal suggests it, carrying the position.
-   - `write` takes `messages: [{key?, value, headers?}]` and returns `written`. Each message
-     gets a `dedupe-id` header that stays the same when the write is retried.
+   `test/nexuscaller/workflows.go` (`WriterWorkflow`) is a working Go example to copy. `write`
+   takes `messages: [{key?, value, headers?}]` and returns `written`. Each message gets a
+   `dedupe-id` header that stays the same when the write is retried.
 
 ## Rules that break things when ignored
 
-- **One reader per consumer group.** Two readers of one group read the same batches. Make the
-  caller's workflow ID name its endpoint and consumer group, so a second can't start (the test
-  caller does this).
-- **Never share a consumer group between the relay and a connector reader**, or with any
-  live Kafka consumer. Reads then fail with `GroupInUse`. Each consumer group gets every message,
-  so separate groups can read the same topic.
+- **Never share the relay's consumer group** with any other live Kafka consumer. Each consumer
+  group gets every message, so separate groups can read the same topic.
 - **Process a batch, not a message, when cost matters.** One activity or workflow per message
-  costs one billable Action per message. The test caller uses one per message only to show
-  parallel processing.
+  costs one billable Action per message.
 - **The relay won't dead-letter on outages.** Only messages too large for an operation's input
   go to the dead-letter topic. Every other error, such as Temporal unreachable or an endpoint that
   doesn't exist, is retried forever, and the stream waits. Read the relay's log, not the
@@ -161,7 +143,7 @@ Kafka. If anything fails, the program reports every problem in one message and e
 ```
 The connector can't start:
 Invalid connector configuration:
-  - KAFKA_MAX_BATCH_BYTES must be a number of bytes greater than 65536, not "100"
+  - KAFKA_MAX_DURATION_MINUTES must be a whole number of minutes, at least 1, not "0"
 Failed to connect to Temporal:
   - failed reaching server: ... connection refused
 ```
@@ -182,25 +164,21 @@ Then:
 - **Relay:** `INFO Delivered batch records=N` per batch. `temporal nexus operation list
   --namespace <relay namespace>` shows one operation per partition batch, with IDs
   `kafka-<source>-<partition>-<first offset>-<last offset>`.
-- **Connector:** a caller's `read` returns records. A caller workflow that never progresses
+- **Connector:** a caller's `write` returns `written`. A caller workflow that never progresses
   usually means no worker is polling the caller's own task queue.
 
-## Errors from `read` and `write`
+## Errors from `write`
 
 Failures that retrying can't fix are `ApplicationError`s:
 
 | Type | Cause | Fix |
 |---|---|---|
-| `InvalidRequest` | No consumer group named when the connector has none; a different one named when it has `KAFKA_GROUP`; a malformed `ack`, or one from a topic since deleted and recreated; a caller's Nexus timeout too short to run the operation. | Fix the request. For a recreated topic, read without `ack`. For a timeout, give the call a longer one. |
-| `GroupInUse` | The consumer group has live members, such as a relay. | Use another consumer group. |
-| `RecordTooLarge` | The next message doesn't fit in a read's result (`KAFKA_MAX_BATCH_BYTES`, 2 MiB). | It blocks that consumer group: tell the user. |
+| `InvalidRequest` | The caller's Nexus operation timeout is 10 seconds or less, too short to run a write. | Give the call a longer timeout. |
 | `Rejected` | Kafka refused a write, such as a message over the broker's size limit. | Fix the message. |
 
-Other failures are retried: a read for its time limit plus 5 minutes, a write for 10 minutes, or
-`KAFKA_MAX_DURATION_MINUTES` for either (a read never less than its time limit plus a minute).
-Retries stop 10 seconds before the caller's Nexus operation times out, if that comes first, so the
-caller gets the last error rather than a timeout. A caller timeout under a read's time limit plus
-10 seconds, or a write's 10 seconds, is refused at once with `InvalidRequest`.
+Other failures are retried for 10 minutes, or `KAFKA_MAX_DURATION_MINUTES`. Retries stop 10
+seconds before the caller's Nexus operation times out, if that comes first, so the caller gets the
+last error rather than a timeout.
 
 ## Work out settings with the user
 
@@ -216,16 +194,15 @@ programs; it shows each variable with its help and default, secrets only as set 
   not); for the relay, that the endpoint `RELAY_ENDPOINT` names exists.
 - **Kafka**: `kafka.Identify`, then `kafka.ReadLast` (the topic's last message, no consumer group,
   nothing committed) with the programs' own Kafka code, showing Kafka's whole error on failure. For
-  the relay, that `KAFKA_DEAD_LETTER_TOPIC` exists; for a connector with `KAFKA_GROUP`, that the
-  group has no live members (`GroupInUse` otherwise).
+  the relay, that `KAFKA_DEAD_LETTER_TOPIC` exists.
 
 It changes no environment; it lists the `export` lines to set where the program runs.
 
 ## Try it locally first
 
 `docs/testing.md` has the full demo walkthrough with a local dev server and Docker Kafka
-(`test/kafka/`): both methods, two connectors on two topics, and the example caller and
-receiver. Run it top to bottom without stopping programs in between.
+(`test/kafka/`): the relay with the example receiver, and two connectors writing to two topics
+with the example caller. Run it top to bottom without stopping programs in between.
 
 ## Changing the code
 
@@ -234,7 +211,7 @@ receiver. Run it top to bottom without stopping programs in between.
 ```bash
 make test              # go test -race; end-to-end tests need `temporal` on PATH (no Docker: Kafka is kfake)
 go test -short ./...   # skip the end-to-end (dev server) tests
-go test ./kafka -run TestGroupReader_AckCommits -v
+go test ./kafka -run TestGroupMember_CommitIsWhereTheGroupResumes -v
 make clients           # generate Go, Python, TypeScript and Java callers into .build/clients/ (not committed)
 make generate          # regenerate generated/kafkaapi from kafka.nexusrpc.yaml (downloads nexgen to .build/)
 make docs              # regenerate docs/setup.md's tables of environment variables from the settings files
@@ -250,8 +227,7 @@ Needs Go SDK v1.50 or later (`temporalnexus.StartActivity`, the standalone Nexus
 - The contract is `kafka.nexusrpc.yaml`. After editing it, run `make generate` and commit
   `generated/kafkaapi`; never edit generated code by hand. Optional fields become pointers.
 - `kafka/` has no Temporal imports; keep it that way. It returns sentinel errors
-  (`ErrInvalidPosition`, `ErrGroupInUse`, `ErrRecordTooLarge`, `ErrRejected`) that the programs
-  map to `ApplicationError`s. Both programs share it, so a change to reading affects both.
+  (`ErrRejected`) that the connector maps to an `ApplicationError`. Both programs share it.
 - **A new environment variable goes in the settings file only**: a `settings.Define` with its
   help, default, required and check, in a section of `setup.Relay` and/or `setup.Connector` in
   `setup/settings.go`, or, for a Kafka variable both programs read, in `kafka.SettingsSection` in
@@ -270,27 +246,10 @@ Needs Go SDK v1.50 or later (`temporalnexus.StartActivity`, the standalone Nexus
 ### How the code works
 
 **`kafka/`**
-- `GroupReader` (connector). Per read:
-  1. Commit the ack. Kafka rejects commits from non-members while the group has live members,
-     which becomes `ErrGroupInUse`. Batch size 0 stops here.
-  2. Fetch the group's committed offsets and plan start and end offsets.
-  3. Commit any start `KAFKA_START_FROM` chose, so a retried first read with `newest` doesn't
-     skip what arrived meanwhile.
-  4. Read through a pooled consumer client (`MaxConcurrentReads`; the connector runs no more
-     read activities than that).
-
-  A read drops what it fetched beyond its batch, so `NewGroupReader`'s `fetchMaxBytes` caps each
-  fetch at the batch byte limit. With no time limit a partition ends at its last stable offset;
-  with one, partitions have no end and the read waits for new records.
-- Positions are opaque, unsigned base64 JSON naming group, topic, cluster, topic ID, and offsets.
-  Callers are trusted, but an ack from an earlier incarnation of the topic is refused. `identify`
-  sends an uncached `kmsg.MetadataRequest` on every read, because kadm's `Metadata` is cached for
-  up to 5 seconds. Kafka deletes a group's offsets with its topic (checked on 4.3.1), so committed
-  offsets need no such check.
 - `GroupMember` (relay) is a kgo consumer group with `DisableAutoCommit` and
   `BlockRebalanceOnPoll`.
-  - `chooseStarts` (`AdjustFetchOffsetsFn`) resolves each assigned partition's start with the
-    shared `startOffset` and commits it before consuming. A release or stop before the first
+  - `chooseStarts` (`AdjustFetchOffsetsFn`) resolves each assigned partition's start with
+    `startOffset` and commits it before consuming. A release or stop before the first
     commit then can't let the next member choose `newest` again.
   - `Commit`, `Release`, and `Close` must call `AllowRebalance`, or leaving the group hangs.
   - `OnPartitionsCallbackBlocked` closes `RebalanceWanted()`. `Next` then returns early, and the
@@ -301,11 +260,10 @@ Needs Go SDK v1.50 or later (`temporalnexus.StartActivity`, the standalone Nexus
 - `fetchErrors` logs `ErrDataLoss` and `ErrGroupSession`, which kgo recovers from, rather than
   failing.
 - `Record.tombstone` marks a null value; dead letters keep the null.
-- `batch` and `pollUntil` are the shared batching rule: count, encoded bytes, and time limit. A
-  batch never takes a record after one that didn't fit, which would move the partition's position
-  past it.
-- `startOffset` and kgo's `ConsumeResetOffset` implement `KAFKA_START_FROM` the same way for both
-  programs.
+- `batch` and `pollUntil` are the relay's batching rule: count and time limit. The relay then
+  splits each partition's records by encoded size (`RELAY_MAX_INPUT_BYTES`).
+- `startOffset` and kgo's `ConsumeResetOffset` implement `KAFKA_START_FROM` for the relay.
+  `listBounds` serves both `GroupMember` and `ReadLast`.
 - `ConnectAtStartup` wraps `WaitForTopic`: `Identify` every 5 seconds, 10 seconds per attempt, a
   WARN per failure, INFO on success. Both programs call it after the startup report and before
   dialing Temporal, because kgo connects lazily and would otherwise wait silently.
@@ -330,17 +288,8 @@ Needs Go SDK v1.50 or later (`temporalnexus.StartActivity`, the standalone Nexus
 
 **`connector/`**
 - One process serves one topic (`KAFKA_TOPIC`) behind one endpoint.
-- `read`'s `Start` resolves the consumer group with `activities.groupFor` and validates the ack,
-  refusing either as `BadRequest` before any activity starts, then starts `activities.Read` or
-  `activities.Write`. With `KAFKA_GROUP` set, a connector serves only that group, and an empty
-  request means it; without it, the request must name one.
-- `newWorkers` makes two workers. One runs Nexus and writes on the task queue; the other runs
-  reads on `readQueue(taskQueue)` (`<taskQueue>-reads`), capped at `MaxConcurrentReads`, so
-  waiting reads never block writes.
-- `Read` heartbeats from a goroutine every `heartbeatInterval` (70 seconds), starting one
-  interval in, with a heartbeat timeout of twice that. Each heartbeat is a billable Action, so
-  reads of a minute or less send none; 70 seconds is also above the SDK's 60-second maximum
-  throttle, so heartbeats aren't delayed.
+- `write`'s `Start` starts `activities.Write` as a standalone activity. One worker on
+  `NEXUS_TASK_QUEUE` runs the Nexus operation and the activity.
 - `Write` adds the header `dedupe-id: <activityID>-<i>`.
 
 **`setup/`, `settings/`**
@@ -370,18 +319,13 @@ Needs Go SDK v1.50 or later (`temporalnexus.StartActivity`, the standalone Nexus
   through the browser.
 - `kafka.ReadLast` (`kafka/last.go`) reads each partition's last offset with no consumer group,
   and keeps the message with the latest timestamp; on a tie, the higher partition.
-  `kafka.GroupMembers` counts a consumer group's live members.
 - `configui/gendocs` writes docs/setup.md's tables between the `settings:start` and `settings:end`
   markers (`make docs`); its test fails if they are stale.
 
 **`test/`** (test only)
 - `testenv`: kfake plus a dev server with both namespaces.
-- `nexuscaller`: `ReaderWorkflow` reads a list of `Source`s, one batch from each in turn, with ack
-  and continue-as-new carrying every source's position. It long-polls with
-  `DefaultTimeLimitSeconds` (60, under the heartbeat interval). One activity per record is
-  deliberate for the demo. It logs each read and processed message with the topic between `***`,
-  because showing which topic is read is the point of the README demo.
-  `shouldContinueAsNew` is a variable so tests can replace it.
+- `nexuscaller`: `WriterWorkflow` writes messages through a connector's endpoint; the starter's
+  `write` command starts it.
 - `relayreceiver`: the example receiver.
 - `kafka/`: docker-compose plus seed, produce, consume, and configui scripts. Seed writes 10 messages to
   `customers` and 3 to `orders`.

@@ -13,26 +13,22 @@ tests, as CI does.
 
 What the tests cover:
 
-- `kafka/`: reading for a group (acks, ack-only reads, retried first reads, batch and byte limits,
-  time limits, where a new group starts, groups in use, a topic created again), reading as a group
-  member (commits, releasing a batch, a released first batch surviving a handoff, noticing a
-  waiting rebalance, where it starts), fetch errors Kafka's client recovers from, and tombstones.
+- `kafka/`: reading as a group member (batch size and time limits, commits, releasing a batch, a
+  released first batch surviving a handoff, noticing a waiting rebalance, where it starts), fetch
+  errors Kafka's client recovers from, and tombstones.
 - `relay/`: delivery order, splitting batches to fit an input, commits, redelivery with the
   same operation IDs, the duplicate when a redelivered batch ends elsewhere, releasing a stuck
   batch for a rebalance, operation IDs' source key and its check on every batch, splitting a
   refused operation, which refusals count as undeliverable, retries, and the dead-letter topic.
   Its end-to-end tests start a dev server and deliver to a receiver in another namespace.
-- `connector/`: that a read heartbeats before it reaches Kafka, which consumer groups a read may
-  use, and that reads waiting for their batches don't hold up writes. Its end-to-end tests write
-  and read across namespaces through the endpoint, refuse reads for the wrong consumer group, and
-  run the test caller's `ReaderWorkflow` against two connectors serving two topics.
-- `test/nexuscaller/`: that `ReaderWorkflow` acknowledges every batch, reads its sources in turn,
-  and carries their positions across continue-as-new.
+- `connector/`: its configuration and startup report, and how long a write may retry. Its
+  end-to-end tests write across namespaces through the endpoint, write two topics through two
+  connectors, and refuse a caller's Nexus timeout too short to run a write.
 
 ## Demo
 
 The demo is one run-through, top to bottom. Steps 1 and 2 start Temporal and Kafka, which both
-methods use. Steps 3 to 5 try Method 1 (stream), and steps 6 to 10 try Method 2 (read/write)
+methods use. Steps 3 to 5 try Method 1 (stream), and steps 6 to 9 try Method 2 (write)
 alongside it. **Leave every program running until [Tear down](#tear-down)**: by the end you have
 seven terminals open.
 
@@ -97,7 +93,7 @@ INFO  Received message ... WorkflowID kafka-batch-customers-0-0-2 ... topic cust
 
 ### 5. Write a message and watch it arrive (terminal 7)
 
-Open another terminal; steps 9 and 10 use it too.
+Open another terminal; step 9 uses it too.
 
 ```bash
 test/kafka/scripts/produce.sh "hello from the console producer"
@@ -108,11 +104,12 @@ Terminal 2 logs it within a second or two. **Leave the relay running** before yo
 In the Web UI, the `connectors` namespace shows one standalone Nexus operation per batch under
 Nexus, and `kafka-test` shows the `ReceiveWorkflow` each one started.
 
-## Method 2: read and write through the connector
+## Method 2: write through the connector
 
 Keep everything from steps 1 to 5 running. Each connector serves one topic behind a Nexus
 endpoint. Here two connectors serve the two topics: `kafka-customers-endpoint` routes to
-`customers`, and `kafka-orders-endpoint` routes to `orders`.
+`customers`, and `kafka-orders-endpoint` routes to `orders`. The relay from step 4 still streams
+`customers`, so what you write there reaches the receiver.
 
 ### 6. Start a connector for the customers topic (terminal 4)
 
@@ -126,8 +123,6 @@ set -a; source test/kafka/.env; set +a
 go run ./connector
 ```
 
-`KAFKA_GROUP` isn't set, so each read must name its own consumer group.
-
 ### 7. Start a second connector for the orders topic (terminal 5)
 
 ```bash
@@ -137,11 +132,11 @@ temporal operator nexus endpoint create \
   --target-task-queue nexus-connector-kafka-orders \
   --description-file ./endpoint-description.md
 set -a; source test/kafka/.env; set +a
-export KAFKA_TOPIC=orders KAFKA_GROUP=orders-reader NEXUS_TASK_QUEUE=nexus-connector-kafka-orders
+export KAFKA_TOPIC=orders NEXUS_TASK_QUEUE=nexus-connector-kafka-orders
 go run ./connector
 ```
 
-`KAFKA_GROUP` is set, so every read through this endpoint uses the consumer group `orders-reader`.
+Each connector needs its own `NEXUS_TASK_QUEUE`, since both run in `connectors`.
 
 ### 8. Start the test caller's worker (terminal 6)
 
@@ -149,48 +144,29 @@ go run ./connector
 go run ./test/nexuscaller/worker
 ```
 
-The test caller's worker polls `kafka-nexuscaller` and runs `ReaderWorkflow`, `WriterWorkflow`,
-and the `ProcessRecord` activity. Once started, it logs that it is waiting and then nothing more:
-this is expected. Step 9 starts a workflow, and reading begins.
+The test caller's worker polls `kafka-nexuscaller` and runs `WriterWorkflow`. Once started, it
+logs that it is waiting and then nothing more: this is expected. Step 9 starts a workflow.
 
-### 9. Read from both topics (terminal 7)
-
-```bash
-go run ./test/nexuscaller/starter read
-```
-
-This asks Temporal to start a `ReaderWorkflow`, which keeps running on the test caller's worker.
-**Watch terminal 6** for what the reader does; the Web UI also shows the workflow in `kafka-test`.
-
-The reader reads from both endpoints: `kafka-customers-endpoint` for consumer group `reader1`, and
-`kafka-orders-endpoint` for that endpoint's own group `orders-reader`. It logs each read and each
-message processed, with the topic between `***`:
-
-```
-time=16:06:07 level=INFO msg="Reading through kafka-customers-endpoint; the read waits up to 60 seconds for its batch to fill"
-time=16:06:07 level=INFO msg="Read 10 message(s) from topic *** customers *** through kafka-customers-endpoint"
-time=16:06:07 level=INFO msg="Processed message from topic *** customers ***" partition=0 offset=0 value="seed message 1 of 10"
-```
-
-Expect pauses: a read with fewer than 10 messages waits up to 60 seconds for more. The reader runs
-until you stop it:
-
-```bash
-temporal workflow terminate --namespace kafka-test \
-  --workflow-id kafka-reader-kafka-customers-endpoint/reader1+kafka-orders-endpoint
-```
-
-### 10. Write to each topic (terminal 7)
+### 9. Write to each topic (terminal 7)
 
 ```bash
 go run ./test/nexuscaller/starter write -endpoint kafka-customers-endpoint "customer Ada" "customer Grace"
 go run ./test/nexuscaller/starter write -endpoint kafka-orders-endpoint "first order"
 ```
 
-Each command starts a `WriterWorkflow` and waits for it. Watch the reader in terminal 6 log the
-new messages on its next read. The receiver in terminal 2 also logs the two `customers` messages, delivered by the relay.
+Each command starts a `WriterWorkflow` and waits for it. The receiver in terminal 2 logs the two
+`customers` messages, delivered by the relay. No relay streams `orders`, so confirm that write
+from the command line:
 
-Each written message has a `dedupe-id` header; see them with `test/kafka/scripts/consume.sh [topic]`.
+```bash
+test/kafka/scripts/consume.sh orders
+```
+
+It prints every message in the topic, with its partition, offset and headers, then exits after 5
+seconds without new messages. It reads from the beginning under a throwaway consumer group of its
+own, so it never moves the relay's offsets; run it as often as you like. Among the 3 seeded orders
+is `first order`, with a `dedupe-id` header the connector added. Partitions print interleaved, so
+it isn't necessarily the last line. Pass another topic name, such as `customers`, to see that topic.
 
 ## Tear down
 

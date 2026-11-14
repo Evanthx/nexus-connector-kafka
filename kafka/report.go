@@ -44,7 +44,6 @@ func (c Config) Settings(env settings.Env) Section {
 		{Name: "KAFKA_BROKERS", Value: strings.Join(c.Brokers, ",")},
 		{Name: "KAFKA_TOPIC", Value: c.Topic},
 		{Name: "KAFKA_USERNAME", Value: login},
-		EnvSetting(env, "KAFKA_START_FROM", c.StartFrom),
 	}}
 }
 

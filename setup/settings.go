@@ -28,7 +28,7 @@ var Relay = &settings.Program{
 	Sections: []*settings.Section{
 		kafka.SettingsSection,
 		{Title: "Relay", Variables: []*settings.Variable{
-			RelayGroup.Variable, DeadLetterTopic.Variable, DeleteDeadLetters.Variable, BatchSize.Variable,
+			RelayGroup.Variable, kafka.StartFromSetting.Variable, DeadLetterTopic.Variable, DeleteDeadLetters.Variable, BatchSize.Variable,
 			BatchTimeLimit.Variable, RelayEndpoint.Variable, RelayService.Variable, RelayOperation.Variable,
 			RelayOperationTimeout.Variable, RelayMaxInputBytes.Variable,
 		}},
@@ -46,7 +46,7 @@ var Connector = &settings.Program{
 	Sections: []*settings.Section{
 		kafka.SettingsSection,
 		{Title: "Connector", Variables: []*settings.Variable{
-			ConnectorGroup.Variable, TaskQueue.Variable, MaxBatchBytes.Variable, MaxDuration.Variable,
+			TaskQueue.Variable, MaxDuration.Variable,
 		}},
 		temporalSection,
 		networkSection,
@@ -88,7 +88,7 @@ var (
 		Name:     "KAFKA_GROUP",
 		Required: "yes",
 		Help: "The consumer group the relay joins. Relays with the same consumer group share the topic's " +
-			"partitions. Don't share it with a connector reader or any other consumer.",
+			"partitions. Don't share it with any other consumer.",
 	}, requiredText("KAFKA_GROUP", "the consumer group the relay joins"))
 
 	DeadLetterTopic = settings.Define(settings.Variable{
@@ -158,9 +158,9 @@ var (
 	}, positiveInt("RELAY_MAX_INPUT_BYTES", DefaultMaxInputBytes))
 )
 
-// DefaultMaxInputBytes is under Temporal's 2 MiB payload limit by 64 KiB, the same reserve the
-// connector keeps (ResultReserve): the limit applies to the whole payload, metadata included, and
-// the size the relay counts is an estimate of the encoded records.
+// DefaultMaxInputBytes is under Temporal's 2 MiB payload limit by 64 KiB: the limit applies to
+// the whole payload, metadata included, and the size the relay counts is an estimate of the
+// encoded records.
 const DefaultMaxInputBytes = 2*1024*1024 - 64*1024
 
 // deadLetterRule: undeliverable messages go to KAFKA_DEAD_LETTER_TOPIC, which isn't KAFKA_TOPIC,
@@ -183,44 +183,18 @@ func deadLetterRule(env settings.Env) error {
 
 // The connector's own variables.
 var (
-	ConnectorGroup = settings.Define(settings.Variable{
-		Name:    "KAFKA_GROUP",
-		Default: "none: each read names its consumer group",
-		Help: "The only consumer group reads through this connector may use. Unset, each read names its own. " +
-			"Never one a relay or another live consumer uses: reads then fail with `GroupInUse`.",
-		Docs: "See [How it works](how-it-works.md#the-connector).",
-	}, text)
-
 	TaskQueue = settings.Define(settings.Variable{
 		Name:    "NEXUS_TASK_QUEUE",
 		Default: DefaultTaskQueue,
-		Help: "The task queue the connector's Nexus endpoint targets. Reads run on this name with `-reads` " +
-			"added; never target that one. Give each connector for another topic or consumer group its own.",
+		Help:    "The task queue the connector's Nexus endpoint targets. Give each connector for another topic its own.",
 	}, textOr(DefaultTaskQueue))
 
-	MaxBatchBytes = settings.Define(settings.Variable{
-		Name:    "KAFKA_MAX_BATCH_BYTES",
-		Default: strconv.Itoa(DefaultMaxBatchBytes) + " (2 MiB)",
-		Help: "The most bytes a read's result may encode to, more than " + strconv.Itoa(ResultReserve) +
-			". Temporal's payload limit is 2 MiB by default.",
-	}, func(v string) (int, error) {
-		if v == "" {
-			return DefaultMaxBatchBytes, nil
-		}
-		n, err := strconv.Atoi(v)
-		if err != nil || n <= ResultReserve {
-			return 0, fmt.Errorf("KAFKA_MAX_BATCH_BYTES must be a number of bytes greater than %d, not %q", ResultReserve, v)
-		}
-		return n, nil
-	})
-
-	// MaxDuration is 0 when unset: a write may then take 10 minutes, and a read its time limit
-	// plus 5 minutes.
+	// MaxDuration is 0 when unset: a write may then take 10 minutes.
 	MaxDuration = settings.Define(settings.Variable{
 		Name:    "KAFKA_MAX_DURATION_MINUTES",
-		Default: "10 for a write; a read's time limit plus 5 for a read",
-		Help: "The longest a read or write keeps retrying, in whole minutes, at least 1; a read never less than " +
-			"its time limit plus 1. Either way it stops 10 seconds before the caller's Nexus operation times out.",
+		Default: "10",
+		Help: "The longest a write keeps retrying, in whole minutes, at least 1. Either way it stops 10 seconds " +
+			"before the caller's Nexus operation times out.",
 	}, func(v string) (time.Duration, error) {
 		if v == "" {
 			return 0, nil
@@ -233,15 +207,8 @@ var (
 	})
 )
 
-const (
-	// DefaultTaskQueue is the connector's task queue unless NEXUS_TASK_QUEUE says otherwise.
-	DefaultTaskQueue = "nexus-connector-kafka"
-	// DefaultMaxBatchBytes is KAFKA_MAX_BATCH_BYTES unless set: Temporal's default payload limit.
-	DefaultMaxBatchBytes = 2 * 1024 * 1024
-	// ResultReserve is the part of the connector's batch byte limit kept for a read's result around
-	// its records: the position and the JSON structure.
-	ResultReserve = 64 * 1024
-)
+// DefaultTaskQueue is the connector's task queue unless NEXUS_TASK_QUEUE says otherwise.
+const DefaultTaskQueue = "nexus-connector-kafka"
 
 // defaultNamespace is both programs' namespace when neither TEMPORAL_NAMESPACE nor the profile
 // file sets one.

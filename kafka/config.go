@@ -1,10 +1,8 @@
 // Package kafka is the Kafka code the connector and the relay share: connecting, reading in
 // batches, and writing. It has no Temporal code.
 //
-// It reads in two ways. The relay uses a GroupMember, which joins a consumer group so Kafka
-// splits the partitions among the running relays. The connector uses a GroupReader, which reads
-// from a group's committed offsets without joining it, so any connector process can serve any
-// read.
+// The relay reads with a GroupMember, which joins a consumer group so Kafka splits the partitions
+// among the running relays. The connector only writes.
 package kafka
 
 import (

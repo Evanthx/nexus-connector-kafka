@@ -71,17 +71,17 @@ Scale out by running more relays with the same `KAFKA_GROUP`, up to one per part
 
 ## Run the connector
 
-The connector serves the topic as `KafkaService` with `read` and `write` operations.
+The connector serves the topic as `KafkaService` with a `write` operation. To consume the topic,
+use the relay.
 
 ### 1. Set environment variables and run
 
 | Variable | Set it to |
 |---|---|
 | `KAFKA_BROKERS` | Your Kafka brokers, comma-separated `host:port`. |
-| `KAFKA_TOPIC` | The topic this connector reads and writes. Callers can't choose another. |
+| `KAFKA_TOPIC` | The topic this connector writes to. Callers can't choose another. |
 | `KAFKA_USERNAME`, `KAFKA_PASSWORD` | A SASL/SCRAM-SHA-256 login, if your Kafka needs one. |
-| `KAFKA_GROUP` | Optional. The only consumer group reads may use. Leave it unset to let each read name its own. |
-| `NEXUS_TASK_QUEUE` | The task queue to serve (default `nexus-connector-kafka`). Give each connector for a different topic or consumer group its own. |
+| `NEXUS_TASK_QUEUE` | The task queue to serve (default `nexus-connector-kafka`). Give each connector for a different topic its own. |
 | `TEMPORAL_ADDRESS`, `TEMPORAL_NAMESPACE` | Your Temporal server and namespace (default `connectors`), plus `TEMPORAL_API_KEY` for Temporal Cloud. The namespace needs standalone activities with completion callbacks. |
 
 To work them out and test them in a browser first, use the
@@ -97,8 +97,7 @@ go run ./connector
 
 ### 2. Create the Nexus endpoint
 
-Target the connector's namespace and `NEXUS_TASK_QUEUE` exactly. Reads run on a second queue,
-`<NEXUS_TASK_QUEUE>-reads`; never target that one.
+Target the connector's namespace and `NEXUS_TASK_QUEUE` exactly.
 
 ```bash
 temporal operator nexus endpoint create \
@@ -146,9 +145,7 @@ saved. **Test** checks:
   `RELAY_ENDPOINT` names exists, and shows where it leads.
 - **Kafka**: it connects with the programs' own Kafka code, finds the topic, and reads its last
   message, without joining a consumer group or committing anything. A failure shows Kafka's whole
-  error. For the relay, it also checks that `KAFKA_DEAD_LETTER_TOPIC` exists; for a connector with
-  `KAFKA_GROUP`, that no live consumer, such as a relay, is in that consumer group, which would
-  make every read fail with `GroupInUse`.
+  error. For the relay, it also checks that `KAFKA_DEAD_LETTER_TOPIC` exists.
 
 The page ends with the `export` lines to set, with a `<set NAME>` placeholder for each secret. It
 never changes the program's environment, and it only answers on localhost, since it handles
@@ -198,13 +195,13 @@ variable there, not here.
 | `KAFKA_TOPIC` | yes |  | The topic the program serves. One process serves one topic; run one per topic. |
 | `KAFKA_USERNAME` |  | none: no authentication | The SASL/SCRAM-SHA-256 username. Leave it and `KAFKA_PASSWORD` unset if Kafka needs no login. TLS and other SASL mechanisms are not supported. |
 | `KAFKA_PASSWORD` (secret) |  | none | The password for `KAFKA_USERNAME`. The startup report shows only whether it is set. |
-| `KAFKA_START_FROM` |  | oldest | Where a consumer group with no committed offset starts reading a partition: `oldest`, every message still in the topic, or `newest`, only messages written from then on. See [How it works](how-it-works.md#where-reading-starts). |
 
 ### Relay
 
 | Variable | Required | Default | Meaning |
 |---|---|---|---|
-| `KAFKA_GROUP` | yes |  | The consumer group the relay joins. Relays with the same consumer group share the topic's partitions. Don't share it with a connector reader or any other consumer. |
+| `KAFKA_GROUP` | yes |  | The consumer group the relay joins. Relays with the same consumer group share the topic's partitions. Don't share it with any other consumer. |
+| `KAFKA_START_FROM` |  | oldest | Where a consumer group with no committed offset starts reading a partition: `oldest`, every message still in the topic, or `newest`, only messages written from then on. See [How it works](how-it-works.md#where-reading-starts). |
 | `KAFKA_DEAD_LETTER_TOPIC` | unless DELETE_DEAD_LETTERS is true |  | An existing topic, other than `KAFKA_TOPIC`, for messages too large to deliver. Set this or `DELETE_DEAD_LETTERS=true`, not both. |
 | `DELETE_DEAD_LETTERS` |  | false | `true` to log and skip messages too large to deliver, instead of writing them to `KAFKA_DEAD_LETTER_TOPIC`; then leave that unset. |
 | `KAFKA_BATCH_SIZE` |  | 100 | The most messages in one batch, and so in one Nexus operation per partition. `1` for one operation per message, which also rules out a message being delivered twice. |
@@ -255,16 +252,13 @@ gRPC headers sent with every call to Temporal: `TEMPORAL_GRPC_META_<NAME>` sends
 | `KAFKA_TOPIC` | yes |  | The topic the program serves. One process serves one topic; run one per topic. |
 | `KAFKA_USERNAME` |  | none: no authentication | The SASL/SCRAM-SHA-256 username. Leave it and `KAFKA_PASSWORD` unset if Kafka needs no login. TLS and other SASL mechanisms are not supported. |
 | `KAFKA_PASSWORD` (secret) |  | none | The password for `KAFKA_USERNAME`. The startup report shows only whether it is set. |
-| `KAFKA_START_FROM` |  | oldest | Where a consumer group with no committed offset starts reading a partition: `oldest`, every message still in the topic, or `newest`, only messages written from then on. See [How it works](how-it-works.md#where-reading-starts). |
 
 ### Connector
 
 | Variable | Required | Default | Meaning |
 |---|---|---|---|
-| `KAFKA_GROUP` |  | none: each read names its consumer group | The only consumer group reads through this connector may use. Unset, each read names its own. Never one a relay or another live consumer uses: reads then fail with `GroupInUse`. See [How it works](how-it-works.md#the-connector). |
-| `NEXUS_TASK_QUEUE` |  | nexus-connector-kafka | The task queue the connector's Nexus endpoint targets. Reads run on this name with `-reads` added; never target that one. Give each connector for another topic or consumer group its own. |
-| `KAFKA_MAX_BATCH_BYTES` |  | 2097152 (2 MiB) | The most bytes a read's result may encode to, more than 65536. Temporal's payload limit is 2 MiB by default. |
-| `KAFKA_MAX_DURATION_MINUTES` |  | 10 for a write; a read's time limit plus 5 for a read | The longest a read or write keeps retrying, in whole minutes, at least 1; a read never less than its time limit plus 1. Either way it stops 10 seconds before the caller's Nexus operation times out. |
+| `NEXUS_TASK_QUEUE` |  | nexus-connector-kafka | The task queue the connector's Nexus endpoint targets. Give each connector for another topic its own. |
+| `KAFKA_MAX_DURATION_MINUTES` |  | 10 | The longest a write keeps retrying, in whole minutes, at least 1. Either way it stops 10 seconds before the caller's Nexus operation times out. |
 
 ### Temporal
 

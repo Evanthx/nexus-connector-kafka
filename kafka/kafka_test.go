@@ -3,9 +3,7 @@ package kafka
 import (
 	"context"
 	"errors"
-	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,7 +13,6 @@ import (
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kfake"
 	"github.com/twmb/franz-go/pkg/kgo"
-	"github.com/twmb/franz-go/pkg/kmsg"
 )
 
 const testTopic = "events"
@@ -70,356 +67,6 @@ func values(recs []kafkaapi.Record) []string {
 	return out
 }
 
-func newReader(t *testing.T, cfg Config) *GroupReader {
-	t.Helper()
-	r, err := NewGroupReader(cfg, 0)
-	require.NoError(t, err)
-	t.Cleanup(r.Close)
-	return r
-}
-
-func read(t *testing.T, r *GroupReader, req ReadRequest) ReadResult {
-	t.Helper()
-	res, err := r.Read(context.Background(), req)
-	require.NoError(t, err)
-	return res
-}
-
-func TestGroupReader_NewGroupStartsAtOldest(t *testing.T) {
-	cfg := newCluster(t)
-	produce(t, cfg, 0, "a0", "a1", "a2")
-	produce(t, cfg, 1, "b0")
-	r := newReader(t, cfg)
-
-	res := read(t, r, ReadRequest{Group: "g", BatchSize: 100})
-	require.ElementsMatch(t, []string{"a0", "a1", "a2", "b0"}, values(res.Records))
-	for _, rec := range res.Records {
-		require.Equal(t, testTopic, rec.Topic)
-		require.NotEmpty(t, rec.Timestamp)
-	}
-}
-
-func TestGroupReader_StartFromNewest(t *testing.T) {
-	cfg := newCluster(t)
-	produce(t, cfg, 0, "old")
-	cfg.StartFrom = StartFromNewest
-	r := newReader(t, cfg)
-
-	res := read(t, r, ReadRequest{Group: "g", BatchSize: 100})
-	require.Empty(t, res.Records)
-
-	produce(t, cfg, 0, "new")
-	res = read(t, r, ReadRequest{Group: "g", BatchSize: 100, Ack: res.Position})
-	require.Equal(t, []string{"new"}, values(res.Records))
-}
-
-// A first read that is retried, because its activity failed before reporting, returns the same
-// records. Starting from newest, a retry that worked out the start again would begin after them.
-func TestGroupReader_RetriedFirstReadReturnsTheSameRecords(t *testing.T) {
-	cfg := newCluster(t)
-	produce(t, cfg, 0, "old")
-	cfg.StartFrom = StartFromNewest
-	r := newReader(t, cfg)
-
-	produceAfter(t, cfg, time.Second, 0, "new")
-	first := read(t, r, ReadRequest{Group: "g", BatchSize: 1, TimeLimit: 30 * time.Second})
-	require.Equal(t, []string{"new"}, values(first.Records))
-	retry := read(t, r, ReadRequest{Group: "g", BatchSize: 1, TimeLimit: 30 * time.Second})
-	require.Equal(t, []string{"new"}, values(retry.Records))
-}
-
-// Without an ack, a read starts from the group's committed offsets, so it returns the same batch.
-func TestGroupReader_ReadWithoutAckReturnsTheSameBatch(t *testing.T) {
-	cfg := newCluster(t)
-	produce(t, cfg, 0, "m0", "m1", "m2", "m3")
-	r := newReader(t, cfg)
-
-	first := read(t, r, ReadRequest{Group: "g", BatchSize: 2})
-	require.Equal(t, []string{"m0", "m1"}, values(first.Records))
-	again := read(t, r, ReadRequest{Group: "g", BatchSize: 2})
-	require.Equal(t, []string{"m0", "m1"}, values(again.Records))
-}
-
-// An ack commits the batch it ends: the read after it, and any later read without an ack, carry
-// on from there. A different reader (another connector process) sees the same commit.
-func TestGroupReader_AckCommits(t *testing.T) {
-	cfg := newCluster(t)
-	produce(t, cfg, 0, "m0", "m1", "m2", "m3", "m4")
-	r := newReader(t, cfg)
-
-	first := read(t, r, ReadRequest{Group: "g", BatchSize: 2})
-	second := read(t, r, ReadRequest{Group: "g", BatchSize: 2, Ack: first.Position})
-	require.Equal(t, []string{"m2", "m3"}, values(second.Records))
-
-	other := newReader(t, cfg)
-	restarted := read(t, other, ReadRequest{Group: "g", BatchSize: 10})
-	require.Equal(t, []string{"m2", "m3", "m4"}, values(restarted.Records))
-}
-
-func TestGroupReader_BatchSizeZeroOnlyCommits(t *testing.T) {
-	cfg := newCluster(t)
-	produce(t, cfg, 0, "m0", "m1", "m2")
-	r := newReader(t, cfg)
-
-	first := read(t, r, ReadRequest{Group: "g", BatchSize: 2})
-	commitOnly := read(t, r, ReadRequest{Group: "g", BatchSize: 0, Ack: first.Position})
-	require.Empty(t, commitOnly.Records)
-	require.NotNil(t, commitOnly.Records)
-	require.Equal(t, first.Position, commitOnly.Position)
-
-	next := read(t, r, ReadRequest{Group: "g", BatchSize: 10})
-	require.Equal(t, []string{"m2"}, values(next.Records))
-}
-
-// Groups keep separate positions.
-// A read with batch size 0 only commits its ack: it doesn't ask Kafka for the group's offsets or
-// the topic's.
-func TestGroupReader_AckOnlyReadOnlyCommits(t *testing.T) {
-	c, err := kfake.NewCluster(kfake.NumBrokers(1), kfake.SeedTopics(3, testTopic))
-	require.NoError(t, err)
-	t.Cleanup(c.Close)
-	cfg := Config{Brokers: c.ListenAddrs(), Topic: testTopic, StartFrom: StartFromOldest}
-	produce(t, cfg, 0, "m0", "m1")
-	r := newReader(t, cfg)
-	first := read(t, r, ReadRequest{Group: "g", BatchSize: 1})
-
-	var lookups atomic.Int32
-	count := func(kmsg.Request) (kmsg.Response, error, bool) {
-		lookups.Add(1)
-		return nil, nil, false
-	}
-	c.ControlKey(kmsg.ListOffsets.Int16(), count)
-	c.ControlKey(kmsg.OffsetFetch.Int16(), count)
-	ackOnly := read(t, r, ReadRequest{Group: "g", BatchSize: 0, Ack: first.Position})
-	require.Empty(t, ackOnly.Records)
-	require.Zero(t, lookups.Load())
-
-	next := read(t, r, ReadRequest{Group: "g", BatchSize: 1, Ack: ackOnly.Position})
-	require.Equal(t, []string{"m1"}, values(next.Records))
-}
-
-// fetchMaxBytes caps what each fetch asks Kafka for, and a batch larger than one fetch still
-// fills, over several.
-func TestGroupReader_FetchMaxBytes(t *testing.T) {
-	c, err := kfake.NewCluster(kfake.NumBrokers(1), kfake.SeedTopics(3, testTopic))
-	require.NoError(t, err)
-	t.Cleanup(c.Close)
-	cfg := Config{Brokers: c.ListenAddrs(), Topic: testTopic, StartFrom: StartFromOldest}
-	value := strings.Repeat("x", 200)
-	for range 5 {
-		produce(t, cfg, 0, value) // one producer batch each, so a fetch can stop between them
-	}
-
-	var mu sync.Mutex
-	var asked []int32
-	c.ControlKey(kmsg.Fetch.Int16(), func(req kmsg.Request) (kmsg.Response, error, bool) {
-		c.KeepControl()
-		fetch := req.(*kmsg.FetchRequest)
-		mu.Lock()
-		defer mu.Unlock()
-		asked = append(asked, fetch.MaxBytes)
-		for _, topic := range fetch.Topics {
-			for _, part := range topic.Partitions {
-				asked = append(asked, part.PartitionMaxBytes)
-			}
-		}
-		return nil, nil, false
-	})
-	r, err := NewGroupReader(cfg, 300)
-	require.NoError(t, err)
-	t.Cleanup(r.Close)
-
-	res := read(t, r, ReadRequest{Group: "g", BatchSize: 5})
-	require.Len(t, res.Records, 5)
-	mu.Lock()
-	defer mu.Unlock()
-	require.NotEmpty(t, asked)
-	for _, n := range asked {
-		require.Equal(t, int32(300), n)
-	}
-}
-
-func TestGroupReader_GroupsAreIndependent(t *testing.T) {
-	cfg := newCluster(t)
-	produce(t, cfg, 0, "m0", "m1")
-	r := newReader(t, cfg)
-
-	a := read(t, r, ReadRequest{Group: "a", BatchSize: 1})
-	read(t, r, ReadRequest{Group: "a", BatchSize: 0, Ack: a.Position})
-	b := read(t, r, ReadRequest{Group: "b", BatchSize: 10})
-	require.Equal(t, []string{"m0", "m1"}, values(b.Records))
-}
-
-// The byte limit stops a batch before the record that would pass it, and the next read starts
-// at that record, so none is skipped.
-func TestGroupReader_ByteLimit(t *testing.T) {
-	cfg := newCluster(t)
-	big := strings.Repeat("x", 300)
-	produce(t, cfg, 0, big+"0", big+"1", big+"2", big+"3")
-	r := newReader(t, cfg)
-	oneRecord := EncodedSize(kafkaapi.Record{Topic: testTopic, Timestamp: time.Now().UTC().Format(time.RFC3339Nano), Value: []byte(big + "0")})
-
-	first := read(t, r, ReadRequest{Group: "g", BatchSize: 100, MaxBytes: 2*oneRecord + oneRecord/2})
-	require.Equal(t, []string{big + "0", big + "1"}, values(first.Records))
-	second := read(t, r, ReadRequest{Group: "g", BatchSize: 100, MaxBytes: 2*oneRecord + oneRecord/2, Ack: first.Position})
-	require.Equal(t, []string{big + "2", big + "3"}, values(second.Records))
-}
-
-// Once a record doesn't fit, a smaller one after it in the partition isn't taken instead: that
-// would move the position past the one that didn't fit, and it would never be read.
-func TestGroupReader_ByteLimitNeverSkipsARecord(t *testing.T) {
-	cfg := newCluster(t)
-	unit := strings.Repeat("x", 300)
-	produce(t, cfg, 0, unit, unit+unit, unit)
-	r := newReader(t, cfg)
-	oneUnit := EncodedSize(kafkaapi.Record{Topic: testTopic, Timestamp: time.Now().UTC().Format(time.RFC3339Nano), Value: []byte(unit)})
-	limit := 2*oneUnit + oneUnit/2 // fits the first and the third, not the first and the second
-
-	first := read(t, r, ReadRequest{Group: "g", BatchSize: 100, MaxBytes: limit})
-	require.Equal(t, []string{unit}, values(first.Records))
-	second := read(t, r, ReadRequest{Group: "g", BatchSize: 100, MaxBytes: limit, Ack: first.Position})
-	require.Equal(t, []string{unit + unit}, values(second.Records))
-}
-
-func TestGroupReader_RecordTooLarge(t *testing.T) {
-	cfg := newCluster(t)
-	produce(t, cfg, 0, strings.Repeat("x", 1000))
-	r := newReader(t, cfg)
-
-	_, err := r.Read(context.Background(), ReadRequest{Group: "g", BatchSize: 10, MaxBytes: 500})
-	require.ErrorIs(t, err, ErrRecordTooLarge)
-	require.ErrorContains(t, err, "partition 0 offset 0")
-}
-
-func TestGroupReader_NoTimeLimitReturnsAtOnceWhenEmpty(t *testing.T) {
-	cfg := newCluster(t)
-	r := newReader(t, cfg)
-
-	start := time.Now()
-	res := read(t, r, ReadRequest{Group: "g", BatchSize: 10})
-	require.Empty(t, res.Records)
-	require.Less(t, time.Since(start), 2*time.Second)
-}
-
-// With a time limit, a read waits for new records and returns as soon as the batch is full.
-func TestGroupReader_TimeLimitReturnsWhenFull(t *testing.T) {
-	cfg := newCluster(t)
-	r := newReader(t, cfg)
-
-	produceAfter(t, cfg, 300*time.Millisecond, 2, "late0", "late1")
-	start := time.Now()
-	res := read(t, r, ReadRequest{Group: "g", BatchSize: 2, TimeLimit: 20 * time.Second})
-	require.Equal(t, []string{"late0", "late1"}, values(res.Records))
-	require.Less(t, time.Since(start), 10*time.Second)
-}
-
-// With a time limit, a batch that doesn't fill is returned when the time limit passes.
-func TestGroupReader_TimeLimitReturnsWhatItHas(t *testing.T) {
-	cfg := newCluster(t)
-	produce(t, cfg, 0, "only")
-	r := newReader(t, cfg)
-
-	start := time.Now()
-	res := read(t, r, ReadRequest{Group: "g", BatchSize: 10, TimeLimit: partialWait})
-	require.Equal(t, []string{"only"}, values(res.Records))
-	require.GreaterOrEqual(t, time.Since(start), partialWait)
-}
-
-func TestGroupReader_RejectsAnotherGroupsAck(t *testing.T) {
-	cfg := newCluster(t)
-	produce(t, cfg, 0, "m0")
-	r := newReader(t, cfg)
-
-	a := read(t, r, ReadRequest{Group: "a", BatchSize: 1})
-	_, err := r.Read(context.Background(), ReadRequest{Group: "b", BatchSize: 1, Ack: a.Position})
-	require.ErrorIs(t, err, ErrInvalidPosition)
-	require.ErrorContains(t, err, `returned for group "a"`)
-
-	_, err = r.Read(context.Background(), ReadRequest{Group: "a", BatchSize: 1, Ack: "not a position"})
-	require.ErrorIs(t, err, ErrInvalidPosition)
-}
-
-// A reader can't commit an ack for a group that has live members, such as a relay's. (Its
-// first read commits nothing: the member committed a start for every partition when it joined.)
-func TestGroupReader_GroupInUse(t *testing.T) {
-	cfg := newCluster(t)
-	produce(t, cfg, 0, "m0", "m1")
-	member, err := NewGroupMember(cfg, "live")
-	require.NoError(t, err)
-	t.Cleanup(member.Close)
-	b, err := member.Next(context.Background(), 1, 0)
-	require.NoError(t, err)
-	require.NoError(t, member.Commit(context.Background(), b))
-
-	r := newReader(t, cfg)
-	res := read(t, r, ReadRequest{Group: "live", BatchSize: 1})
-	_, err = r.Read(context.Background(), ReadRequest{Group: "live", BatchSize: 0, Ack: res.Position})
-	require.ErrorIs(t, err, ErrGroupInUse)
-}
-
-// recreateTopic deletes the test topic and creates it again, empty, with a new topic ID.
-func recreateTopic(t *testing.T, cfg Config) {
-	t.Helper()
-	cl, err := kgo.NewClient(cfg.clientOpts()...)
-	require.NoError(t, err)
-	defer cl.Close()
-	admin := kadm.NewClient(cl)
-	_, err = admin.DeleteTopics(context.Background(), testTopic)
-	require.NoError(t, err)
-	require.Eventually(t, func() bool {
-		_, err := admin.CreateTopic(context.Background(), 3, 1, nil, testTopic)
-		return err == nil
-	}, 10*time.Second, 100*time.Millisecond)
-}
-
-// readRetrying reads like an activity that is retried: right after a topic is created again,
-// the client's cached metadata can still name the old topic, which fails a read until it
-// refreshes.
-func readRetrying(t *testing.T, r *GroupReader, req ReadRequest) ReadResult {
-	t.Helper()
-	var res ReadResult
-	require.Eventually(t, func() bool {
-		var err error
-		res, err = r.Read(context.Background(), req)
-		return err == nil
-	}, 30*time.Second, 200*time.Millisecond)
-	return res
-}
-
-// A position from before the topic was deleted and created again is refused rather than
-// committed against the new topic, where its offsets would skip the new topic's first records.
-func TestGroupReader_AckFromARecreatedTopic(t *testing.T) {
-	cfg := newCluster(t)
-	produce(t, cfg, 0, "old0", "old1")
-	r := newReader(t, cfg)
-	old := read(t, r, ReadRequest{Group: "g", BatchSize: 2})
-	require.Equal(t, []string{"old0", "old1"}, values(old.Records))
-
-	recreateTopic(t, cfg)
-	produce(t, cfg, 0, "new0", "new1", "new2")
-	_, err := r.Read(context.Background(), ReadRequest{Group: "g", BatchSize: 10, Ack: old.Position})
-	require.ErrorIs(t, err, ErrInvalidPosition)
-
-	// Reading without the ack starts over on the new topic.
-	res := readRetrying(t, r, ReadRequest{Group: "g", BatchSize: 10})
-	require.Equal(t, []string{"new0", "new1", "new2"}, values(res.Records))
-}
-
-// Offsets the group committed for the old topic don't apply to the new one: Kafka deletes them with
-// the topic (checked against Kafka 4.3.1 too), so reading starts over.
-func TestGroupReader_CommitsFromARecreatedTopic(t *testing.T) {
-	cfg := newCluster(t)
-	produce(t, cfg, 0, "old0", "old1")
-	r := newReader(t, cfg)
-	old := read(t, r, ReadRequest{Group: "g", BatchSize: 2})
-	read(t, r, ReadRequest{Group: "g", BatchSize: 0, Ack: old.Position}) // commits offset 2
-
-	recreateTopic(t, cfg)
-	produce(t, cfg, 0, "new0", "new1", "new2")
-	res := readRetrying(t, r, ReadRequest{Group: "g", BatchSize: 10})
-	require.Equal(t, []string{"new0", "new1", "new2"}, values(res.Records))
-}
-
 func TestStartOffset(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -440,16 +87,6 @@ func TestStartOffset(t *testing.T) {
 			require.Equal(t, tc.want, startOffset(tc.committed, tc.known, 2, 10, tc.startFrom))
 		})
 	}
-}
-
-func TestPosition_RoundTrip(t *testing.T) {
-	p := position{Group: "g", Topic: testTopic, Offsets: map[int32]int64{0: 3, 2: 7}}
-	got, err := decodePosition(p.encode(), "g", testTopic)
-	require.NoError(t, err)
-	require.Equal(t, p, got)
-
-	_, err = decodePosition(p.encode(), "g", "other-topic")
-	require.ErrorIs(t, err, ErrInvalidPosition)
 }
 
 func newMember(t *testing.T, cfg Config, group string) *GroupMember {
@@ -596,7 +233,7 @@ func TestGroupMember_RebalanceWanted(t *testing.T) {
 	require.Less(t, time.Since(start), time.Minute, "returned before the time limit")
 }
 
-// A tombstone (a null value) and an empty value stay apart, through a read and into a dead letter.
+// A tombstone (a null value) and an empty value stay apart, through a batch and into a dead letter.
 func TestTombstone(t *testing.T) {
 	cfg := newCluster(t)
 	cl, err := kgo.NewClient(cfg.clientOpts(kgo.RecordPartitioner(kgo.ManualPartitioner()))...)
@@ -607,9 +244,10 @@ func TestTombstone(t *testing.T) {
 		&kgo.Record{Topic: testTopic, Key: []byte("k"), Value: []byte{}},
 	).FirstErr())
 
-	res := read(t, newReader(t, cfg), ReadRequest{Group: "g", BatchSize: 2})
-	require.Len(t, res.Records, 2)
-	tombstone, empty := res.Records[0], res.Records[1]
+	b, err := newMember(t, cfg, "g").Next(context.Background(), 2, 0)
+	require.NoError(t, err)
+	require.Len(t, b.Records, 2)
+	tombstone, empty := b.Records[0], b.Records[1]
 	require.True(t, tombstone.Tombstone)
 	require.False(t, empty.Tombstone)
 	require.Nil(t, DeadLetter("dl", tombstone, "g", errors.New("x")).Value)
@@ -689,30 +327,8 @@ func TestLoadConfig(t *testing.T) {
 	cfg, err := LoadConfig(settings.Map{"KAFKA_BROKERS": "a:9092,b:9092", "KAFKA_TOPIC": "t"})
 	require.NoError(t, err)
 	require.Equal(t, []string{"a:9092", "b:9092"}, cfg.Brokers)
-	require.Equal(t, StartFromOldest, cfg.StartFrom)
 
-	_, err = LoadConfig(settings.Map{"KAFKA_BROKERS": "a:9092", "KAFKA_TOPIC": "t", "KAFKA_START_FROM": "latest"})
-	require.ErrorContains(t, err, "KAFKA_START_FROM must be oldest or newest")
-
-	_, err = LoadConfig(settings.Map{"KAFKA_START_FROM": "latest"})
+	_, err = LoadConfig(settings.Map{})
 	require.EqualError(t, err, "set KAFKA_BROKERS: the Kafka brokers, as comma-separated host:port"+
-		"\nset KAFKA_TOPIC: the topic to serve"+
-		"\nKAFKA_START_FROM must be oldest or newest, not \"latest\"", "every invalid value is reported")
-}
-
-// GroupMembers counts a group's live members, such as a relay, and none for a group that doesn't
-// exist.
-func TestGroupMembers(t *testing.T) {
-	cfg := newCluster(t)
-	produce(t, cfg, 0, "m0")
-	n, err := GroupMembers(context.Background(), cfg, "live")
-	require.NoError(t, err)
-	require.Zero(t, n, "no such group yet")
-
-	member := newMember(t, cfg, "live")
-	_, err = member.Next(context.Background(), 1, 0) // joined once it has a batch
-	require.NoError(t, err)
-	n, err = GroupMembers(context.Background(), cfg, "live")
-	require.NoError(t, err)
-	require.Equal(t, 1, n)
+		"\nset KAFKA_TOPIC: the topic to serve", "every invalid value is reported")
 }

@@ -12,46 +12,24 @@ import (
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
-// batch collects records up to a number of records and, if maxBytes isn't 0, a number of encoded
-// bytes. A batch always takes its first record, however large, so a large record can't stop
-// reading; the caller decides what to do with a batch that is too big (see ErrRecordTooLarge).
+// batch collects records up to a number of records.
 type batch struct {
 	maxRecords int
-	maxBytes   int
 	records    []kafkaapi.Record
-	bytes      int
-	refused    bool // a record didn't fit, so the batch takes no more
 }
 
-func newBatch(maxRecords, maxBytes int) *batch {
-	return &batch{maxRecords: maxRecords, maxBytes: maxBytes, records: []kafkaapi.Record{}}
+func newBatch(maxRecords int) *batch {
+	return &batch{maxRecords: maxRecords, records: []kafkaapi.Record{}}
 }
 
-// add adds r and reports whether it fit. Once a record doesn't fit, the batch refuses every later
-// one, so no record is skipped in favor of a smaller one after it.
-func (b *batch) add(r kafkaapi.Record) bool {
-	if b.full() {
-		return false
-	}
-	size := EncodedSize(r)
-	if b.maxBytes > 0 && len(b.records) > 0 && b.bytes+size > b.maxBytes {
-		b.refused = true
-		return false
-	}
+// add adds r.
+func (b *batch) add(r kafkaapi.Record) {
 	b.records = append(b.records, r)
-	b.bytes += size
-	return true
 }
 
 // full reports whether the batch takes no more records.
 func (b *batch) full() bool {
-	return b.refused || len(b.records) >= b.maxRecords
-}
-
-// tooLarge reports whether the batch's encoded size is over its byte limit, which happens only
-// when its one record is.
-func (b *batch) tooLarge() bool {
-	return b.maxBytes > 0 && b.bytes > b.maxBytes
+	return len(b.records) >= b.maxRecords
 }
 
 // EncodedSize is the number of bytes r adds to an encoded batch: its JSON, as Temporal carries

@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"github.com/temporalio/nexus-connector-kafka/kafka"
 	"github.com/temporalio/nexus-connector-kafka/settings"
 	"github.com/temporalio/nexus-connector-kafka/setup"
 	"github.com/twmb/franz-go/pkg/kfake"
@@ -25,7 +24,7 @@ import (
 
 // connectorClientMakers are the client constructors of the library this repo's connector calls
 // Kafka with, as "import path.Name", which configui must not call itself (see TestNoOwnClient):
-// its checks go through the kafka package (Identify, ReadLast, GroupMembers).
+// its checks go through the kafka package (Identify, ReadLast).
 var connectorClientMakers = []string{
 	"github.com/twmb/franz-go/pkg/kgo.NewClient",
 	"github.com/twmb/franz-go/pkg/kadm.NewClient",
@@ -216,8 +215,8 @@ func TestTest_ReportsEverySettingsProblemAsStartupDoes(t *testing.T) {
 	require.Equal(t, strings.Split(startupErr.Error(), "\n"), problems)
 	require.Equal(t, []string{
 		"set KAFKA_BROKERS: the Kafka brokers, as comma-separated host:port",
-		`KAFKA_START_FROM must be oldest or newest, not "yesterday"`,
 		"set KAFKA_GROUP: the consumer group the relay joins",
+		`KAFKA_START_FROM must be oldest or newest, not "yesterday"`,
 		`KAFKA_BATCH_SIZE must be a whole number, at least 1, not "0"`,
 		"set RELAY_ENDPOINT: the Nexus endpoint to deliver to",
 		"RELAY_OPERATION_TIMEOUT must be more than 0",
@@ -289,31 +288,6 @@ func TestTest_RelayDeadLetterTopic(t *testing.T) {
 	require.Equal(t, []string{`Can't find the dead-letter topic "nowhere"; create it, or set DELETE_DEAD_LETTERS=true instead: ` +
 		`describe topic "nowhere": UNKNOWN_TOPIC_OR_PARTITION: This server does not host this topic-partition.`},
 		checkTitled(t, resp, "Kafka").Problems)
-}
-
-// A connector whose KAFKA_GROUP has live members, such as a relay, can't read: the Test says so.
-func TestTest_ConnectorGroupInUse(t *testing.T) {
-	setTemporalTimeout(t, time.Second)
-	brokers := newCluster(t, []string{"orders"}, "m")
-	member, err := kafka.NewGroupMember(kafka.Config{Brokers: strings.Split(brokers, ","), Topic: "orders", StartFrom: kafka.StartFromOldest}, "live")
-	require.NoError(t, err)
-	t.Cleanup(member.Close)
-	_, err = member.Next(context.Background(), 1, 0)
-	require.NoError(t, err)
-
-	h := newServer(baseEnv(t, nil), programs)
-	req := testRequest{Program: "connector", Values: map[string]string{
-		"KAFKA_BROKERS": brokers, "KAFKA_TOPIC": "orders", "KAFKA_GROUP": "live", "TEMPORAL_ADDRESS": "127.0.0.1:1",
-	}}
-	_, resp := postTest(t, h, req)
-	require.Equal(t, []string{`The consumer group "live" has 1 live member(s), such as a relay, so every read through this ` +
-		`connector would fail with GroupInUse. Set KAFKA_GROUP to a consumer group nothing else uses.`}, checkTitled(t, resp, "Kafka").Problems)
-
-	req.Values["KAFKA_GROUP"] = "free"
-	_, resp = postTest(t, h, req)
-	k := checkTitled(t, resp, "Kafka")
-	require.Empty(t, k.Problems)
-	require.Contains(t, k.Passed, `The consumer group "free" has no live members, so this connector can read for it.`)
 }
 
 // The page's values replace every variable the program owns; others pass through.

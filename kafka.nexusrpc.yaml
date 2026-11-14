@@ -5,15 +5,8 @@ services:
   KafkaService:
     fqn: KafkaService
     x-go-name: KafkaService
-    description: "Reads from and writes to one Kafka topic. Served by the Nexus Connector, which decides the topic."
+    description: "Writes to one Kafka topic. Served by the Nexus Connector, which decides the topic."
     operations:
-      read:
-        fqn: read
-        description: "Acknowledge the previous batch, if given, then read the next batch for a consumer group."
-        input:
-          $ref: "#/$defs/ReadInput"
-        output:
-          $ref: "#/$defs/ReadOutput"
       write:
         fqn: write
         description: "Write messages to the topic."
@@ -77,42 +70,6 @@ $defs:
         type: string
         contentEncoding: base64
     required: [key, value]
-    additionalProperties: false
-
-  ReadInput:
-    type: object
-    properties:
-      group:
-        type: string
-        description: "Consumer group whose committed offsets mark where reading continues. Use one reader per group, and not a group any application consumes from live. Required unless the Nexus Connector has a consumer group of its own (KAFKA_GROUP); then leave it empty or set it to that group"
-      batchSize:
-        type: integer
-        minimum: 0
-        maximum: 10000
-        default: 100
-        description: "Most messages to return. 0 only acknowledges"
-      timeLimitSeconds:
-        type: integer
-        minimum: 0
-        maximum: 600
-        default: 0
-        description: "How long to wait for the batch to fill. 0 returns at once with the messages already in the topic"
-      ack:
-        type: string
-        description: "The position from the previous read of this group. It is committed before reading, so the batch it ends is not returned again"
-    additionalProperties: false
-
-  ReadOutput:
-    type: object
-    properties:
-      records:
-        type: array
-        items:
-          $ref: "#/$defs/Record"
-      position:
-        type: string
-        description: "Pass as ack on the next read, once these records are processed"
-    required: [records, position]
     additionalProperties: false
 
   WriteInput:

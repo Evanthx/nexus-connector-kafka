@@ -11,16 +11,8 @@ import (
 // type; callers find it with errors.As. Any other failure is retried until the operation times
 // out.
 const (
-	// ErrorTypeInvalidRequest: the read names no consumer group, or one this endpoint doesn't serve;
-	// or the ack isn't a well-formed position for this group and topic, or is from an earlier topic
-	// of the same name; or the caller's Nexus operation times out too soon to run it. Positions aren't signed: callers are trusted to pass back what a read
-	// returned.
+	// ErrorTypeInvalidRequest: the caller's Nexus operation times out too soon to run the write.
 	ErrorTypeInvalidRequest = "InvalidRequest"
-	// ErrorTypeGroupInUse: the group has live members, such as a relay, so its offsets can't
-	// be committed from here. Use a group of its own.
-	ErrorTypeGroupInUse = "GroupInUse"
-	// ErrorTypeRecordTooLarge: the next record is larger than the batch byte limit on its own.
-	ErrorTypeRecordTooLarge = "RecordTooLarge"
 	// ErrorTypeRejected: Kafka refused the write, for example because a message is larger than the
 	// broker allows.
 	ErrorTypeRejected = "Rejected"
@@ -31,12 +23,8 @@ const (
 func applicationError(err error) error {
 	errType := ""
 	switch {
-	case errors.Is(err, kafka.ErrInvalidPosition), errors.Is(err, errInvalidGroup), errors.Is(err, errInvalidTimeout):
+	case errors.Is(err, errInvalidTimeout):
 		errType = ErrorTypeInvalidRequest
-	case errors.Is(err, kafka.ErrGroupInUse):
-		errType = ErrorTypeGroupInUse
-	case errors.Is(err, kafka.ErrRecordTooLarge):
-		errType = ErrorTypeRecordTooLarge
 	case errors.Is(err, kafka.ErrRejected):
 		errType = ErrorTypeRejected
 	default:

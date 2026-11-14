@@ -1,9 +1,8 @@
-// Command worker runs the test caller's workflows and the ProcessRecord activity. For testing only.
+// Command worker runs the test caller's workflow, WriterWorkflow. For testing only.
 //
 // The starter only starts workflows; this worker runs them. It polls TaskQueue in the kafka-test
-// namespace, and each ReaderWorkflow's loop (see ReaderWorkflow in test/nexuscaller/workflows.go)
-// runs here, read after read, until the workflow is terminated. If the worker stops, the workflow
-// doesn't: it carries on from its history when a worker polls again.
+// namespace. If the worker stops, a workflow doesn't: it carries on from its history when a worker
+// polls again.
 //
 // It needs no Kafka settings. Its workflows reach Kafka only through the Nexus endpoints
 // (CustomersEndpoint and OrdersEndpoint), which route to connectors in another namespace.
@@ -35,12 +34,10 @@ func main() {
 	// Default worker options: the SDK's limits on concurrent workflow and activity tasks are
 	// plenty for a test caller.
 	w := worker.New(c, nexuscaller.TaskQueue, worker.Options{})
-	w.RegisterWorkflow(nexuscaller.ReaderWorkflow)
 	w.RegisterWorkflow(nexuscaller.WriterWorkflow)
-	w.RegisterActivity(nexuscaller.ProcessRecord)
 	log.Printf("Starting worker on namespace %q, task queue %q", opts.Namespace, nexuscaller.TaskQueue)
 	log.Print("Waiting for workflows to run. Nothing more is logged until one starts: start one with " +
-		"`go run ./test/nexuscaller/starter read` or `write`, and each read and message processed is logged here")
+		"`go run ./test/nexuscaller/starter write`")
 	if err := w.Run(worker.InterruptCh()); err != nil {
 		log.Fatalf("Worker stopped: %v", err)
 	}

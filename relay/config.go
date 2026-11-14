@@ -57,6 +57,7 @@ func (c config) report(env settings.Env, namespace, address string) string {
 		c.kafka.Settings(env),
 		{Title: "Relay", Settings: []kafka.Setting{
 			{Name: "KAFKA_GROUP", Value: c.group},
+			kafka.EnvSetting(env, "KAFKA_START_FROM", c.kafka.StartFrom),
 			deadLetters,
 			kafka.EnvSetting(env, "DELETE_DEAD_LETTERS", c.deleteDeadLetters),
 			kafka.EnvSetting(env, "KAFKA_BATCH_SIZE", c.batchSize),

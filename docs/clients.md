@@ -9,7 +9,7 @@ and a bad request fails in your code, with the field named, before it is sent.
 The Kafka connector's operations are defined in one file,
 [`kafka.nexusrpc.yaml`](../kafka.nexusrpc.yaml), its *contract*. It names two services:
 
-- **`KafkaService`**, served by the connector: `read` and `write`.
+- **`KafkaService`**, served by the connector: `write`.
 - **`KafkaMessageReceiver`**, which the relay calls: `receive`, one call per partition batch.
   Implement this service to receive the topic's messages.
 
@@ -35,8 +35,8 @@ Go types are already generated and committed in this repo, in `generated/kafkaap
 import "github.com/temporalio/nexus-connector-kafka/generated/kafkaapi"
 ```
 
-[`test/nexuscaller/workflows.go`](../test/nexuscaller/workflows.go) shows a complete read and write
-loop using these types.
+[`test/nexuscaller/workflows.go`](../test/nexuscaller/workflows.go) shows a complete write using
+these types.
 
 ## Other languages
 

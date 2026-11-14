@@ -33,8 +33,8 @@ type GroupMember struct {
 }
 
 // NewGroupMember joins group for the topic in cfg. A partition the group has no committed offset
-// for, or whose committed offset is no longer in the log, starts where cfg.StartFrom says, the
-// same way a GroupReader's does (see startOffset).
+// for, or whose committed offset is no longer in the log, starts where cfg.StartFrom says (see
+// startOffset).
 func NewGroupMember(cfg Config, group string) (*GroupMember, error) {
 	reset := kgo.NewOffset().AtStart()
 	if cfg.StartFrom == StartFromNewest {
@@ -162,7 +162,7 @@ func (m *GroupMember) Next(ctx context.Context, batchSize int, timeLimit time.Du
 		case <-pollCtx.Done():
 		}
 	}()
-	b := newBatch(batchSize, 0)
+	b := newBatch(batchSize)
 	var raw []*kgo.Record
 	done := func() bool { return b.full() || (timeLimit == 0 && len(raw) > 0) }
 	poll := func(pollCtx context.Context) error {
