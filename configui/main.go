@@ -214,16 +214,6 @@ func (s *server) describe() pageJSON {
 		Title: pageTitle, Values: map[string]string{}, SecretsSet: map[string]bool{}, External: map[string]externalJSON{},
 		TemporalProfile: describeProfile(s.env, s.programs),
 	}
-	show := func(name string, secret bool) {
-		v := settings.Get(s.env, name)
-		switch {
-		case secret:
-			out.SecretsSet[name] = v != ""
-		case v != "":
-			out.Values[name] = v
-		default: // a non-secret that isn't set: the page shows its default
-		}
-	}
 	for _, p := range s.programs {
 		pj := programJSON{ID: p.Settings.ID, Name: p.Settings.Name, Command: p.Settings.Command, TestFields: p.TestFields}
 		if pj.TestFields == nil {
@@ -239,29 +229,47 @@ func (s *server) describe() pageJSON {
 				if v.External != "" {
 					out.External[v.Name] = describeExternal(s.env, v)
 				} else {
-					show(v.Name, v.Secret)
+					out.show(s.env, v.Name, v.Secret)
 				}
 			}
 			for _, f := range sec.Families {
-				fj := familyJSON{
-					Prefix: f.Prefix, Help: f.Help, AddButton: f.AddButton, AddHelp: f.AddHelp, Example: f.Example,
-					NamePattern: settings.InstanceNamePattern, Instances: nonNil(instances(f, s.env, out.TemporalProfile)),
-				}
-				for _, m := range f.Members {
-					fj.Members = append(fj.Members, memberJSON{
-						Suffix: m.Suffix, Label: m.Label, Help: m.Help, Placeholder: m.Placeholder, Required: m.Required, Secret: m.Secret,
-					})
-					for _, inst := range fj.Instances {
-						show(f.Name(inst, m), m.Secret)
-					}
-				}
-				sj.Families = append(sj.Families, fj)
+				sj.Families = append(sj.Families, out.describeFamily(s.env, f))
 			}
 			pj.Sections = append(pj.Sections, sj)
 		}
 		out.Programs = append(out.Programs, pj)
 	}
 	return out
+}
+
+// show records name's value from env on the page: whether it is set for a secret, else its value
+// if set.
+func (out *pageJSON) show(env settings.Env, name string, secret bool) {
+	v := settings.Get(env, name)
+	switch {
+	case secret:
+		out.SecretsSet[name] = v != ""
+	case v != "":
+		out.Values[name] = v
+	default: // a non-secret that isn't set: the page shows its default
+	}
+}
+
+// describeFamily is f's JSON, recording each of its instances' values on the page.
+func (out *pageJSON) describeFamily(env settings.Env, f *settings.Family) familyJSON {
+	fj := familyJSON{
+		Prefix: f.Prefix, Help: f.Help, AddButton: f.AddButton, AddHelp: f.AddHelp, Example: f.Example,
+		NamePattern: settings.InstanceNamePattern, Instances: nonNil(instances(f, env, out.TemporalProfile)),
+	}
+	for _, m := range f.Members {
+		fj.Members = append(fj.Members, memberJSON{
+			Suffix: m.Suffix, Label: m.Label, Help: m.Help, Placeholder: m.Placeholder, Required: m.Required, Secret: m.Secret,
+		})
+		for _, inst := range fj.Instances {
+			out.show(env, f.Name(inst, m), m.Secret)
+		}
+	}
+	return fj
 }
 
 // describeExternal is v as its library reads it from env, masked.

@@ -25,11 +25,10 @@ func TestReadLast_EmptyTopic(t *testing.T) {
 
 func TestReadLast_ReturnsTheNewestMessageEveryTime(t *testing.T) {
 	cfg := newCluster(t)
-	produce(t, cfg, 0, "p0 first", "p0 second")
-	time.Sleep(5 * time.Millisecond) // later timestamps for the next writes
-	produce(t, cfg, 2, "p2 only")
-	time.Sleep(5 * time.Millisecond)
-	produce(t, cfg, 1, "p1 first", "p1 newest")
+	start := time.Now()
+	produceAt(t, cfg, 0, start, "p0 first", "p0 second")
+	produceAt(t, cfg, 2, start.Add(time.Second), "p2 only")
+	produceAt(t, cfg, 1, start.Add(2*time.Second), "p1 first", "p1 newest")
 
 	for range 3 {
 		value, partition, ok := readLast(t, cfg)
@@ -39,8 +38,7 @@ func TestReadLast_ReturnsTheNewestMessageEveryTime(t *testing.T) {
 	}
 
 	// A newer message on another partition replaces it.
-	time.Sleep(5 * time.Millisecond)
-	produce(t, cfg, 0, "p0 newest")
+	produceAt(t, cfg, 0, start.Add(3*time.Second), "p0 newest")
 	value, _, _ := readLast(t, cfg)
 	require.Equal(t, "p0 newest", value)
 }

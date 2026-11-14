@@ -47,6 +47,19 @@ func produceAfter(t *testing.T, cfg Config, delay time.Duration, partition int32
 }
 
 func write(cfg Config, partition int32, values ...string) error {
+	return writeAt(cfg, partition, time.Time{}, values...)
+}
+
+// produceAt writes values to one partition with the timestamp at, so a test can order messages
+// across partitions without waiting for the clock.
+func produceAt(t *testing.T, cfg Config, partition int32, at time.Time, values ...string) {
+	t.Helper()
+	require.NoError(t, writeAt(cfg, partition, at, values...))
+}
+
+// writeAt writes values to one partition. A zero at lets the client stamp each record with the
+// time it is produced.
+func writeAt(cfg Config, partition int32, at time.Time, values ...string) error {
 	cl, err := kgo.NewClient(cfg.clientOpts(kgo.RecordPartitioner(kgo.ManualPartitioner()))...)
 	if err != nil {
 		return err
@@ -54,7 +67,7 @@ func write(cfg Config, partition int32, values ...string) error {
 	defer cl.Close()
 	recs := make([]*kgo.Record, len(values))
 	for i, v := range values {
-		recs[i] = &kgo.Record{Topic: cfg.Topic, Partition: partition, Value: []byte(v)}
+		recs[i] = &kgo.Record{Topic: cfg.Topic, Partition: partition, Value: []byte(v), Timestamp: at}
 	}
 	return cl.ProduceSync(context.Background(), recs...).FirstErr()
 }
