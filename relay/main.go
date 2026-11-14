@@ -3,9 +3,9 @@
 // each batch, through a Nexus endpoint. It only sends messages in: it doesn't wait for results. Run
 // several to share the topic's partitions.
 //
-// Settings come from the environment: see configFromEnv and kafka.ConfigFromEnv. It connects to
-// Temporal with the standard TEMPORAL_* variables and the temporal CLI's profile file; the
-// namespace defaults to connectors.
+// Settings come from the environment: every variable it reads is listed in setup.Relay. It
+// connects to Temporal with the standard TEMPORAL_* variables and the temporal CLI's profile file;
+// the namespace defaults to connectors.
 package main
 
 import (
@@ -19,11 +19,10 @@ import (
 	"syscall"
 
 	"github.com/temporalio/nexus-connector-kafka/kafka"
+	"github.com/temporalio/nexus-connector-kafka/settings"
+	"github.com/temporalio/nexus-connector-kafka/setup"
 	"go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/contrib/envconfig"
 )
-
-const defaultNamespace = "connectors"
 
 func main() {
 	if err := run(); err != nil {
@@ -41,16 +40,14 @@ func run() error {
 	// Check the relay's configuration and the connection to Temporal before stopping on
 	// either, so one run reports every problem rather than only the first.
 	var problems []string
-	cfg, err := configFromEnv()
+	env := settings.OS()
+	cfg, err := configFrom(env)
 	if err != nil {
 		problems = append(problems, "Invalid relay configuration:\n"+indent(err.Error()))
 	}
-	opts, err := envconfig.LoadDefaultClientOptions()
+	opts, err := setup.ClientOptions(env)
 	if err != nil {
 		problems = append(problems, "Failed to load Temporal client configuration:\n"+indent(err.Error()))
-	}
-	if opts.Namespace == "" {
-		opts.Namespace = defaultNamespace
 	}
 	var c client.Client
 	if err == nil {
@@ -72,7 +69,7 @@ func run() error {
 		address = client.DefaultHostPort
 	}
 	// Logged before connecting to Kafka, so it shows even if Kafka is slow to answer.
-	log.Print(cfg.report(opts.Namespace, address))
+	log.Print(cfg.report(env, opts.Namespace, address))
 	if err := kafka.ConnectAtStartup(ctx, cfg.kafka); err != nil {
 		if ctx.Err() != nil {
 			return nil // stopped while waiting for Kafka

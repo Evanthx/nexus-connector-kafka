@@ -116,7 +116,9 @@ generates typed input and output classes in Go, Python, TypeScript, and Java. Se
 **How do I configure SASL credentials?**
 Set `KAFKA_USERNAME` and `KAFKA_PASSWORD` on the connector or relay process. Only
 SASL/SCRAM-SHA-256 is supported; TLS and other SASL mechanisms are not currently supported. Leave
-both unset for no authentication. See [Setup](docs/setup.md) for the full environment variable reference.
+both unset for no authentication. See [Environment variables](docs/setup.md#environment-variables)
+for every variable, and [the setup page](docs/setup.md#work-out-your-settings-in-a-browser) to try
+your settings before running either program.
 
 **Is delivery at-least-once or exactly-once?**
 At-least-once. The relay commits a batch only after Temporal accepts its operations. If it
@@ -140,8 +142,12 @@ See [How it works](docs/how-it-works.md) for more detail.
 
 ## Documentation
 
-- [Setup](docs/setup.md): prerequisites, environment variables, creating endpoints, running the
-  programs, the configui settings browser, and the full settings reference.
+- [Setup](docs/setup.md): prerequisites, creating endpoints, running the programs, and every
+  environment variable. To work out and test the environment variables in a form, run
+  `make configui` and open <http://localhost:8090>: its **Test** checks every variable as the
+  program does at startup, connects to Temporal and checks the namespace and the Nexus endpoint,
+  and reads the topic's last message through the programs' own Kafka code (see
+  [Work out your settings in a browser](docs/setup.md#work-out-your-settings-in-a-browser)).
 - [Testing](docs/testing.md): demo walkthrough with a local dev server and Docker Kafka, and unit
   and end-to-end tests.
 - [Typed clients](docs/clients.md): the contract, and generating clients for Go, Python,

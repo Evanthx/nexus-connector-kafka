@@ -56,6 +56,10 @@ call it.
 | `RELAY_ENDPOINT` | The Nexus endpoint to deliver to. It routes to the service that receives the messages, `KafkaMessageReceiver.receive`. |
 | `TEMPORAL_ADDRESS`, `TEMPORAL_NAMESPACE` | Your Temporal server and namespace (default `connectors`), plus `TEMPORAL_API_KEY` for Temporal Cloud. The namespace needs standalone Nexus operations. |
 
+To work them out and test them in a browser first, use the
+[setup page](#work-out-your-settings-in-a-browser). Every variable the relay reads is in
+[Environment variables](#environment-variables).
+
 Then run:
 
 ```bash
@@ -79,6 +83,10 @@ The connector serves the topic as `KafkaService` with `read` and `write` operati
 | `KAFKA_GROUP` | Optional. The only consumer group reads may use. Leave it unset to let each read name its own. |
 | `NEXUS_TASK_QUEUE` | The task queue to serve (default `nexus-connector-kafka`). Give each connector for a different topic or consumer group its own. |
 | `TEMPORAL_ADDRESS`, `TEMPORAL_NAMESPACE` | Your Temporal server and namespace (default `connectors`), plus `TEMPORAL_API_KEY` for Temporal Cloud. The namespace needs standalone activities with completion callbacks. |
+
+To work them out and test them in a browser first, use the
+[setup page](#work-out-your-settings-in-a-browser). Every variable the connector reads is in
+[Environment variables](#environment-variables).
 
 Then run:
 
@@ -118,28 +126,45 @@ namespace.
 
 ## Work out your settings in a browser
 
-`configui` is a page for working out the variables before you run either program:
-
-- It shows every variable the relay or the connector reads, with what it does and its
-  default. Fields start with the values set in the terminal you started it from.
-- **Test** sets the variables in the page's own process, then reads the topic's last message
-  using the programs' own Kafka code. Nothing is committed and no consumer group is joined.
-- **Variables to set** lists the `export` lines to use where the program runs.
+To work out the variables in a form and test them before starting either program, run:
 
 ```bash
-go run ./configui               # http://localhost:8090; -addr localhost:9000 for another port
+make configui    # or: go run ./configui --addr localhost:8090
 ```
 
-The page listens on localhost only, since it handles credentials. To try it against a local Kafka,
-run `test/kafka/scripts/configui.sh` from the repository root (requires Docker): it starts the
-local Kafka, seeds it, writes one more message, and opens the page with the local Kafka's settings
-pre-filled. See [Testing](testing.md) for the full demo.
+and open <http://localhost:8090>. Choose the relay or the connector at the top. The page shows
+every variable in [Environment variables](#environment-variables) with its help and default, and
+the value set in the terminal you started it from. Secrets (`KAFKA_PASSWORD`, `TEMPORAL_API_KEY`)
+show only as set or not set; a secret you type is used for the test only, never shown again or
+saved. **Test** checks:
+
+- **Settings**: every variable, as the program checks them at startup, listing every problem at
+  once.
+- **Temporal**: it connects as the program would, then checks that the namespace exists. For the
+  connector, it checks that a Nexus endpoint targets the namespace and `NEXUS_TASK_QUEUE`, and
+  shows the command to create one if none does. For the relay, it checks that the endpoint
+  `RELAY_ENDPOINT` names exists, and shows where it leads.
+- **Kafka**: it connects with the programs' own Kafka code, finds the topic, and reads its last
+  message, without joining a consumer group or committing anything. A failure shows Kafka's whole
+  error. For the relay, it also checks that `KAFKA_DEAD_LETTER_TOPIC` exists; for a connector with
+  `KAFKA_GROUP`, that no live consumer, such as a relay, is in that consumer group, which would
+  make every read fail with `GroupInUse`.
+
+The page ends with the `export` lines to set, with a `<set NAME>` placeholder for each secret. It
+never changes the program's environment, and it only answers on localhost, since it handles
+credentials.
+
+To try it against a local Kafka, run `test/kafka/scripts/configui.sh` from the repository root
+(requires Docker): it starts the local Kafka, seeds it, writes one more message to be the topic's
+last, and runs the page with the local Kafka's settings filled in. See [Testing](testing.md) for the
+full demo.
 
 ## Connecting to Temporal Cloud
 
 Both programs connect to Temporal the way the `temporal` CLI does: set `TEMPORAL_ADDRESS` to your
 namespace's gRPC endpoint, `TEMPORAL_NAMESPACE` to your namespace name, and `TEMPORAL_API_KEY`
-to an API key. TLS settings (`TEMPORAL_TLS_*`) and the CLI's profile file also work.
+to an API key. The CLI's profile file and the other `TEMPORAL_*` variables in the
+[Temporal tables](#environment-variables) also work.
 
 The namespace defaults to `connectors`. To use another, including `default`, set
 `TEMPORAL_NAMESPACE` or the profile file's `namespace`; the variable wins if both are set.
@@ -155,27 +180,120 @@ The namespace the connector and the relay run in needs:
 
 Confirm with Temporal that both are enabled for your namespace before running.
 
-## Full settings reference
+## Environment variables
 
-Both programs connect to Temporal with `TEMPORAL_ADDRESS`, `TEMPORAL_NAMESPACE` (default
-`connectors`), `TEMPORAL_API_KEY`, `TEMPORAL_TLS_*`, and the CLI's profile file.
+Set these where each program runs. The [setup page](#work-out-your-settings-in-a-browser) shows
+the same lists and tests your values. The tables below are generated from `setup/settings.go` and,
+for the Kafka variables both programs share, `kafka/settings.go`, with `make docs`: change a
+variable there, not here.
 
-| Variable | Used by | Meaning |
-|---|---|---|
-| `KAFKA_BROKERS` | both | Comma-separated `host:port` list. Required. |
-| `KAFKA_TOPIC` | both | The topic. Required. |
-| `KAFKA_USERNAME`, `KAFKA_PASSWORD` | both | SASL/SCRAM-SHA-256 login. Leave unset for no authentication. |
-| `KAFKA_START_FROM` | both | `oldest` (default) or `newest`; see [How it works](how-it-works.md#where-reading-starts). |
-| `KAFKA_MAX_BATCH_BYTES` | connector | Most bytes a read's result encodes to. Default 2097152. |
-| `KAFKA_MAX_DURATION_MINUTES` | connector | Longest a read or write retries, in whole minutes, at least 1. Default: 10 for a write, a read's time limit plus 5 for a read. Retries also stop 10 seconds before the caller's timeout. |
-| `KAFKA_GROUP` | relay | The consumer group to join. Required. |
-| `KAFKA_GROUP` | connector | The only consumer group reads may use; see [How it works](how-it-works.md#the-connector). Unset, each read names one. |
-| `NEXUS_TASK_QUEUE` | connector | The task queue its Nexus endpoint targets. Reads run on this name with `-reads` added. Default `nexus-connector-kafka`. |
-| `KAFKA_DEAD_LETTER_TOPIC` | relay | Where undeliverable messages go. Must already exist. Required unless `DELETE_DEAD_LETTERS` is `true`. |
-| `DELETE_DEAD_LETTERS` | relay | `true` to delete undeliverable messages instead of writing them to a topic; then leave `KAFKA_DEAD_LETTER_TOPIC` unset. Default `false`. |
-| `KAFKA_BATCH_SIZE` | relay | Most messages per batch. Default 100. Set 1 to rule out duplicates. |
-| `KAFKA_BATCH_TIME_LIMIT` | relay | How long a batch waits to fill, such as `500ms`. Default 0. |
-| `RELAY_ENDPOINT` | relay | The Nexus endpoint to deliver to. Required. |
-| `RELAY_SERVICE`, `RELAY_OPERATION` | relay | The service and operation. Default `KafkaMessageReceiver` and `receive`. |
-| `RELAY_OPERATION_TIMEOUT` | relay | How long each operation may take. Default `24h`. |
-| `RELAY_MAX_INPUT_BYTES` | relay | The largest encoded input sent to an operation. Default 2031616 (2 MiB less 64 KiB). |
+<!-- settings:start -->
+**Nexus Connector Relay** (`go run ./relay`):
+
+### Kafka
+
+| Variable | Required | Default | Meaning |
+|---|---|---|---|
+| `KAFKA_BROKERS` | yes |  | The Kafka brokers to connect to, as a comma-separated list of `host:port`, such as `broker1:9092,broker2:9092`. One reachable broker is enough to find the rest. |
+| `KAFKA_TOPIC` | yes |  | The topic the program serves. One process serves one topic; run one per topic. |
+| `KAFKA_USERNAME` |  | none: no authentication | The SASL/SCRAM-SHA-256 username. Leave it and `KAFKA_PASSWORD` unset if Kafka needs no login. TLS and other SASL mechanisms are not supported. |
+| `KAFKA_PASSWORD` (secret) |  | none | The password for `KAFKA_USERNAME`. The startup report shows only whether it is set. |
+| `KAFKA_START_FROM` |  | oldest | Where a consumer group with no committed offset starts reading a partition: `oldest`, every message still in the topic, or `newest`, only messages written from then on. See [How it works](how-it-works.md#where-reading-starts). |
+
+### Relay
+
+| Variable | Required | Default | Meaning |
+|---|---|---|---|
+| `KAFKA_GROUP` | yes |  | The consumer group the relay joins. Relays with the same consumer group share the topic's partitions. Don't share it with a connector reader or any other consumer. |
+| `KAFKA_DEAD_LETTER_TOPIC` | unless DELETE_DEAD_LETTERS is true |  | An existing topic, other than `KAFKA_TOPIC`, for messages too large to deliver. Set this or `DELETE_DEAD_LETTERS=true`, not both. |
+| `DELETE_DEAD_LETTERS` |  | false | `true` to log and skip messages too large to deliver, instead of writing them to `KAFKA_DEAD_LETTER_TOPIC`; then leave that unset. |
+| `KAFKA_BATCH_SIZE` |  | 100 | The most messages in one batch, and so in one Nexus operation per partition. `1` for one operation per message, which also rules out a message being delivered twice. |
+| `KAFKA_BATCH_TIME_LIMIT` |  | 0 (deliver as soon as there are messages) | How long a batch waits to fill, such as `500ms` or `1s`. Waiting makes fewer, fuller batches on a quiet topic, which costs fewer operations. |
+| `RELAY_ENDPOINT` | yes |  | The Nexus endpoint the relay delivers batches to. It routes to the receiver you implement, `KafkaMessageReceiver.receive`. |
+| `RELAY_SERVICE` |  | KafkaMessageReceiver | The Nexus service the receiver serves. |
+| `RELAY_OPERATION` |  | receive | The operation started for each batch. |
+| `RELAY_OPERATION_TIMEOUT` |  | 24h | How long each operation may take, such as `30m` or `24h`. More than 0. |
+| `RELAY_MAX_INPUT_BYTES` |  | 2031616 (2 MiB less 64 KiB) | The largest encoded batch sent to one operation. Larger batches are split; a single larger message goes to the dead-letter topic. |
+
+### Temporal
+
+gRPC headers sent with every call to Temporal: `TEMPORAL_GRPC_META_<NAME>` sends header `<name>`, lower case with `-` for `_`. Shown as secrets, since a header can hold credentials.
+
+| Variable | Required | Default | Meaning |
+|---|---|---|---|
+| `TEMPORAL_ADDRESS` |  | localhost:7233 | The Temporal frontend's `host:port`; for Temporal Cloud, the namespace's gRPC endpoint. The Temporal SDK's `envconfig` reads this and every variable below as the `temporal` CLI does: each one that is set overrides the profile file's value. See [Connecting to Temporal Cloud](#connecting-to-temporal-cloud). |
+| `TEMPORAL_NAMESPACE` |  | connectors | The namespace the program runs in. The relay needs standalone Nexus operations enabled in it; the connector, standalone activities with completion callbacks. All connectors default to `connectors` and are kept apart by task queue. |
+| `TEMPORAL_API_KEY` (secret) |  | none | An API key, for a Temporal Cloud namespace that uses API key authentication. Turns on TLS unless `TEMPORAL_TLS` is `false`. |
+| `TEMPORAL_PROFILE` |  | default | The profile to read from the profile file. If it is set and the file has no such profile, the program can't connect; `default` may be missing. |
+| `TEMPORAL_CONFIG_FILE` |  | temporalio/temporal.toml in the user's config directory | The profile file, which `temporal config set` writes. A missing file is fine: only the variables apply. The user's config directory is `~/.config` on Linux (or `$XDG_CONFIG_HOME`) and `~/Library/Application Support` on macOS. |
+| `TEMPORAL_TLS` |  | on with an API key or any TLS setting, else off | `true` or `1` to connect with TLS, `false` or `0` not to. Any other value is ignored. |
+| `TEMPORAL_TLS_CLIENT_CERT_PATH` |  | none | The path to the client certificate for mTLS, with `TEMPORAL_TLS_CLIENT_KEY_PATH`. |
+| `TEMPORAL_TLS_CLIENT_CERT_DATA` |  | none | The client certificate for mTLS itself, in PEM, instead of a path, with `TEMPORAL_TLS_CLIENT_KEY_DATA`. |
+| `TEMPORAL_TLS_CLIENT_KEY_PATH` |  | none | The path to the client certificate's private key, with `TEMPORAL_TLS_CLIENT_CERT_PATH`. |
+| `TEMPORAL_TLS_CLIENT_KEY_DATA` (secret) |  | none | The client certificate's private key itself, in PEM, instead of a path, with `TEMPORAL_TLS_CLIENT_CERT_DATA`. |
+| `TEMPORAL_TLS_SERVER_CA_CERT_PATH` |  | the system's | The path to the CA certificate to verify the server with, for a server whose certificate the system doesn't trust. |
+| `TEMPORAL_TLS_SERVER_CA_CERT_DATA` |  | the system's | The CA certificate itself, in PEM, instead of a path. |
+| `TEMPORAL_TLS_SERVER_NAME` |  | the address's host | The name to expect on the server's certificate, and to send as SNI. |
+| `TEMPORAL_TLS_DISABLE_HOST_VERIFICATION` |  | false | `true` or `1` to accept a server certificate that doesn't name the host. For testing only. |
+| `TEMPORAL_CLIENT_AUTHORITY` |  | the address | The `:authority` header to send, for a proxy or load balancer that routes on it. |
+| `TEMPORAL_GRPC_META_<NAME>` (secret) |  |  | The header's value. |
+
+### Network
+
+| Variable | Required | Default | Meaning |
+|---|---|---|---|
+| `HTTPS_PROXY` |  | none | *Read by gRPC from the process's environment; also as `https_proxy` when unset or empty.* The proxy for the program's connection to Temporal, such as `http://proxy.example:8080`, or `http://user:password@proxy.example:8080` for a proxy that asks for a password. Kafka brokers are always reached directly, never through it. Connections to `localhost` and loopback addresses never use a proxy. |
+| `NO_PROXY` |  | none | *Read by gRPC from the process's environment; also as `no_proxy` when unset or empty.* Hosts the connection to Temporal reaches without `HTTPS_PROXY`: a comma-separated list of domains (each with its subdomains; with a leading `.`, subdomains only), IP addresses or CIDR ranges, each optionally with a port, or `*` for every host. Kafka doesn't use it. |
+
+**Nexus Connector** (`go run ./connector`):
+
+### Kafka
+
+| Variable | Required | Default | Meaning |
+|---|---|---|---|
+| `KAFKA_BROKERS` | yes |  | The Kafka brokers to connect to, as a comma-separated list of `host:port`, such as `broker1:9092,broker2:9092`. One reachable broker is enough to find the rest. |
+| `KAFKA_TOPIC` | yes |  | The topic the program serves. One process serves one topic; run one per topic. |
+| `KAFKA_USERNAME` |  | none: no authentication | The SASL/SCRAM-SHA-256 username. Leave it and `KAFKA_PASSWORD` unset if Kafka needs no login. TLS and other SASL mechanisms are not supported. |
+| `KAFKA_PASSWORD` (secret) |  | none | The password for `KAFKA_USERNAME`. The startup report shows only whether it is set. |
+| `KAFKA_START_FROM` |  | oldest | Where a consumer group with no committed offset starts reading a partition: `oldest`, every message still in the topic, or `newest`, only messages written from then on. See [How it works](how-it-works.md#where-reading-starts). |
+
+### Connector
+
+| Variable | Required | Default | Meaning |
+|---|---|---|---|
+| `KAFKA_GROUP` |  | none: each read names its consumer group | The only consumer group reads through this connector may use. Unset, each read names its own. Never one a relay or another live consumer uses: reads then fail with `GroupInUse`. See [How it works](how-it-works.md#the-connector). |
+| `NEXUS_TASK_QUEUE` |  | nexus-connector-kafka | The task queue the connector's Nexus endpoint targets. Reads run on this name with `-reads` added; never target that one. Give each connector for another topic or consumer group its own. |
+| `KAFKA_MAX_BATCH_BYTES` |  | 2097152 (2 MiB) | The most bytes a read's result may encode to, more than 65536. Temporal's payload limit is 2 MiB by default. |
+| `KAFKA_MAX_DURATION_MINUTES` |  | 10 for a write; a read's time limit plus 5 for a read | The longest a read or write keeps retrying, in whole minutes, at least 1; a read never less than its time limit plus 1. Either way it stops 10 seconds before the caller's Nexus operation times out. |
+
+### Temporal
+
+gRPC headers sent with every call to Temporal: `TEMPORAL_GRPC_META_<NAME>` sends header `<name>`, lower case with `-` for `_`. Shown as secrets, since a header can hold credentials.
+
+| Variable | Required | Default | Meaning |
+|---|---|---|---|
+| `TEMPORAL_ADDRESS` |  | localhost:7233 | The Temporal frontend's `host:port`; for Temporal Cloud, the namespace's gRPC endpoint. The Temporal SDK's `envconfig` reads this and every variable below as the `temporal` CLI does: each one that is set overrides the profile file's value. See [Connecting to Temporal Cloud](#connecting-to-temporal-cloud). |
+| `TEMPORAL_NAMESPACE` |  | connectors | The namespace the program runs in. The relay needs standalone Nexus operations enabled in it; the connector, standalone activities with completion callbacks. All connectors default to `connectors` and are kept apart by task queue. |
+| `TEMPORAL_API_KEY` (secret) |  | none | An API key, for a Temporal Cloud namespace that uses API key authentication. Turns on TLS unless `TEMPORAL_TLS` is `false`. |
+| `TEMPORAL_PROFILE` |  | default | The profile to read from the profile file. If it is set and the file has no such profile, the program can't connect; `default` may be missing. |
+| `TEMPORAL_CONFIG_FILE` |  | temporalio/temporal.toml in the user's config directory | The profile file, which `temporal config set` writes. A missing file is fine: only the variables apply. The user's config directory is `~/.config` on Linux (or `$XDG_CONFIG_HOME`) and `~/Library/Application Support` on macOS. |
+| `TEMPORAL_TLS` |  | on with an API key or any TLS setting, else off | `true` or `1` to connect with TLS, `false` or `0` not to. Any other value is ignored. |
+| `TEMPORAL_TLS_CLIENT_CERT_PATH` |  | none | The path to the client certificate for mTLS, with `TEMPORAL_TLS_CLIENT_KEY_PATH`. |
+| `TEMPORAL_TLS_CLIENT_CERT_DATA` |  | none | The client certificate for mTLS itself, in PEM, instead of a path, with `TEMPORAL_TLS_CLIENT_KEY_DATA`. |
+| `TEMPORAL_TLS_CLIENT_KEY_PATH` |  | none | The path to the client certificate's private key, with `TEMPORAL_TLS_CLIENT_CERT_PATH`. |
+| `TEMPORAL_TLS_CLIENT_KEY_DATA` (secret) |  | none | The client certificate's private key itself, in PEM, instead of a path, with `TEMPORAL_TLS_CLIENT_CERT_DATA`. |
+| `TEMPORAL_TLS_SERVER_CA_CERT_PATH` |  | the system's | The path to the CA certificate to verify the server with, for a server whose certificate the system doesn't trust. |
+| `TEMPORAL_TLS_SERVER_CA_CERT_DATA` |  | the system's | The CA certificate itself, in PEM, instead of a path. |
+| `TEMPORAL_TLS_SERVER_NAME` |  | the address's host | The name to expect on the server's certificate, and to send as SNI. |
+| `TEMPORAL_TLS_DISABLE_HOST_VERIFICATION` |  | false | `true` or `1` to accept a server certificate that doesn't name the host. For testing only. |
+| `TEMPORAL_CLIENT_AUTHORITY` |  | the address | The `:authority` header to send, for a proxy or load balancer that routes on it. |
+| `TEMPORAL_GRPC_META_<NAME>` (secret) |  |  | The header's value. |
+
+### Network
+
+| Variable | Required | Default | Meaning |
+|---|---|---|---|
+| `HTTPS_PROXY` |  | none | *Read by gRPC from the process's environment; also as `https_proxy` when unset or empty.* The proxy for the program's connection to Temporal, such as `http://proxy.example:8080`, or `http://user:password@proxy.example:8080` for a proxy that asks for a password. Kafka brokers are always reached directly, never through it. Connections to `localhost` and loopback addresses never use a proxy. |
+| `NO_PROXY` |  | none | *Read by gRPC from the process's environment; also as `no_proxy` when unset or empty.* Hosts the connection to Temporal reaches without `HTTPS_PROXY`: a comma-separated list of domains (each with its subdomains; with a leading `.`, subdomains only), IP addresses or CIDR ranges, each optionally with a port, or `*` for every host. Kafka doesn't use it. |
+
+<!-- settings:end -->

@@ -2,9 +2,9 @@
 // KafkaService Nexus service: read, to read batches for a consumer group, and write, to write
 // messages. Each call runs as a standalone activity.
 //
-// It reads the topic's settings from KAFKA_* environment variables (see kafka.ConfigFromEnv), and
-// its own (see settingsFromEnv). It connects to Temporal with the standard TEMPORAL_* variables
-// and the temporal CLI's profile file; the namespace defaults to connectors.
+// Every environment variable it reads is listed in setup.Connector: the topic's KAFKA_* settings
+// and its own. It connects to Temporal with the standard TEMPORAL_* variables and the temporal
+// CLI's profile file; the namespace defaults to connectors.
 //
 // One process serves one topic through one Nexus endpoint. To serve another topic, or the same
 // topic for a fixed consumer group, run another process with its own KAFKA_TOPIC or KAFKA_GROUP
@@ -13,42 +13,36 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/temporalio/nexus-connector-kafka/kafka"
+	"github.com/temporalio/nexus-connector-kafka/settings"
+	"github.com/temporalio/nexus-connector-kafka/setup"
 	"go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/contrib/envconfig"
 	"go.temporal.io/sdk/worker"
 )
 
-const (
-	defaultNamespace     = "connectors"
-	defaultMaxBatchBytes = 2 * 1024 * 1024
-)
+// defaultMaxBatchBytes is KAFKA_MAX_BATCH_BYTES unless set.
+const defaultMaxBatchBytes = setup.DefaultMaxBatchBytes
 
 func main() {
 	// Check the connector's configuration and the connection to Temporal before stopping on
 	// either, so one run reports every problem rather than only the first.
 	var problems []string
-	cfg, kafkaErr := kafka.ConfigFromEnv()
-	s, settingsErr := settingsFromEnv()
-	if err := errors.Join(kafkaErr, settingsErr); err != nil {
+	env := settings.OS()
+	cfg, s, err := configFrom(env)
+	if err != nil {
 		problems = append(problems, "Invalid connector configuration:\n"+indent(err.Error()))
 	}
-	opts, err := envconfig.LoadDefaultClientOptions()
+	opts, err := setup.ClientOptions(env)
 	if err != nil {
 		problems = append(problems, "Failed to load Temporal client configuration:\n"+indent(err.Error()))
-	}
-	if opts.Namespace == "" {
-		opts.Namespace = defaultNamespace
 	}
 	var c client.Client
 	if err == nil {
@@ -83,7 +77,7 @@ func main() {
 		address = client.DefaultHostPort
 	}
 	// Logged before connecting to Kafka, so it shows even if Kafka is slow to answer.
-	log.Print(s.report(cfg, opts.Namespace, address))
+	log.Print(s.report(env, cfg, opts.Namespace, address))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := kafka.ConnectAtStartup(ctx, cfg); err != nil {
@@ -111,42 +105,33 @@ func indent(s string) string {
 	return "  - " + strings.ReplaceAll(s, "\n", "\n  - ")
 }
 
-// settings are the connector's settings besides the topic's.
-type settings struct {
+// config is the connector's settings besides the topic's.
+type config struct {
 	group         string        // KAFKA_GROUP: the only consumer group reads may use; empty lets each read name one
 	taskQueue     string        // NEXUS_TASK_QUEUE: the task queue the Nexus endpoint targets
 	maxBatchBytes int           // KAFKA_MAX_BATCH_BYTES: the most bytes a read's result may encode to
 	maxDuration   time.Duration // KAFKA_MAX_DURATION_MINUTES: the longest an operation may take; 0 for the defaults
 }
 
-// settingsFromEnv reads KAFKA_GROUP (optional), NEXUS_TASK_QUEUE (default nexus-connector-kafka),
-// KAFKA_MAX_BATCH_BYTES (default 2 MiB, Temporal's payload limit), and KAFKA_MAX_DURATION_MINUTES
-// (default: 10 minutes for a write, a read's time limit plus 5 minutes for a read).
-func settingsFromEnv() (settings, error) {
-	s := settings{group: os.Getenv("KAFKA_GROUP"), taskQueue: os.Getenv("NEXUS_TASK_QUEUE"), maxBatchBytes: defaultMaxBatchBytes}
-	if s.taskQueue == "" {
-		s.taskQueue = defaultTaskQueue
-	}
-	var errs []error
-	if v := os.Getenv("KAFKA_MAX_BATCH_BYTES"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n <= resultReserve {
-			errs = append(errs, fmt.Errorf("KAFKA_MAX_BATCH_BYTES must be a number of bytes greater than %d, not %q", resultReserve, v))
-		} else {
-			s.maxBatchBytes = n
-		}
-	}
-	maxDuration, err := readMaxDuration()
+// configFrom checks every variable the connector reads (setup.Connector) in env, reporting every
+// problem at once, and returns the topic's settings and the connector's own.
+func configFrom(env settings.Env) (kafka.Config, config, error) {
+	vals, err := setup.Connector.Load(env)
 	if err != nil {
-		errs = append(errs, err)
+		return kafka.Config{}, config{}, err
 	}
-	s.maxDuration = maxDuration
-	return s, errors.Join(errs...)
+	return kafka.ConfigFrom(vals), config{
+		group:         setup.ConnectorGroup.From(vals),
+		taskQueue:     setup.TaskQueue.From(vals),
+		maxBatchBytes: setup.MaxBatchBytes.From(vals),
+		maxDuration:   setup.MaxDuration.From(vals),
+	}, nil
 }
 
 // report is the configuration and what the connector will do with it, for the log when it
-// starts. cfg is the topic's settings; namespace and address are where it connects to Temporal.
-func (s settings) report(cfg kafka.Config, namespace, address string) string {
+// starts. env is what s and cfg, the topic's settings, were read from; namespace and address are
+// where it connects to Temporal.
+func (s config) report(env settings.Env, cfg kafka.Config, namespace, address string) string {
 	group := kafka.Setting{Name: "KAFKA_GROUP", Value: s.group}
 	groupBehavior := fmt.Sprintf("Serve only the consumer group %q: a read may leave group empty or name it; "+
 		"a read naming another consumer group is refused.", s.group)
@@ -154,16 +139,16 @@ func (s settings) report(cfg kafka.Config, namespace, address string) string {
 		group.Value = "(not set: each read names its consumer group)"
 		groupBehavior = "Serve any consumer group: each read must name one; a read without one is refused."
 	}
-	maxDuration := kafka.Setting{Name: maxDurationEnvVar, Value: "(not set: 10m for a write, a read's time limit plus 5m for a read)"}
+	maxDuration := kafka.Setting{Name: setup.MaxDuration.Name, Value: "(not set: 10m for a write, a read's time limit plus 5m for a read)"}
 	if s.maxDuration > 0 {
 		maxDuration.Value = s.maxDuration.String()
 	}
 	sections := []kafka.Section{
-		cfg.Settings(),
+		cfg.Settings(env),
 		{Title: "Connector", Settings: []kafka.Setting{
 			group,
-			kafka.EnvSetting("NEXUS_TASK_QUEUE", s.taskQueue),
-			kafka.EnvSetting("KAFKA_MAX_BATCH_BYTES", s.maxBatchBytes),
+			kafka.EnvSetting(env, "NEXUS_TASK_QUEUE", s.taskQueue),
+			kafka.EnvSetting(env, "KAFKA_MAX_BATCH_BYTES", s.maxBatchBytes),
 			maxDuration,
 		}},
 		{Title: "Temporal", Settings: []kafka.Setting{

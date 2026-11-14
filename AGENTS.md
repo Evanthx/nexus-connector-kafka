@@ -5,7 +5,7 @@ full user-facing documentation; this file has what you need to act, and the mist
 
 | Doc | What is in it |
 |---|---|
-| [`docs/setup.md`](docs/setup.md) | Prerequisites, environment variables, creating endpoints, running the programs, configui, full settings reference. |
+| [`docs/setup.md`](docs/setup.md) | Prerequisites, creating endpoints, running the programs, the setup page (`make configui`), and every environment variable (tables generated from the settings files). |
 | [`docs/testing.md`](docs/testing.md) | Demo walkthrough with a local dev server and Docker Kafka, unit tests. |
 | [`docs/clients.md`](docs/clients.md) | The contract, and generating typed clients for Go, Python, TypeScript, and Java. |
 | [`docs/how-it-works.md`](docs/how-it-works.md) | Folders, the contract, the connector and the relay in depth, cost, possible future changes. |
@@ -48,6 +48,10 @@ namespace; any name works, including `default`. Nexus connectors share the `conn
 namespace and are kept apart by task queue, so two Kafka connectors in one namespace need
 different `NEXUS_TASK_QUEUE` values.
 
+The setup page shows External variables (`HTTPS_PROXY`, `NO_PROXY`, read by gRPC for the Temporal
+connection only, never by Kafka) read-only and masked from its own environment, and shows what the
+selected Temporal profile file sets beside each `TEMPORAL_*` field.
+
 ## Run the relay
 
 1. **Implement the receiver.** `KafkaMessageReceiver.receive` is a Nexus service the user writes,
@@ -83,7 +87,7 @@ different `NEXUS_TASK_QUEUE` values.
 
    Optional: `KAFKA_START_FROM` (`oldest`, the default, or `newest`), `KAFKA_BATCH_SIZE` (100),
    `KAFKA_BATCH_TIME_LIMIT` (0; `1s` lets batches fill on a quiet topic, which costs fewer
-   operations), `RELAY_OPERATION_TIMEOUT` (`24h`). `docs/setup.md` has the full settings table.
+   operations), `RELAY_OPERATION_TIMEOUT` (`24h`). `docs/setup.md` lists every variable.
 6. **Scale out** by running more relays with the same `KAFKA_GROUP`, up to one per partition.
 
 ## Run the connector
@@ -200,11 +204,22 @@ caller gets the last error rather than a timeout. A caller timeout under a read'
 
 ## Work out settings with the user
 
-`test/kafka/scripts/configui.sh`, or `go run ./configui` with the user's variables exported,
-serves a page on <http://localhost:8090>. It shows each variable with its help and default, and
-Test reads the topic's last message (`kafka.ReadLast`) with the programs' own Kafka code. If it
-fails, the page shows the whole error. It then lists the `export` lines for the program. It
-checks only the Kafka settings.
+Run `make configui` (or `go run ./configui --addr localhost:8090`) with the user's variables
+exported, and have them open <http://localhost:8090> (localhost only). `test/kafka/scripts/configui.sh`
+does the same against the local Docker Kafka, with its settings filled in. The page has both
+programs; it shows each variable with its help and default, secrets only as set or not set. Its
+**Test**, for the chosen program:
+
+- **Settings**: every variable, checked exactly as the program checks them at startup.
+- **Temporal**: connects as the program would and checks the namespace exists. For the connector,
+  that an endpoint targets the namespace and `NEXUS_TASK_QUEUE` (it shows the create command if
+  not); for the relay, that the endpoint `RELAY_ENDPOINT` names exists.
+- **Kafka**: `kafka.Identify`, then `kafka.ReadLast` (the topic's last message, no consumer group,
+  nothing committed) with the programs' own Kafka code, showing Kafka's whole error on failure. For
+  the relay, that `KAFKA_DEAD_LETTER_TOPIC` exists; for a connector with `KAFKA_GROUP`, that the
+  group has no live members (`GroupInUse` otherwise).
+
+It changes no environment; it lists the `export` lines to set where the program runs.
 
 ## Try it locally first
 
@@ -222,6 +237,8 @@ go test -short ./...   # skip the end-to-end (dev server) tests
 go test ./kafka -run TestGroupReader_AckCommits -v
 make clients           # generate Go, Python, TypeScript and Java callers into .build/clients/ (not committed)
 make generate          # regenerate generated/kafkaapi from kafka.nexusrpc.yaml (downloads nexgen to .build/)
+make docs              # regenerate docs/setup.md's tables of environment variables from the settings files
+make configui          # serve the setup page on http://localhost:8090
 make lint              # golangci-lint
 make ci                # vet, workflowcheck, lint, test
 ```
@@ -235,10 +252,18 @@ Needs Go SDK v1.50 or later (`temporalnexus.StartActivity`, the standalone Nexus
 - `kafka/` has no Temporal imports; keep it that way. It returns sentinel errors
   (`ErrInvalidPosition`, `ErrGroupInUse`, `ErrRecordTooLarge`, `ErrRejected`) that the programs
   map to `ApplicationError`s. Both programs share it, so a change to reading affects both.
-- A new setting goes in the program's startup report too (`config.report` in `relay/config.go`,
-  `settings.report` in `connector/main.go`, built with `kafka.Report` and `kafka.EnvSetting`)
-  and in the full settings reference in docs/setup.md. The report never shows the password. Add it, with its default
-  and help, to `configui/settings.go` as well.
+- **A new environment variable goes in the settings file only**: a `settings.Define` with its
+  help, default, required and check, in a section of `setup.Relay` and/or `setup.Connector` in
+  `setup/settings.go`, or, for a Kafka variable both programs read, in `kafka.SettingsSection` in
+  `kafka/settings.go`. Read it with `.From(vals)` in `configFrom` (`relay/config.go`,
+  `connector/main.go`), or `kafka.ConfigFrom`. Then run `make docs`; a test fails while
+  docs/setup.md is stale. A rule between variables, such as "`KAFKA_DEAD_LETTER_TOPIC` or
+  `DELETE_DEAD_LETTERS=true`, not both", goes in the `Program`'s `Rules`. Never read the environment directly
+  (`os.Getenv`, `os.LookupEnv`, `os.Environ`, ...): only `settings/env.go` may, and
+  `settings/nobypass_test.go` fails otherwise.
+- Add a new setting to the program's startup report too (`config.report` in `relay/config.go`,
+  `config.report` in `connector/main.go`, built with `kafka.Report` and `kafka.EnvSetting`). The
+  report never shows the password.
 - For a test that guards a fix, revert the fix and confirm the test fails before calling it done.
   Existing guard tests were checked this way.
 
@@ -318,17 +343,36 @@ Needs Go SDK v1.50 or later (`temporalnexus.StartActivity`, the standalone Nexus
   throttle, so heartbeats aren't delayed.
 - `Write` adds the header `dedupe-id: <activityID>-<i>`.
 
+**`setup/`, `settings/`**
+- `setup/settings.go` declares `Relay` and `Connector`, the `settings.Program` of each: every
+  variable it reads, in sections, with its check, plus the relay's dead-letter rule. The Kafka
+  section is `kafka.SettingsSection` (`kafka/settings.go`), shared by both; the Temporal section
+  lists the variables envconfig reads, unchecked. They live in a package of their own because
+  `relay` and `connector` are main packages, which configui can't import, and `kafka/` has no
+  Temporal imports. `ClientOptions(env)` loads the Temporal client options with envconfig from the
+  same env, namespace defaulting to `connectors`.
+- Each program's `configFrom(env)` calls `Load`, which reports every problem at once (rules only
+  once every variable is valid), then reads each value with `.From(vals)`; `main` passes
+  `settings.OS()`.
+- `settings/` is the same in every Go connector repo: `Program`, `Load(env)`, `Define`/`Typed`,
+  `Env` (`OS()` or `Map`), and `Markdown` for the docs tables.
+
 **`configui/`**
-- `settings.go` lists each program's variables (help, default, required, secret).
-- `main.go` serves the embedded `index.html` and two endpoints:
-  - `GET /api/settings`: the environment's values. Secrets are sent only as set or not set.
-  - `POST /api/test`: sets or unsets the program's variables with `os.Setenv`, under a mutex. A
-    secret named in `keepSecrets` is left alone. It then runs `kafka.ConfigFromEnv`,
-    `kafka.Identify` and `kafka.ReadLast`.
+- The setup page, never imported by either program. `main.go`, `temporal.go` and `index.html` are
+  the same in every Go connector repo (the page renders only from `/api/settings`);
+  `connector.go` lists the two programs and their Kafka checks (`checkKafka`, `relayChecks`,
+  `connectorChecks`). A test runs against a `settings.Map` built from the process's environment
+  with the page's values in place of every variable the program owns; nothing calls `os.Setenv`.
+- `GET /api/settings`: the programs and the environment's values. Secrets are sent only as set or
+  not set. `POST /api/test`: the Settings, Temporal and Kafka checks; secret values are redacted
+  from every message.
 - `localOnly` refuses a non-localhost `Host` and non-JSON POSTs, so other sites can't use it
   through the browser.
 - `kafka.ReadLast` (`kafka/last.go`) reads each partition's last offset with no consumer group,
   and keeps the message with the latest timestamp; on a tie, the higher partition.
+  `kafka.GroupMembers` counts a consumer group's live members.
+- `configui/gendocs` writes docs/setup.md's tables between the `settings:start` and `settings:end`
+  markers (`make docs`); its test fails if they are stale.
 
 **`test/`** (test only)
 - `testenv`: kfake plus a dev server with both namespaces.

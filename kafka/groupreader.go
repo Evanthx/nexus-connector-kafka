@@ -17,6 +17,29 @@ import (
 // consuming from it, so Kafka won't accept commits from a reader that isn't one of them.
 var ErrGroupInUse = errors.New("the consumer group has live members")
 
+// GroupMembers is how many live members group has now, such as relays: while it has any, a
+// GroupReader's ack for it fails with ErrGroupInUse. A group that doesn't exist has none. It is
+// for checking settings; a read finds out for itself.
+func GroupMembers(ctx context.Context, cfg Config, group string) (int, error) {
+	cl, err := kgo.NewClient(cfg.clientOpts()...)
+	if err != nil {
+		return 0, fmt.Errorf("create Kafka client: %w", err)
+	}
+	defer cl.Close()
+	described, err := kadm.NewClient(cl).DescribeGroups(ctx, group)
+	if err != nil {
+		return 0, fmt.Errorf("describe consumer group %q: %w", group, err)
+	}
+	g, ok := described[group]
+	switch {
+	case !ok || errors.Is(g.Err, kerr.GroupIDNotFound):
+		return 0, nil
+	case g.Err != nil:
+		return 0, fmt.Errorf("describe consumer group %q: %w", group, g.Err)
+	}
+	return len(g.Members), nil
+}
+
 // ErrRecordTooLarge means the next record is larger than the batch byte limit on its own, so it
 // can't be returned.
 var ErrRecordTooLarge = errors.New("record is larger than the batch byte limit")

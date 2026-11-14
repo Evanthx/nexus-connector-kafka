@@ -8,6 +8,7 @@ import (
 
 	"github.com/temporalio/nexus-connector-kafka/generated/kafkaapi"
 	"github.com/temporalio/nexus-connector-kafka/kafka"
+	"github.com/temporalio/nexus-connector-kafka/setup"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"go.temporal.io/sdk/activity"
 )
@@ -27,8 +28,8 @@ var (
 )
 
 // resultReserve is the part of the batch byte limit kept for the result around the records: the
-// position and the JSON envelope.
-const resultReserve = 64 * 1024
+// position and the JSON envelope. KAFKA_MAX_BATCH_BYTES must be more.
+const resultReserve = setup.ResultReserve
 
 // recordBytes is how many encoded bytes of records a read's result can hold.
 func recordBytes(maxBatchBytes int) int {

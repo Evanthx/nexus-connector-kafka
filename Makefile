@@ -1,4 +1,4 @@
-.PHONY: generate clients build test lint fmt vet workflowcheck ci
+.PHONY: generate clients build test lint fmt vet workflowcheck ci docs configui
 
 # nexgen is downloaded from its GitHub release into .build/ the first time it is needed.
 NEXGEN_VERSION := 0.2.9
@@ -24,6 +24,15 @@ clients: $(NEXGEN)
 	$(NEXGEN) python kafka.nexusrpc.yaml --output .build/clients/python/kafkaapi
 	$(NEXGEN) typescript kafka.nexusrpc.yaml --output .build/clients/typescript/kafkaapi
 	$(NEXGEN) java kafka.nexusrpc.yaml --output .build/clients/java/kafkaapi --package-name com.example.kafkaapi
+
+# Regenerates docs/setup.md's tables of environment variables from setup/settings.go and
+# kafka/settings.go.
+docs:
+	go run ./configui/gendocs --file docs/setup.md
+
+# Serves the setup page on http://localhost:8090, for working out and testing the variables.
+configui:
+	go run ./configui --addr localhost:8090
 
 build:
 	go build ./...

@@ -7,13 +7,14 @@ import (
 	"github.com/nexus-rpc/sdk-go/nexus"
 	"github.com/temporalio/nexus-connector-kafka/generated/kafkaapi"
 	"github.com/temporalio/nexus-connector-kafka/kafka"
+	"github.com/temporalio/nexus-connector-kafka/setup"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/temporalnexus"
 	"go.temporal.io/sdk/worker"
 )
 
 // defaultTaskQueue is the connector's task queue unless NEXUS_TASK_QUEUE says otherwise.
-const defaultTaskQueue = "nexus-connector-kafka"
+const defaultTaskQueue = setup.DefaultTaskQueue
 
 // readQueue is where read activities run, on a worker of their own: the connector's task queue
 // with "-reads" added. A read can wait a minute or more for its batch, and reads are limited to as

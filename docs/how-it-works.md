@@ -7,10 +7,12 @@ Nexus Connector Relay, called the relay.
 
 | Folder | What is in it |
 |---|---|
-| `kafka/` | Kafka code both methods share: connecting, reading in batches, writing, dead letters. No Temporal code. |
+| `kafka/` | Kafka code both methods share: connecting, reading in batches, writing, dead letters. No Temporal code. `settings.go` declares the Kafka variables both programs read. |
 | `relay/` | Method 1: the relay, which streams each message into Temporal. |
 | `connector/` | Method 2: the connector, which serves `read` and `write` as Nexus operations. |
-| `configui/` | A page for working out and testing the settings; see [Setup](setup.md#work-out-your-settings-in-a-browser). |
+| `setup/` | Every environment variable each program reads (`setup.Relay`, `setup.Connector`), with its help, default and check, and the Temporal client options. The programs load their configuration through it. |
+| `settings/` | Declaring and reading environment variables: `Program`, `Variable`, `Env` (the process's or a map). The only code that reads the process's environment; a test fails if any other does. Also generates the tables in `docs/setup.md`. The same in every Go connector repo. |
+| `configui/` | The setup page (`make configui`): shows `setup.Relay` and `setup.Connector`, tests values without changing any environment, and lists the `export` lines; see [Setup](setup.md#work-out-your-settings-in-a-browser). Not part of either program. `configui/gendocs` writes `docs/setup.md`'s tables (`make docs`). |
 | `generated/kafkaapi/` | Go types for the contract, generated from `kafka.nexusrpc.yaml`. |
 | `test/` | Testing only: a receiver for the relay, a caller for the connector, shared end-to-end test setup, and a local Kafka. |
 

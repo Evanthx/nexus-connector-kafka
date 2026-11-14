@@ -3,18 +3,26 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Kafka connector settings</title>
+<title>Connector setup</title>
+<!--
+  The setup page. It is the same in every connector repo: everything it shows comes from
+  /api/settings (see pageJSON in main.go), and the Test posts to /api/test (see testRequest).
+  Secrets: the server never sends their values. A typed secret stays in this page's memory, is
+  sent only with a Test, and is never shown again or stored.
+  External variables (a library reads them from the process's environment, such as HTTPS_PROXY)
+  are shown read-only, as the server read them (masked), and never sent.
+-->
 <style>
   :root {
     --bg: #f7f7f8; --panel: #ffffff; --text: #1d1d1f; --muted: #5f6368; --border: #d9d9de;
     --accent: #4b45d6; --ok-bg: #e8f5ec; --ok: #1b6b34; --err-bg: #fdecec; --err: #a12020;
-    --code-bg: #f0f0f3;
+    --warn-bg: #fdf5e3; --warn: #7a5300; --code-bg: #f0f0f3;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #141416; --panel: #1d1d20; --text: #e8e8ea; --muted: #a0a0a8; --border: #34343a;
       --accent: #8f8aff; --ok-bg: #16301f; --ok: #7fd69a; --err-bg: #3a1717; --err: #ff9a9a;
-      --code-bg: #26262b;
+      --warn-bg: #3a2e12; --warn: #f0c46a; --code-bg: #26262b;
     }
   }
   * { box-sizing: border-box; }
@@ -23,69 +31,118 @@
   main { max-width: 900px; margin: 0 auto; padding: 24px 16px 64px; }
   h1 { font-size: 24px; margin: 0 0 4px; }
   h2 { font-size: 17px; margin: 28px 0 10px; }
+  h3 { font-size: 15px; margin: 0; }
   p.lead { color: var(--muted); margin: 0 0 20px; }
   .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
   .programs label { margin-right: 20px; font-weight: 600; cursor: pointer; }
   .var { padding: 14px 0; border-top: 1px solid var(--border); }
-  .var:first-of-type { border-top: 0; }
+  .var:first-child { border-top: 0; padding-top: 0; }
   .var-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
-  .name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 600; }
+  .name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 600; overflow-wrap: anywhere; }
   .tag { font-size: 12px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--border); color: var(--muted); }
   .tag.req { color: var(--accent); border-color: var(--accent); }
   .help { color: var(--muted); font-size: 14px; margin: 4px 0 8px; }
+  code { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--code-bg); padding: 0 4px; border-radius: 4px; }
   .row { display: flex; gap: 8px; }
-  input[type=text], input[type=password] {
+  input[type=text], input[type=password], select {
     flex: 1; min-width: 0; padding: 8px 10px; font: 14px ui-monospace, SFMono-Regular, Menlo, monospace;
     color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; }
-  input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  input.bad { border-color: var(--err); }
   button { font: inherit; padding: 8px 14px; border-radius: 6px; border: 1px solid var(--border);
            background: var(--panel); color: var(--text); cursor: pointer; }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; padding: 10px 22px; }
+  button.link { border: 0; background: none; color: var(--accent); padding: 0 4px; }
   button:disabled { opacity: .6; cursor: default; }
+  .instance { border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-top: 12px; }
+  .instance-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+  .member { margin-top: 10px; }
+  .member-label { font-size: 13px; color: var(--muted); }
+  .family-members { margin: 8px 0 0; padding-left: 18px; color: var(--muted); font-size: 14px; }
+  .family-members li { margin-bottom: 4px; }
+  table.free { border-collapse: collapse; width: 100%; }
+  table.free td { padding: 4px 4px 4px 0; }
+  table.free td:last-child { width: 1%; white-space: nowrap; }
+  .buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
   .actions { display: flex; align-items: center; gap: 12px; margin: 20px 0; }
-  #result { margin-top: 0; }
+  .result-box { border-radius: 10px; padding: 14px 16px; margin-bottom: 10px; }
   .ok { background: var(--ok-bg); color: var(--ok); }
   .err { background: var(--err-bg); color: var(--err); }
-  .result-box { border-radius: 10px; padding: 14px 16px; }
+  .warn { background: var(--warn-bg); color: var(--warn); }
+  .skip { background: var(--code-bg); color: var(--muted); }
+  .result-box ul { margin: 6px 0 0; padding-left: 20px; }
+  .result-box li { white-space: pre-wrap; overflow-wrap: anywhere; }
   pre { white-space: pre-wrap; word-break: break-word; margin: 8px 0 0;
         font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
-  table.msg { border-collapse: collapse; margin-top: 10px; width: 100%; color: var(--text); }
-  table.msg td { padding: 4px 8px; vertical-align: top; border-top: 1px solid var(--border); }
-  table.msg td:first-child { color: var(--muted); width: 120px; white-space: nowrap; }
   .exports { background: var(--code-bg); border-radius: 8px; padding: 12px; }
   .missing { color: var(--err); margin-top: 10px; }
   .note { color: var(--muted); font-size: 14px; }
+  .readonly { padding: 8px 10px; font: 14px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere;
+              color: var(--muted); background: var(--code-bg); border: 1px dashed var(--border); border-radius: 6px; }
+  .source { margin-top: 6px; }
+  .error-text { color: var(--err); font-size: 14px; min-height: 1.5em; }
+  dialog { border: 1px solid var(--border); border-radius: 10px; background: var(--panel); color: var(--text);
+           max-width: 560px; width: calc(100% - 32px); padding: 20px; }
+  dialog::backdrop { background: rgba(0, 0, 0, .4); }
+  dialog h3 { font-size: 17px; margin-bottom: 8px; }
 </style>
 </head>
 <body>
 <main>
-  <h1>Kafka connector settings</h1>
-  <p class="lead">Fill in the program's environment variables, then <b>Test</b> them by reading the
-    topic's last message. Blank means unset: the program uses the default shown.</p>
+  <h1 id="title">Connector setup</h1>
+  <p class="lead">Fill in the program's environment variables, then <b>Test</b> them. Blank means unset:
+    the program uses the default shown. Nothing here changes the program's environment or is saved:
+    set the variables listed at the bottom where the program runs.</p>
 
   <div class="panel programs" id="programs"></div>
   <div id="sections"></div>
 
-  <div class="actions">
-    <button class="primary" id="test">Test</button>
-    <span class="note" id="test-note">Sets these variables in this page's server only, then reads the last message of KAFKA_TOPIC.</span>
+  <h2>Add variables</h2>
+  <div class="panel">
+    <p class="note" style="margin-top:0">Any other variable to set where the program runs. The Test passes these
+      to the program's settings and to Temporal's <code>envconfig</code>, not to libraries that read the environment
+      themselves. Values here are shown as typed.</p>
+    <table class="free"><tbody id="free"></tbody></table>
+    <div class="buttons" id="add-buttons"></div>
   </div>
-  <div id="result"></div>
+
+  <h2>Test</h2>
+  <div class="panel">
+    <div id="test-fields"></div>
+    <div class="actions">
+      <button class="primary" id="test">Test</button>
+      <span class="note">Checks every variable as the program does at startup, then connects to Temporal and runs the program's own checks.</span>
+    </div>
+    <div id="result"></div>
+  </div>
 
   <h2>Variables to set</h2>
   <div class="panel">
-    <p class="note" style="margin-top:0">These variables are the ones that you will need to have set in
-      the program's environment. They are not set by this UI, but are here to help you configure the system.
-      Variables left blank use their defaults and aren't listed. Passwords are shown as asterisks.</p>
+    <p class="note" style="margin-top:0">Set these in the program's environment; this page doesn't. Variables
+      left blank use their defaults and aren't listed. Secrets are shown as a placeholder to fill in.</p>
     <pre class="exports" id="exports"></pre>
     <div class="missing" id="missing"></div>
   </div>
 </main>
 
+<dialog id="add-dialog">
+  <h3 id="add-title"></h3>
+  <p class="help" id="add-help"></p>
+  <div class="row"><input type="text" id="add-name" autocomplete="off" spellcheck="false"></div>
+  <div class="error-text" id="add-error"></div>
+  <div class="buttons" style="justify-content:flex-end">
+    <button type="button" id="add-cancel">Cancel</button>
+    <button type="button" class="primary" id="add-ok">Add</button>
+  </div>
+</dialog>
+
 <script>
 "use strict";
-const state = { programs: [], program: "relay", values: {}, secrets: {} };
-// secrets[name]: "kept" (set in the server, unchanged), "typed" (a new value in the field), or "unset".
+// values[name]: what the page will set, for every variable (a secret only once typed).
+// secrets[name]: "kept" (set where configui runs; its value never reaches this page), "typed", or "unset".
+// instances[prefix]: the family's instance names, from the environment or added here.
+// free: rows added in "Add variables". fields: the test fields' values.
+const state = { page: null, program: "", values: {}, secrets: {}, instances: {}, free: [], fields: {} };
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, attrs = {}, ...children) => {
@@ -96,19 +153,34 @@ const el = (tag, attrs = {}, ...children) => {
   for (const c of children) e.append(c);
   return e;
 };
+// rich renders help text, with `backticks` as code.
+const rich = (text) => {
+  const span = el("span");
+  (text || "").split("`").forEach((part, i) => span.append(i % 2 ? el("code", {}, part) : part));
+  return span;
+};
 
-function program() { return state.programs.find((p) => p.id === state.program); }
+function program() { return state.page.programs.find((p) => p.id === state.program); }
+function families() { return program().sections.flatMap((s) => s.families); }
+function memberName(f, inst, m) { return f.prefix + inst + m.suffix; }
 
-function loadSettings(s) {
-  state.programs = s.programs;
-  state.values = { ...s.values };
-  for (const [name, set] of Object.entries(s.secretsSet)) state.secrets[name] = set ? "kept" : "unset";
+function load(page) {
+  state.page = page;
+  state.program = page.programs[0].id;
+  state.values = { ...page.values };
+  for (const [name, set] of Object.entries(page.secretsSet)) state.secrets[name] = set ? "kept" : "unset";
+  for (const p of page.programs) for (const s of p.sections) for (const f of s.families) {
+    state.instances[f.prefix] = [...new Set([...(state.instances[f.prefix] || []), ...f.instances])];
+  }
+  document.title = page.title;
+  $("title").textContent = page.title;
 }
 
 function renderPrograms() {
   const box = $("programs");
+  box.hidden = state.page.programs.length < 2;
   box.replaceChildren(el("span", { class: "note", style: "margin-right:16px" }, "Configure the"));
-  for (const p of state.programs) {
+  for (const p of state.page.programs) {
     const input = el("input", { type: "radio", name: "program", value: p.id });
     input.checked = p.id === state.program;
     input.onchange = () => { state.program = p.id; render(); };
@@ -116,132 +188,301 @@ function renderPrograms() {
   }
 }
 
-function renderVariables() {
-  const sections = new Map();
-  for (const v of program().variables) {
-    if (!sections.has(v.section)) sections.set(v.section, []);
-    sections.get(v.section).push(v);
-  }
+function renderSections() {
   const out = [];
-  for (const [title, vars] of sections) {
+  for (const s of program().sections) {
     const panel = el("div", { class: "panel" });
-    for (const v of vars) panel.append(renderVariable(v));
-    out.push(el("h2", {}, title), panel);
+    for (const v of s.variables) panel.append(renderVariable(v));
+    for (const f of s.families) panel.append(renderFamily(f));
+    out.push(el("h2", {}, s.title), panel);
   }
   $("sections").replaceChildren(...out);
 }
 
-function renderVariable(v) {
-  const head = el("div", { class: "var-head" }, el("span", { class: "name" }, v.name));
-  if (v.required) head.append(el("span", { class: "tag req" }, v.required === "yes" ? "required" : "required " + v.required));
-  if (v.default) head.append(el("span", { class: "tag" }, "default: " + v.default));
-  const row = el("div", { class: "row" });
-  if (v.secret) {
-    const input = el("input", { type: "password", autocomplete: "off", spellcheck: "false" });
-    const clear = el("button", { type: "button" }, "Clear");
-    const show = () => {
-      const s = state.secrets[v.name] || "unset";
-      input.placeholder = s === "kept" ? "******** (set; type to replace)" : "not set";
-      clear.disabled = s === "unset" && !input.value;
-    };
-    input.value = state.secrets[v.name] === "typed" ? (state.values[v.name] || "") : "";
-    input.oninput = () => {
-      state.values[v.name] = input.value;
-      state.secrets[v.name] = input.value ? "typed" : (state.secrets[v.name] === "typed" ? "unset" : state.secrets[v.name]);
-      show(); renderExports();
-    };
-    clear.onclick = () => { input.value = ""; state.values[v.name] = ""; state.secrets[v.name] = "unset"; show(); renderExports(); };
-    show();
-    row.append(input, clear);
-  } else {
-    const input = el("input", { type: "text", autocomplete: "off", spellcheck: "false", placeholder: v.default ? "blank: " + v.default : "" });
-    input.value = state.values[v.name] || "";
-    input.oninput = () => { state.values[v.name] = input.value; renderExports(); };
-    row.append(input);
-  }
-  return el("div", { class: "var" }, head, el("div", { class: "help" }, v.help), row);
+function tags(head, required, def) {
+  if (required) head.append(el("span", { class: "tag req" }, required === "yes" ? "required" : "required " + required));
+  if (def) head.append(el("span", { class: "tag" }, "default: " + def));
 }
 
-function isSet(v) {
-  if (v.secret) return state.secrets[v.name] === "kept" || state.secrets[v.name] === "typed";
-  return (state.values[v.name] || "").trim() !== "";
+function renderVariable(v) {
+  if (v.external) return renderExternal(v);
+  const head = el("div", { class: "var-head" }, el("span", { class: "name" }, v.name));
+  tags(head, v.required, v.default);
+  const fromProfile = profile() && profile().values[v.name];
+  const placeholder = fromProfile ? "blank: " + fromProfile + " (from the profile)" : v.default ? "blank: " + v.default : "";
+  return el("div", { class: "var" }, head, el("div", { class: "help" }, rich(v.help)),
+    input(v.name, v.secret, placeholder), ...profileNotes(v.name));
+}
+
+// renderExternal shows a variable a library reads from the environment the page was started in:
+// read-only, as the server read it.
+function renderExternal(v) {
+  const e = state.page.external[v.name] || { set: false };
+  const head = el("div", { class: "var-head" }, el("span", { class: "name" }, v.name), el("span", { class: "tag" }, "read-only"));
+  tags(head, v.required, v.default);
+  let shownValue = !e.set ? "not set" : v.secret ? "set (hidden)" : e.value;
+  if (e.set && e.from !== v.name) shownValue += "   (from " + e.from + ")";
+  let note = "Read by " + v.external + " from the environment this page was started in, and the Test uses it as is. " +
+    "To change it, set it in your shell or service definition, then start the page again.";
+  if (v.aliases.length) note += " Also read as " + v.aliases.join(", ") + " when " + v.name + " is unset or empty.";
+  return el("div", { class: "var" }, head, el("div", { class: "help" }, rich(v.help)),
+    el("div", { class: "readonly" }, shownValue), el("div", { class: "note source" }, note));
+}
+
+function profile() { return state.page.temporalProfile; }
+
+// profileNotes say where the Temporal profile sets name, and, under the profile's own variable,
+// which file and profile are read.
+function profileNotes(name) {
+  const p = profile();
+  if (!p) return [];
+  const where = p.file + ", profile " + p.profile;
+  const out = [];
+  if (name === p.variable) {
+    out.push(!p.file ? "No profile file: there is no user config directory."
+      : p.error ? "Couldn't read " + p.file + ": " + p.error
+      : !p.exists ? "No profile file at " + p.file + ": only the variables apply."
+      : p.found ? "Reading " + where + "."
+      : "No profile " + p.profile + " in " + p.file + ": only the variables apply.");
+  }
+  if (name in p.values) out.push("From " + where + ": " + p.values[name] + ". Blank uses it; a value here overrides it.");
+  if (p.secretsSet[name]) out.push("Set in " + where + ". Blank uses it; a value here overrides it.");
+  return out.map((t) => el("div", { class: "note source" }, t));
+}
+
+// input is the field for one variable. A secret's field never shows a value it didn't get typed.
+function input(name, secret, placeholder) {
+  const row = el("div", { class: "row" });
+  if (!secret) {
+    const i = el("input", { type: "text", autocomplete: "off", spellcheck: "false", placeholder: placeholder || "" });
+    i.value = state.values[name] || "";
+    i.oninput = () => { state.values[name] = i.value; renderExports(); };
+    row.append(i);
+    return row;
+  }
+  const i = el("input", { type: "password", autocomplete: "off", spellcheck: "false" });
+  const clear = el("button", { type: "button" }, "Clear");
+  const show = () => {
+    const s = state.secrets[name] || "unset";
+    i.placeholder = s === "kept" ? "******** (set; type to replace)" : "not set";
+    clear.disabled = s === "unset" && !i.value;
+  };
+  i.value = state.secrets[name] === "typed" ? (state.values[name] || "") : "";
+  i.oninput = () => {
+    state.values[name] = i.value;
+    // Erasing what was typed goes back to the value set where configui runs, if any.
+    state.secrets[name] = i.value ? "typed" : (state.page.secretsSet[name] ? "kept" : "unset");
+    show(); renderExports();
+  };
+  clear.onclick = () => { i.value = ""; state.values[name] = ""; state.secrets[name] = "unset"; show(); renderExports(); };
+  show();
+  row.append(i, clear);
+  return row;
+}
+
+function renderFamily(f) {
+  const box = el("div", { class: "var" });
+  box.append(el("div", { class: "help" }, rich(f.help)));
+  const list = el("ul", { class: "family-members" });
+  for (const m of f.members) {
+    const li = el("li", {}, el("span", { class: "name" }, memberName(f, "<NAME>", m)), " ");
+    if (m.required) li.append(el("span", { class: "tag req" }, "required " + m.required), " ");
+    li.append(rich(m.help));
+    list.append(li);
+  }
+  box.append(list);
+  const insts = state.instances[f.prefix] || [];
+  if (!insts.length) box.append(el("p", { class: "note" }, "None set. Add one with “" + f.addButton + "” below."));
+  for (const inst of insts) {
+    const remove = el("button", { type: "button", class: "link" }, "Remove");
+    remove.onclick = () => {
+      state.instances[f.prefix] = insts.filter((x) => x !== inst);
+      for (const m of f.members) { const n = memberName(f, inst, m); delete state.values[n]; state.secrets[n] = "unset"; }
+      render();
+    };
+    const block = el("div", { class: "instance", id: "instance-" + f.prefix + inst },
+      el("div", { class: "instance-head" }, el("h3", {}, inst), remove));
+    for (const m of f.members) {
+      const name = memberName(f, inst, m);
+      block.append(el("div", { class: "member" },
+        el("div", { class: "member-label" }, m.label + " ", el("span", { class: "name" }, name)),
+        input(name, m.secret, m.placeholder), ...profileNotes(name)));
+    }
+    box.append(block);
+  }
+  return box;
+}
+
+function renderFree() {
+  const rows = state.free.map((r, i) => {
+    const name = el("input", { type: "text", placeholder: "NAME", autocomplete: "off", spellcheck: "false" });
+    const value = el("input", { type: "text", placeholder: "value", autocomplete: "off", spellcheck: "false" });
+    name.value = r.name; value.value = r.value;
+    const check = () => {
+      const bad = r.name !== "" && !freeName(r.name);
+      name.classList.toggle("bad", bad);
+      name.title = bad && externalNames().includes(r.name) ? r.name + " is read from the environment the page was started in; set it there" : "";
+    };
+    name.oninput = () => { r.name = name.value.trim(); check(); renderExports(); };
+    value.oninput = () => { r.value = value.value; renderExports(); };
+    check();
+    const remove = el("button", { type: "button", class: "link" }, "Remove");
+    remove.onclick = () => { state.free.splice(i, 1); renderFree(); renderExports(); };
+    return el("tr", {}, el("td", {}, el("div", { class: "row" }, name)), el("td", {}, el("div", { class: "row" }, value)), el("td", {}, remove));
+  });
+  $("free").replaceChildren(...rows);
+  const add = el("button", { type: "button" }, "Add a variable");
+  add.onclick = () => { state.free.push({ name: "", value: "" }); renderFree(); };
+  const buttons = [add];
+  for (const f of families()) {
+    const b = el("button", { type: "button" }, f.addButton);
+    b.onclick = () => openAdd(f);
+    buttons.push(b);
+  }
+  $("add-buttons").replaceChildren(...buttons);
+}
+
+// openAdd asks for a new instance's name, then adds a field for each of the family's variables.
+function openAdd(f) {
+  const d = $("add-dialog"), name = $("add-name"), error = $("add-error");
+  $("add-title").textContent = f.addButton;
+  $("add-help").replaceChildren(rich(f.addHelp));
+  name.value = ""; name.placeholder = f.example || "NAME"; error.textContent = "";
+  const problem = (n) => {
+    if (!new RegExp(f.namePattern).test(n)) return "Use upper-case letters, digits and underscores, starting with a letter.";
+    const suffix = f.members.find((m) => m.suffix && n.endsWith(m.suffix));
+    if (suffix) return "The name can't end in " + suffix.suffix + ".";
+    if ((state.instances[f.prefix] || []).includes(n)) return n + " is already on the page.";
+    return "";
+  };
+  name.oninput = () => { error.textContent = name.value ? problem(name.value.trim()) : ""; };
+  $("add-ok").onclick = () => {
+    const n = name.value.trim(), p = problem(n);
+    if (p) { error.textContent = p; return; }
+    state.instances[f.prefix] = [...(state.instances[f.prefix] || []), n];
+    d.close(); render();
+    const block = $("instance-" + f.prefix + n);
+    block.scrollIntoView({ behavior: "smooth", block: "center" });
+    block.querySelector("input").focus({ preventScroll: true });
+  };
+  name.onkeydown = (e) => { if (e.key === "Enter") $("add-ok").click(); };
+  $("add-cancel").onclick = () => d.close();
+  d.showModal();
+}
+
+function renderTestFields() {
+  const out = [];
+  for (const t of program().testFields) {
+    let control;
+    if (t.kind === "instance") {
+      control = el("select", {}, el("option", { value: "" }, "(none)"));
+      for (const inst of state.instances[t.family] || []) control.append(el("option", { value: inst }, t.family + inst));
+      if (!(state.instances[t.family] || []).includes(state.fields[t.id])) state.fields[t.id] = "";
+    } else {
+      control = el("input", { type: "text", autocomplete: "off", spellcheck: "false", placeholder: t.placeholder || "" });
+    }
+    control.value = state.fields[t.id] || "";
+    control.oninput = () => { state.fields[t.id] = control.value; };
+    out.push(el("div", { class: "var" }, el("div", { class: "var-head" }, el("b", {}, t.label)),
+      el("div", { class: "help" }, rich(t.help)), el("div", { class: "row" }, control)));
+  }
+  $("test-fields").replaceChildren(...out);
+}
+
+// externalNames are the names of the program's External variables and their aliases.
+function externalNames() {
+  return program().sections.flatMap((s) => s.variables).filter((v) => v.external).flatMap((v) => [v.name, ...v.aliases]);
+}
+
+// freeName reports whether an added variable's name can be set and sent: a valid name, not one a
+// library reads from the environment the page was started in.
+function freeName(n) { return /^[A-Za-z_][A-Za-z0-9_]*$/.test(n) && !externalNames().includes(n); }
+
+// shown is every variable of the program on the page that it sets, in order: [name, secret, required].
+// External variables aren't: the page can't set them.
+function shown() {
+  const out = [];
+  for (const s of program().sections) {
+    for (const v of s.variables) if (!v.external) out.push([v.name, v.secret, v.required === "yes" ? "" : null]);
+    for (const f of s.families) for (const inst of state.instances[f.prefix] || []) {
+      for (const m of f.members) out.push([memberName(f, inst, m), m.secret, m.required ? " (required " + m.required + ")" : null]);
+    }
+  }
+  return out;
+}
+
+function isSet(name, secret) {
+  if (secret) return state.secrets[name] === "kept" || state.secrets[name] === "typed";
+  return (state.values[name] || "").trim() !== "";
 }
 
 function quote(s) { return /^[A-Za-z0-9_.,:\/@=+-]+$/.test(s) ? s : "'" + s.replace(/'/g, "'\\''") + "'"; }
 
 function renderExports() {
-  const vars = program().variables;
-  const lines = vars.filter(isSet).map((v) =>
-    "export " + v.name + "=" + (v.secret ? "********" : quote(state.values[v.name].trim())));
+  const lines = [], missing = [];
+  for (const [name, secret, required] of shown()) {
+    if (isSet(name, secret)) lines.push("export " + name + "=" + (secret ? quote("<set " + name + ">") : quote(state.values[name])));
+    else if (required !== null) missing.push(name + required);
+  }
+  for (const r of state.free) {
+    if (freeName(r.name) && r.value.trim() !== "") lines.push("export " + r.name + "=" + quote(r.value));
+  }
+  const external = program().sections.flatMap((s) => s.variables).filter((v) => v.external && (state.page.external[v.name] || {}).set);
+  if (external.length) {
+    lines.push("# Set where this page was started; set these where the program runs too: " +
+      external.map((v) => state.page.external[v.name].from).join(", "));
+  }
   lines.push(program().command);
   $("exports").textContent = lines.join("\n");
-  const missing = vars.filter((v) => v.required === "yes" && !isSet(v)).map((v) => v.name);
-  const dl = vars.find((v) => v.name === "KAFKA_DEAD_LETTER_TOPIC");
-  if (dl && !isSet(dl) && (state.values.DELETE_DEAD_LETTERS || "").trim().toLowerCase() !== "true") {
-    missing.push("KAFKA_DEAD_LETTER_TOPIC (or DELETE_DEAD_LETTERS=true)");
-  }
   $("missing").textContent = missing.length ? "Required but not set: " + missing.join(", ") : "";
 }
 
-function render() { renderPrograms(); renderVariables(); renderExports(); }
+function render() { renderPrograms(); renderSections(); renderFree(); renderTestFields(); renderExports(); }
 
 function showResult(r) {
-  const box = el("div", { class: "result-box " + (r.ok ? "ok" : "err") });
-  if (!r.ok) {
-    box.append(el("b", {}, "Failed: " + (r.step || "Test")), el("pre", {}, r.error || "(no error message)"));
-  } else if (r.empty) {
-    box.append(el("b", {}, "Connected" + (r.cluster ? " to cluster " + r.cluster : "") +
-      ". The topic has no messages to read."));
-  } else {
-    const m = r.message;
-    const rows = [
-      ["Partition", String(m.partition)], ["Offset", String(m.offset)], ["Timestamp", m.timestamp],
-      ["Key", m.key === "" ? "(none)" : m.key + (m.keyBase64 ? "  (base64: not UTF-8)" : "")],
-      ["Value", m.tombstone ? "(tombstone: null value)" : m.value + (m.valueBase64 ? "  (base64: not UTF-8)" : "")],
-    ];
-    for (const [k, v] of Object.entries(m.headers || {})) rows.push(["Header " + k, v]);
-    const table = el("table", { class: "msg" });
-    for (const [k, v] of rows) table.append(el("tr", {}, el("td", {}, k), el("td", {}, el("pre", { style: "margin:0" }, v))));
-    box.append(el("b", {}, "Read the topic's last message" + (r.cluster ? " (cluster " + r.cluster + ")" : "") + ":"), table);
+  const boxes = [];
+  for (const c of r.checks || []) {
+    const kind = c.skipped ? "skip" : c.problems ? "err" : c.warnings ? "warn" : "ok";
+    const box = el("div", { class: "result-box " + kind }, el("b", {}, c.title + (c.skipped ? ": skipped" : c.problems ? ": problems" : c.warnings ? ": warnings" : ": OK")));
+    if (c.skipped) box.append(el("div", {}, c.skipped));
+    for (const [title, items] of [["", c.problems], ["Warnings", c.warnings], ["", c.passed]]) {
+      if (!items || !items.length) continue;
+      if (title) box.append(el("div", { style: "margin-top:6px" }, title + ":"));
+      box.append(el("ul", {}, ...items.map((t) => el("li", {}, t))));
+    }
+    boxes.push(box);
   }
-  $("result").replaceChildren(box);
+  if (r.error) boxes.push(el("div", { class: "result-box err" }, el("b", {}, "Failed: " + r.step), el("pre", {}, r.error)));
+  $("result").replaceChildren(...boxes);
 }
 
 async function runTest() {
   const button = $("test");
   button.disabled = true; button.textContent = "Testing…";
   const values = {}, keepSecrets = {};
-  for (const v of program().variables) {
-    if (v.secret && state.secrets[v.name] === "kept") keepSecrets[v.name] = true;
-    else if (v.secret && state.secrets[v.name] !== "typed") values[v.name] = "";
-    else values[v.name] = state.values[v.name] || "";
+  for (const [name, secret] of shown()) {
+    if (secret && state.secrets[name] === "kept") keepSecrets[name] = true;
+    else if (secret && state.secrets[name] !== "typed") values[name] = "";
+    else values[name] = state.values[name] || "";
   }
+  for (const r of state.free) if (freeName(r.name)) values[r.name] = r.value;
   try {
     const resp = await fetch("/api/test", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ program: state.program, values, keepSecrets }),
+      body: JSON.stringify({ program: state.program, values, keepSecrets, fields: state.fields }),
     });
     if (!resp.ok) throw new Error("HTTP " + resp.status + ": " + await resp.text());
-    const r = await resp.json();
-    // Typed secrets are now set in the server; show them as set, like the others.
-    for (const [name, set] of Object.entries(r.settings.secretsSet)) state.secrets[name] = set ? "kept" : "unset";
-    for (const v of program().variables) if (v.secret) state.values[v.name] = "";
-    render();
-    showResult(r);
+    showResult(await resp.json());
   } catch (e) {
-    showResult({ ok: false, step: "Reach this page's server", error: String(e) });
+    showResult({ step: "Reach this page's server", error: String(e) });
   } finally {
     button.disabled = false; button.textContent = "Test";
   }
 }
 
 $("test").onclick = runTest;
-fetch("/api/settings").then((r) => r.json()).then((s) => {
-  loadSettings(s);
-  // Start on the connector if only its settings are set.
-  if (!s.values.RELAY_ENDPOINT && (s.values.NEXUS_TASK_QUEUE || s.values.KAFKA_MAX_BATCH_BYTES)) state.program = "connector";
-  render();
-}).catch((e) => showResult({ ok: false, step: "Load the current settings", error: String(e) }));
+fetch("/api/settings").then((r) => r.json()).then((page) => { load(page); render(); })
+  .catch((e) => showResult({ step: "Load the current settings", error: String(e) }));
 </script>
 </body>
 </html>

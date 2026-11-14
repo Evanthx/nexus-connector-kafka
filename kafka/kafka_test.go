@@ -3,7 +3,6 @@ package kafka
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/temporalio/nexus-connector-kafka/generated/kafkaapi"
+	"github.com/temporalio/nexus-connector-kafka/settings"
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kfake"
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -685,22 +685,34 @@ func TestToKafkaRecord(t *testing.T) {
 	require.Equal(t, []kgo.RecordHeader{{Key: "a", Value: []byte("1")}, {Key: "dedupe-id", Value: []byte("x-0")}}, r.Headers)
 }
 
-func TestConfigFromEnv(t *testing.T) {
-	t.Setenv("KAFKA_BROKERS", "a:9092,b:9092")
-	t.Setenv("KAFKA_TOPIC", "t")
-	t.Setenv("KAFKA_START_FROM", "")
-	cfg, err := ConfigFromEnv()
+func TestLoadConfig(t *testing.T) {
+	cfg, err := LoadConfig(settings.Map{"KAFKA_BROKERS": "a:9092,b:9092", "KAFKA_TOPIC": "t"})
 	require.NoError(t, err)
 	require.Equal(t, []string{"a:9092", "b:9092"}, cfg.Brokers)
 	require.Equal(t, StartFromOldest, cfg.StartFrom)
 
-	t.Setenv("KAFKA_START_FROM", "latest")
-	_, err = ConfigFromEnv()
+	_, err = LoadConfig(settings.Map{"KAFKA_BROKERS": "a:9092", "KAFKA_TOPIC": "t", "KAFKA_START_FROM": "latest"})
 	require.ErrorContains(t, err, "KAFKA_START_FROM must be oldest or newest")
 
-	t.Setenv("KAFKA_TOPIC", "")
-	t.Setenv("KAFKA_BROKERS", "")
-	_, err = ConfigFromEnv()
-	require.EqualError(t, err, fmt.Sprintf("set %s and %s", "KAFKA_BROKERS", "KAFKA_TOPIC")+
+	_, err = LoadConfig(settings.Map{"KAFKA_START_FROM": "latest"})
+	require.EqualError(t, err, "set KAFKA_BROKERS: the Kafka brokers, as comma-separated host:port"+
+		"\nset KAFKA_TOPIC: the topic to serve"+
 		"\nKAFKA_START_FROM must be oldest or newest, not \"latest\"", "every invalid value is reported")
+}
+
+// GroupMembers counts a group's live members, such as a relay, and none for a group that doesn't
+// exist.
+func TestGroupMembers(t *testing.T) {
+	cfg := newCluster(t)
+	produce(t, cfg, 0, "m0")
+	n, err := GroupMembers(context.Background(), cfg, "live")
+	require.NoError(t, err)
+	require.Zero(t, n, "no such group yet")
+
+	member := newMember(t, cfg, "live")
+	_, err = member.Next(context.Background(), 1, 0) // joined once it has a batch
+	require.NoError(t, err)
+	n, err = GroupMembers(context.Background(), cfg, "live")
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
 }

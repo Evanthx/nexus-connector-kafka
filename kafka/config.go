@@ -9,11 +9,8 @@ package kafka
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"slices"
 	"strings"
 	"time"
 
@@ -34,50 +31,14 @@ const (
 	StartFromNewest StartFrom = "newest"
 )
 
-// Config is how to reach the topic. ConfigFromEnv reads it from the environment.
+// Config is how to reach the topic. ConfigFrom and LoadConfig read it from the environment
+// variables in settings.go.
 type Config struct {
 	Brokers   []string
 	Topic     string
 	Username  string // SASL/SCRAM-SHA-256 username; empty for no authentication
 	Password  string
 	StartFrom StartFrom
-}
-
-// ConfigFromEnv reads KAFKA_BROKERS (comma-separated), KAFKA_TOPIC, KAFKA_USERNAME,
-// KAFKA_PASSWORD, and KAFKA_START_FROM (oldest, the default, or newest).
-func ConfigFromEnv() (Config, error) {
-	c := Config{
-		Topic:     os.Getenv("KAFKA_TOPIC"),
-		Username:  os.Getenv("KAFKA_USERNAME"),
-		Password:  os.Getenv("KAFKA_PASSWORD"),
-		StartFrom: StartFrom(os.Getenv("KAFKA_START_FROM")),
-	}
-	if b := os.Getenv("KAFKA_BROKERS"); b != "" {
-		c.Brokers = strings.Split(b, ",")
-	}
-	var missing []string
-	if len(c.Brokers) == 0 {
-		missing = append(missing, "KAFKA_BROKERS")
-	}
-	if c.Topic == "" {
-		missing = append(missing, "KAFKA_TOPIC")
-	}
-	var errs []error
-	if len(missing) > 0 {
-		slices.Sort(missing)
-		errs = append(errs, fmt.Errorf("set %s", strings.Join(missing, " and ")))
-	}
-	switch c.StartFrom {
-	case "":
-		c.StartFrom = StartFromOldest
-	case StartFromOldest, StartFromNewest:
-	default:
-		errs = append(errs, fmt.Errorf("KAFKA_START_FROM must be %s or %s, not %q", StartFromOldest, StartFromNewest, c.StartFrom))
-	}
-	if err := errors.Join(errs...); err != nil {
-		return Config{}, err
-	}
-	return c, nil
 }
 
 // TopicIdentity names the topic beyond its name. Cluster is the Kafka cluster's ID. TopicID

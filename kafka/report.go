@@ -2,8 +2,9 @@ package kafka
 
 import (
 	"fmt"
-	"os"
 	"strings"
+
+	"github.com/temporalio/nexus-connector-kafka/settings"
 )
 
 // Setting is one environment variable as a program will use it, for the report a program logs
@@ -13,11 +14,11 @@ type Setting struct {
 	Value string
 }
 
-// EnvSetting is the setting for the environment variable name, which a program resolved to value.
-// The value is marked as the default when the variable isn't set.
-func EnvSetting(name string, value any) Setting {
+// EnvSetting is the setting for the environment variable name, which a program resolved to value
+// from env. The value is marked as the default when the variable isn't set in env.
+func EnvSetting(env settings.Env, name string, value any) Setting {
 	v := fmt.Sprint(value)
-	if os.Getenv(name) == "" {
+	if settings.Get(env, name) == "" {
 		v += " (default)"
 	}
 	return Setting{Name: name, Value: v}
@@ -29,9 +30,9 @@ type Section struct {
 	Settings []Setting
 }
 
-// Settings are the Kafka settings in c, as a report section. It never shows the password, only
-// whether one is set.
-func (c Config) Settings() Section {
+// Settings are the Kafka settings in c, read from env, as a report section. It never shows the
+// password, only whether one is set.
+func (c Config) Settings(env settings.Env) Section {
 	login := "(not set: no authentication)"
 	if c.Username != "" {
 		login = c.Username + " (SASL/SCRAM-SHA-256; KAFKA_PASSWORD is not set)"
@@ -43,7 +44,7 @@ func (c Config) Settings() Section {
 		{Name: "KAFKA_BROKERS", Value: strings.Join(c.Brokers, ",")},
 		{Name: "KAFKA_TOPIC", Value: c.Topic},
 		{Name: "KAFKA_USERNAME", Value: login},
-		EnvSetting("KAFKA_START_FROM", c.StartFrom),
+		EnvSetting(env, "KAFKA_START_FROM", c.StartFrom),
 	}}
 }
 

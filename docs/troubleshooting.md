@@ -34,6 +34,10 @@ Failed to connect to Temporal:
   - failed reaching server: ... connection refused
 ```
 
+To find these problems before starting either program, use the
+[setup page](setup.md#work-out-your-settings-in-a-browser) (`make configui`): its **Test** makes
+the same checks, and connects to Kafka and reads the topic's last message.
+
 ## Errors from `read` and `write`
 
 Failures that retrying can't fix are `ApplicationError`s:

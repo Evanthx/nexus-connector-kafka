@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"maps"
 	"net"
 	"sync/atomic"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/temporalio/nexus-connector-kafka/generated/kafkaapi"
 	"github.com/temporalio/nexus-connector-kafka/kafka"
+	"github.com/temporalio/nexus-connector-kafka/settings"
 	"github.com/temporalio/nexus-connector-kafka/test/nexuscaller"
 	"github.com/temporalio/nexus-connector-kafka/test/testenv"
 	"go.temporal.io/sdk/testsuite"
@@ -97,63 +99,70 @@ func TestGroupFor(t *testing.T) {
 	require.ErrorContains(t, err, "set group")
 }
 
-func TestSettingsFromEnv(t *testing.T) {
-	t.Setenv("KAFKA_GROUP", "")
-	t.Setenv("NEXUS_TASK_QUEUE", "")
-	t.Setenv("KAFKA_MAX_BATCH_BYTES", "")
-	t.Setenv(maxDurationEnvVar, "")
-	s, err := settingsFromEnv()
-	require.NoError(t, err)
-	require.Equal(t, settings{taskQueue: defaultTaskQueue, maxBatchBytes: defaultMaxBatchBytes}, s)
+// kafkaEnv is the Kafka variables the connector needs, with vars added.
+func kafkaEnv(vars settings.Map) settings.Map {
+	env := settings.Map{"KAFKA_BROKERS": "localhost:9092", "KAFKA_TOPIC": "orders"}
+	maps.Copy(env, vars)
+	return env
+}
 
-	t.Setenv("KAFKA_GROUP", "orders-reader")
-	t.Setenv("NEXUS_TASK_QUEUE", "nexus-connector-kafka-orders")
-	s, err = settingsFromEnv()
+func TestConfigFrom(t *testing.T) {
+	cfg, s, err := configFrom(kafkaEnv(nil))
+	require.NoError(t, err)
+	require.Equal(t, "orders", cfg.Topic)
+	require.Equal(t, config{taskQueue: defaultTaskQueue, maxBatchBytes: defaultMaxBatchBytes}, s)
+
+	_, s, err = configFrom(kafkaEnv(settings.Map{"KAFKA_GROUP": "orders-reader", "NEXUS_TASK_QUEUE": "nexus-connector-kafka-orders"}))
 	require.NoError(t, err)
 	require.Equal(t, "orders-reader", s.group)
 	require.Equal(t, "nexus-connector-kafka-orders", s.taskQueue)
 	require.Equal(t, "nexus-connector-kafka-orders-reads", readQueue(s.taskQueue))
 
-	t.Setenv("KAFKA_MAX_BATCH_BYTES", "100")
-	_, err = settingsFromEnv()
+	_, _, err = configFrom(kafkaEnv(settings.Map{"KAFKA_MAX_BATCH_BYTES": "100"}))
 	require.ErrorContains(t, err, "KAFKA_MAX_BATCH_BYTES")
-	t.Setenv("KAFKA_MAX_BATCH_BYTES", "")
 
-	t.Setenv(maxDurationEnvVar, "90")
-	s, err = settingsFromEnv()
+	_, s, err = configFrom(kafkaEnv(settings.Map{"KAFKA_MAX_DURATION_MINUTES": "90"}))
 	require.NoError(t, err)
 	require.Equal(t, 90*time.Minute, s.maxDuration)
 	for _, bad := range []string{"0", "-1", "1.5", "1h", " 2"} {
-		t.Setenv(maxDurationEnvVar, bad)
-		_, err = settingsFromEnv()
-		require.ErrorContains(t, err, maxDurationEnvVar, "value %q", bad)
+		_, _, err = configFrom(kafkaEnv(settings.Map{"KAFKA_MAX_DURATION_MINUTES": bad}))
+		require.ErrorContains(t, err, "KAFKA_MAX_DURATION_MINUTES", "value %q", bad)
 	}
 }
 
-// settingsFromEnv collects all invalid values in one error rather than stopping at the first.
-func TestSettingsFromEnv_ReportsEveryInvalidValue(t *testing.T) {
-	t.Setenv("KAFKA_MAX_BATCH_BYTES", "100") // too small (≤ resultReserve)
-	t.Setenv(maxDurationEnvVar, "0")          // must be ≥ 1
-	_, err := settingsFromEnv()
-	require.ErrorContains(t, err, "KAFKA_MAX_BATCH_BYTES")
-	require.ErrorContains(t, err, maxDurationEnvVar)
+// configFrom collects all invalid values in one error rather than stopping at the first.
+func TestConfigFrom_ReportsEveryInvalidValue(t *testing.T) {
+	_, _, err := configFrom(settings.Map{
+		"KAFKA_MAX_BATCH_BYTES":      "100", // too small (≤ resultReserve)
+		"KAFKA_MAX_DURATION_MINUTES": "0",   // must be ≥ 1
+	})
+	require.EqualError(t, err, "set KAFKA_BROKERS: the Kafka brokers, as comma-separated host:port\n"+
+		"set KAFKA_TOPIC: the topic to serve\n"+
+		`KAFKA_MAX_BATCH_BYTES must be a number of bytes greater than 65536, not "100"`+"\n"+
+		`KAFKA_MAX_DURATION_MINUTES must be a whole number of minutes, at least 1, not "0"`)
 }
 
 // The startup report says which consumer groups this connector serves and where to point its
 // endpoint, and never shows the password.
 func TestReport(t *testing.T) {
-	cfg := kafka.Config{Brokers: []string{"localhost:9092"}, Topic: "orders", Username: "connector", Password: "secret-password", StartFrom: kafka.StartFromOldest}
-	t.Setenv("NEXUS_TASK_QUEUE", "nexus-connector-kafka-orders")
-	t.Setenv("KAFKA_MAX_BATCH_BYTES", "")
-	fixed := settings{group: "orders-reader", taskQueue: "nexus-connector-kafka-orders", maxBatchBytes: defaultMaxBatchBytes}
-	report := fixed.report(cfg, "connectors", "localhost:7233")
+	env := kafkaEnv(settings.Map{
+		"KAFKA_USERNAME": "connector", "KAFKA_PASSWORD": "secret-password",
+		"KAFKA_GROUP": "orders-reader", "NEXUS_TASK_QUEUE": "nexus-connector-kafka-orders",
+	})
+	cfg, fixed, err := configFrom(env)
+	require.NoError(t, err)
+	report := fixed.report(env, cfg, "connectors", "localhost:7233")
 	require.NotContains(t, report, "secret-password")
 	require.Contains(t, report, `Serve only the consumer group "orders-reader"`)
 	require.Contains(t, report, `point this connector's Nexus endpoint at it`)
 	require.Contains(t, report, `"nexus-connector-kafka-orders-reads"`)
 	require.Regexp(t, `KAFKA_MAX_BATCH_BYTES +2097152 \(default\)`, report)
+	require.Regexp(t, `NEXUS_TASK_QUEUE +nexus-connector-kafka-orders\n`, report)
 
-	open := settings{taskQueue: defaultTaskQueue, maxBatchBytes: defaultMaxBatchBytes}
-	report = open.report(cfg, "connectors", "localhost:7233")
+	env = kafkaEnv(nil)
+	cfg, open, err := configFrom(env)
+	require.NoError(t, err)
+	report = open.report(env, cfg, "connectors", "localhost:7233")
 	require.Contains(t, report, "Serve any consumer group: each read must name one")
+	require.Regexp(t, `NEXUS_TASK_QUEUE +nexus-connector-kafka \(default\)`, report)
 }

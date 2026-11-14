@@ -15,6 +15,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/temporalio/nexus-connector-kafka/generated/kafkaapi"
 	"github.com/temporalio/nexus-connector-kafka/kafka"
+	"github.com/temporalio/nexus-connector-kafka/settings"
+	"github.com/temporalio/nexus-connector-kafka/setup"
 	"github.com/temporalio/nexus-connector-kafka/test/testenv"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"go.temporal.io/api/serviceerror"
@@ -533,92 +535,89 @@ func TestBackoff(t *testing.T) {
 	require.Equal(t, 30*time.Second, backoff(100))
 }
 
-func TestConfigFromEnv(t *testing.T) {
-	t.Setenv("KAFKA_BROKERS", "localhost:9092")
-	t.Setenv("KAFKA_TOPIC", "events")
-	t.Setenv("KAFKA_GROUP", "")
-	t.Setenv("KAFKA_DEAD_LETTER_TOPIC", "")
-	t.Setenv("RELAY_ENDPOINT", "")
-	t.Setenv("DELETE_DEAD_LETTERS", "")
-	_, err := configFromEnv()
-	require.ErrorContains(t, err, "set KAFKA_GROUP, RELAY_ENDPOINT")
+// relayEnv is a valid relay environment with vars added; an empty value unsets a variable.
+func relayEnv(vars settings.Map) settings.Map {
+	env := settings.Map{
+		"KAFKA_BROKERS": "localhost:9092", "KAFKA_TOPIC": "events", "KAFKA_GROUP": "g", "RELAY_ENDPOINT": "ep",
+		"KAFKA_DEAD_LETTER_TOPIC": "events-dlq",
+	}
+	for k, v := range vars {
+		if v == "" {
+			delete(env, k)
+		} else {
+			env[k] = v
+		}
+	}
+	return env
+}
 
-	t.Setenv("KAFKA_GROUP", "g")
-	t.Setenv("RELAY_ENDPOINT", "ep")
-	_, err = configFromEnv()
+func TestConfigFrom(t *testing.T) {
+	_, err := configFrom(relayEnv(settings.Map{"KAFKA_GROUP": "", "RELAY_ENDPOINT": ""}))
+	require.EqualError(t, err, "set KAFKA_GROUP: the consumer group the relay joins\n"+
+		"set RELAY_ENDPOINT: the Nexus endpoint to deliver to")
+
+	_, err = configFrom(relayEnv(settings.Map{"KAFKA_DEAD_LETTER_TOPIC": ""}))
 	require.ErrorContains(t, err, "set KAFKA_DEAD_LETTER_TOPIC, the topic undeliverable messages go to, or DELETE_DEAD_LETTERS=true")
 
-	t.Setenv("KAFKA_DEAD_LETTER_TOPIC", "events-dlq")
-	cfg, err := configFromEnv()
+	cfg, err := configFrom(relayEnv(nil))
 	require.NoError(t, err)
+	require.Equal(t, "events", cfg.kafka.Topic)
+	require.Equal(t, "g", cfg.group)
+	require.Equal(t, "ep", cfg.endpoint)
+	require.Equal(t, "events-dlq", cfg.deadLetterTopic)
 	require.False(t, cfg.deleteDeadLetters)
 	require.Equal(t, 100, cfg.batchSize)
 	require.Zero(t, cfg.timeLimit)
 	require.Equal(t, 24*time.Hour, cfg.operationTimeout)
 	require.Equal(t, kafkaapi.KafkaMessageReceiver.ServiceName, cfg.service)
 	require.Equal(t, "receive", cfg.operation)
+	require.Equal(t, setup.DefaultMaxInputBytes, cfg.maxInputBytes)
 
-	t.Setenv("KAFKA_BATCH_TIME_LIMIT", "2s")
-	t.Setenv("KAFKA_BATCH_SIZE", "500")
-	cfg, err = configFromEnv()
+	cfg, err = configFrom(relayEnv(settings.Map{"KAFKA_BATCH_TIME_LIMIT": "2s", "KAFKA_BATCH_SIZE": "500"}))
 	require.NoError(t, err)
 	require.Equal(t, 2*time.Second, cfg.timeLimit)
 	require.Equal(t, 500, cfg.batchSize)
 
-	t.Setenv("KAFKA_DEAD_LETTER_TOPIC", "events")
-	_, err = configFromEnv()
+	_, err = configFrom(relayEnv(settings.Map{"KAFKA_DEAD_LETTER_TOPIC": "events"}))
 	require.ErrorContains(t, err, "must differ")
+
+	_, err = configFrom(relayEnv(settings.Map{"RELAY_OPERATION_TIMEOUT": "0s"}))
+	require.EqualError(t, err, "RELAY_OPERATION_TIMEOUT must be more than 0")
 }
 
 // DELETE_DEAD_LETTERS replaces KAFKA_DEAD_LETTER_TOPIC: one or the other, not both.
-func TestConfigFromEnv_DeleteDeadLetters(t *testing.T) {
-	t.Setenv("KAFKA_BROKERS", "localhost:9092")
-	t.Setenv("KAFKA_TOPIC", "events")
-	t.Setenv("KAFKA_GROUP", "g")
-	t.Setenv("RELAY_ENDPOINT", "ep")
-	t.Setenv("KAFKA_DEAD_LETTER_TOPIC", "")
-	t.Setenv("DELETE_DEAD_LETTERS", "true")
-	cfg, err := configFromEnv()
+func TestConfigFrom_DeleteDeadLetters(t *testing.T) {
+	cfg, err := configFrom(relayEnv(settings.Map{"KAFKA_DEAD_LETTER_TOPIC": "", "DELETE_DEAD_LETTERS": "true"}))
 	require.NoError(t, err)
 	require.True(t, cfg.deleteDeadLetters)
 
-	t.Setenv("KAFKA_DEAD_LETTER_TOPIC", "events-dlq")
-	_, err = configFromEnv()
+	_, err = configFrom(relayEnv(settings.Map{"DELETE_DEAD_LETTERS": "true"}))
 	require.ErrorContains(t, err, "not both")
 
-	t.Setenv("KAFKA_DEAD_LETTER_TOPIC", "")
-	t.Setenv("DELETE_DEAD_LETTERS", "yes please")
-	_, err = configFromEnv()
-	require.ErrorContains(t, err, `DELETE_DEAD_LETTERS must be true or false, not "yes please"`)
+	_, err = configFrom(relayEnv(settings.Map{"KAFKA_DEAD_LETTER_TOPIC": "", "DELETE_DEAD_LETTERS": "yes please"}))
+	require.EqualError(t, err, `DELETE_DEAD_LETTERS must be true or false, not "yes please"`)
 }
 
 // The startup report shows every setting, marks the ones left to their defaults, never shows the
 // password, and says what the relay will do with undeliverable messages.
 func TestReport(t *testing.T) {
-	t.Setenv("KAFKA_BROKERS", "localhost:9092")
-	t.Setenv("KAFKA_TOPIC", "events")
-	t.Setenv("KAFKA_USERNAME", "connector")
-	t.Setenv("KAFKA_PASSWORD", "secret-password")
-	t.Setenv("KAFKA_GROUP", "g")
-	t.Setenv("RELAY_ENDPOINT", "ep")
-	t.Setenv("KAFKA_DEAD_LETTER_TOPIC", "events-dlq")
-	t.Setenv("DELETE_DEAD_LETTERS", "")
-	t.Setenv("KAFKA_BATCH_SIZE", "")
-	cfg, err := configFromEnv()
+	env := relayEnv(settings.Map{"KAFKA_USERNAME": "connector", "KAFKA_PASSWORD": "secret-password"})
+	cfg, err := configFrom(env)
 	require.NoError(t, err)
-	report := cfg.report("connectors", "localhost:7233")
+	report := cfg.report(env, "connectors", "localhost:7233")
 	require.NotContains(t, report, "secret-password")
 	require.Contains(t, report, "KAFKA_PASSWORD is set")
 	require.Regexp(t, `KAFKA_BATCH_SIZE +100 \(default\)`, report)
+	require.Regexp(t, `KAFKA_START_FROM +oldest \(default\)`, report)
 	require.Regexp(t, `KAFKA_GROUP +g\n`, report)
 	require.Contains(t, report, `Send messages that can't be delivered to the topic "events-dlq".`)
 	require.Contains(t, report, "can be delivered twice")
 
-	t.Setenv("KAFKA_DEAD_LETTER_TOPIC", "")
-	t.Setenv("DELETE_DEAD_LETTERS", "true")
-	cfg, err = configFromEnv()
+	env = relayEnv(settings.Map{"KAFKA_DEAD_LETTER_TOPIC": "", "DELETE_DEAD_LETTERS": "true", "KAFKA_BATCH_SIZE": "100"})
+	cfg, err = configFrom(env)
 	require.NoError(t, err)
-	report = cfg.report("connectors", "localhost:7233")
+	report = cfg.report(env, "connectors", "localhost:7233")
 	require.Contains(t, report, "Delete messages that can't be delivered")
 	require.Regexp(t, `KAFKA_DEAD_LETTER_TOPIC +\(not set\)`, report)
+	require.Regexp(t, `KAFKA_BATCH_SIZE +100\n`, report, "set to the default value: not marked as the default")
 }
