@@ -22,7 +22,7 @@ import (
 	"go.temporal.io/sdk/testsuite"
 )
 
-// connectorClientMakers are the client constructors of the library this repo's connector calls
+// connectorClientMakers are the client constructors of the library this repo's programs call
 // Kafka with, as "import path.Name", which configui must not call itself (see TestNoOwnClient):
 // its checks go through the kafka package (Identify, ReadLast).
 var connectorClientMakers = []string{
@@ -126,7 +126,7 @@ func TestSettings_JSON(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &page))
 	require.Equal(t, pageTitle, page.Title)
 	require.Len(t, page.Programs, 2)
-	for i, want := range []*settings.Program{setup.Relay, setup.Connector} {
+	for i, want := range []*settings.Program{setup.Reader, setup.Connector} {
 		p := page.Programs[i]
 		require.Equal(t, want.ID, p.ID)
 		require.Equal(t, want.Command, p.Command)
@@ -186,7 +186,7 @@ func TestTest_RefusesABadRequest(t *testing.T) {
 	for body, want := range map[string]string{
 		`{"program":`:       "bad request",
 		`{"program":"web"}`: `unknown program "web"`,
-		`{"program":"relay","values":{"A=B":"x"}}`:      `"A=B" isn't a variable name`,
+		`{"program":"reader","values":{"A=B":"x"}}`:     `"A=B" isn't a variable name`,
 		`{"program":"connector","values":{"1ABC":"x"}}`: `"1ABC" isn't a variable name`,
 	} {
 		rec := post(t, h, body)
@@ -195,31 +195,31 @@ func TestTest_RefusesABadRequest(t *testing.T) {
 	}
 }
 
-// The Settings check reports exactly what the relay would at startup, every problem at once, and
+// The Settings check reports exactly what the Reader would at startup, every problem at once, and
 // the Kafka check waits for valid Kafka settings.
 func TestTest_ReportsEverySettingsProblemAsStartupDoes(t *testing.T) {
 	setTemporalTimeout(t, time.Second)
 	values := map[string]string{
-		"KAFKA_TOPIC":             "orders",
-		"KAFKA_START_FROM":        "yesterday",
-		"KAFKA_BATCH_SIZE":        "0",
-		"RELAY_OPERATION_TIMEOUT": "0s",
-		"TEMPORAL_ADDRESS":        "127.0.0.1:1",
+		"KAFKA_TOPIC":              "orders",
+		"KAFKA_START_FROM":         "yesterday",
+		"KAFKA_BATCH_SIZE":         "0",
+		"READER_OPERATION_TIMEOUT": "0s",
+		"TEMPORAL_ADDRESS":         "127.0.0.1:1",
 	}
-	_, resp := postTest(t, newServer(baseEnv(t, nil), programs), testRequest{Program: "relay", Values: values})
+	_, resp := postTest(t, newServer(baseEnv(t, nil), programs), testRequest{Program: "reader", Values: values})
 	require.False(t, resp.OK)
 
-	_, startupErr := setup.Relay.Load(settings.Map(values))
+	_, startupErr := setup.Reader.Load(settings.Map(values))
 	require.Error(t, startupErr)
 	problems := checkTitled(t, resp, "Settings").Problems
 	require.Equal(t, strings.Split(startupErr.Error(), "\n"), problems)
 	require.Equal(t, []string{
 		"set KAFKA_BROKERS: the Kafka brokers, as comma-separated host:port",
-		"set KAFKA_GROUP: the consumer group the relay joins",
+		"set KAFKA_GROUP: the consumer group the Reader joins",
 		`KAFKA_START_FROM must be oldest or newest, not "yesterday"`,
 		`KAFKA_BATCH_SIZE must be a whole number, at least 1, not "0"`,
-		"set RELAY_ENDPOINT: the Nexus endpoint to deliver to",
-		"RELAY_OPERATION_TIMEOUT must be more than 0",
+		"set READER_ENDPOINT: the Nexus endpoint to deliver to",
+		"READER_OPERATION_TIMEOUT must be more than 0",
 	}, problems)
 	require.Contains(t, checkTitled(t, resp, "Temporal").Problems[0], "Failed to connect to Temporal at 127.0.0.1:1")
 	require.Equal(t, "Fix the Kafka settings first.", checkTitled(t, resp, "Kafka").Skipped)
@@ -269,13 +269,13 @@ func TestTest_ShowsTheWholeError(t *testing.T) {
 		`UNKNOWN_TOPIC_OR_PARTITION: This server does not host this topic-partition.`}, checkTitled(t, resp, "Kafka").Problems)
 }
 
-// The relay's Kafka check finds its dead-letter topic, or says it is missing.
-func TestTest_RelayDeadLetterTopic(t *testing.T) {
+// The Reader's Kafka check finds its dead-letter topic, or says it is missing.
+func TestTest_ReaderDeadLetterTopic(t *testing.T) {
 	setTemporalTimeout(t, time.Second)
 	brokers := newCluster(t, []string{"orders", "orders-dlq"}, "m")
 	h := newServer(baseEnv(t, nil), programs)
-	req := testRequest{Program: "relay", Values: map[string]string{
-		"KAFKA_BROKERS": brokers, "KAFKA_TOPIC": "orders", "KAFKA_GROUP": "g", "RELAY_ENDPOINT": "ep",
+	req := testRequest{Program: "reader", Values: map[string]string{
+		"KAFKA_BROKERS": brokers, "KAFKA_TOPIC": "orders", "KAFKA_GROUP": "g", "READER_ENDPOINT": "ep",
 		"KAFKA_DEAD_LETTER_TOPIC": "orders-dlq", "TEMPORAL_ADDRESS": "127.0.0.1:1",
 	}}
 	_, resp := postTest(t, h, req)
@@ -299,9 +299,9 @@ func TestPageEnv(t *testing.T) {
 		"KAFKA_TOPIC":                   "old",
 		"KAFKA_BATCH_SIZE":              "9",
 		"KAFKA_PASSWORD":                "kept",
-		"RELAY_ENDPOINT":                "not on the page",
+		"READER_ENDPOINT":               "not on the page",
 	}
-	env := pageEnv(base, setup.Relay, testRequest{
+	env := pageEnv(base, setup.Reader, testRequest{
 		Values: map[string]string{
 			"KAFKA_TOPIC":      "new",
 			"KAFKA_BATCH_SIZE": "  ",
@@ -319,8 +319,8 @@ func TestPageEnv(t *testing.T) {
 	}, env)
 }
 
-// Against a dev server: the namespace exists; the connector's Test reports a missing endpoint
-// targeting its task queue with the command to create one, and the relay's that RELAY_ENDPOINT
+// Against a dev server: the namespace exists; the Connector's Test reports a missing endpoint
+// targeting its task queue with the command to create one, and the Reader's that READER_ENDPOINT
 // doesn't exist, until each does.
 func TestTest_Temporal(t *testing.T) {
 	if testing.Short() {
@@ -371,11 +371,11 @@ func TestTest_Temporal(t *testing.T) {
 	require.Empty(t, temporal.Problems)
 	require.Contains(t, temporal.Passed, `Nexus endpoint "orders-endpoint" targets namespace "connectors" and task queue "kafka-orders".`)
 
-	relay := testRequest{Program: "relay", Values: map[string]string{
-		"RELAY_ENDPOINT": "receiver-endpoint", "TEMPORAL_ADDRESS": server.FrontendHostPort(),
+	reader := testRequest{Program: "reader", Values: map[string]string{
+		"READER_ENDPOINT": "receiver-endpoint", "TEMPORAL_ADDRESS": server.FrontendHostPort(),
 		"TEMPORAL_CONFIG_FILE": base["TEMPORAL_CONFIG_FILE"],
 	}}
-	_, resp = postTest(t, h, relay)
+	_, resp = postTest(t, h, reader)
 	temporal = checkTitled(t, resp, "Temporal")
 	require.Equal(t, connected, temporal.Passed)
 	require.Equal(t, []string{`Nexus endpoint "receiver-endpoint", which the program calls, doesn't exist. Create it, targeting ` +
@@ -383,15 +383,15 @@ func TestTest_Temporal(t *testing.T) {
 		`temporal operator nexus endpoint create --name receiver-endpoint --target-namespace <namespace> --target-task-queue <task queue>`},
 		temporal.Problems)
 	createEndpoint("receiver-endpoint", "receiver")
-	_, resp = postTest(t, h, relay)
+	_, resp = postTest(t, h, reader)
 	temporal = checkTitled(t, resp, "Temporal")
 	require.Empty(t, temporal.Problems)
 	require.Equal(t, append(connected,
 		`Nexus endpoint "receiver-endpoint", which the program calls, exists: it targets namespace "connectors" and task queue "receiver".`),
 		temporal.Passed)
 
-	relay.Values["RELAY_ENDPOINT"] = ""
-	_, resp = postTest(t, h, relay)
+	reader.Values["READER_ENDPOINT"] = ""
+	_, resp = postTest(t, h, reader)
 	require.Equal(t, connected, checkTitled(t, resp, "Temporal").Passed, "no endpoint to look for: Settings reports it")
 
 	connector.Values["TEMPORAL_NAMESPACE"] = "missing"

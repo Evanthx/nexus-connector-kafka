@@ -1,8 +1,8 @@
-// Command configui serves a page for working out the connector's environment variables. It shows
-// every variable the connector reads, from the program's settings list, with its help, default
-// and the value set where configui was started (secrets only as set or not set), lets you change
-// and add them, and tests them: every check the connector makes at startup, the connection to
-// Temporal, and the connector's own checks. It lists the `export` lines to set. It never changes
+// Command configui serves a page for working out a program's environment variables. It shows
+// every variable the program reads, from its settings list, with its help, default and the
+// value set where configui was started (secrets only as set or not set), lets you change and
+// add them, and tests them: every check the program makes at startup, the connection to
+// Temporal, and the program's own checks. It lists the `export` lines to set. It never changes
 // its own environment and never stores what you type.
 //
 //	go run ./configui                          # then open http://localhost:8090
@@ -63,8 +63,8 @@ type program struct {
 	// a missing endpoint.
 	EndpointName            string
 	EndpointDescriptionFile string
-	// CallsEndpoint is the name of the Nexus endpoint the program calls, given env, such as a
-	// relay's; the Temporal check confirms it exists. nil, or "" from it, if the program calls
+	// CallsEndpoint is the name of the Nexus endpoint the program calls, given env, such as the
+	// Reader's; the Temporal check confirms it exists. nil, or "" from it, if the program calls
 	// none.
 	CallsEndpoint func(env settings.Env) string
 	// TestFields are extra inputs for the Test, such as a URL to try. Check gets their values.

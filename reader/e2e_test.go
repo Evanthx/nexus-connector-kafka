@@ -66,7 +66,7 @@ type e2e struct {
 }
 
 // startE2E runs a receiver in the test namespace, behind an endpoint, and returns a starter in the
-// connector namespace that delivers to it.
+// connectors namespace that delivers to it.
 func startE2E(t *testing.T, rcv *receiver) e2e {
 	t.Helper()
 	kafkaCfg := testenv.Kafka(t)
@@ -88,12 +88,12 @@ func startE2E(t *testing.T, rcv *receiver) e2e {
 	return e2e{kafkaCfg: kafkaCfg, starter: starter, receiver: rcv}
 }
 
-// The relay delivers the messages to a service in another namespace, through the endpoint.
-func TestEndToEnd_RelaysIntoAnotherNamespace(t *testing.T) {
+// The Reader delivers the messages to a service in another namespace, through the endpoint.
+func TestEndToEnd_ReaderDeliversIntoAnotherNamespace(t *testing.T) {
 	env := startE2E(t, &receiver{})
 	produce(t, env.kafkaCfg, 0, "m0", "m1")
 	produce(t, env.kafkaCfg, 2, "m2")
-	startRelay(t, env.kafkaCfg, "g", env.starter, bigEnough)
+	startReader(t, env.kafkaCfg, "g", env.starter, bigEnough)
 	env.receiver.waitFor(t, 3)
 	require.ElementsMatch(t, []string{"m0", "m1", "m2"}, env.receiver.values())
 }

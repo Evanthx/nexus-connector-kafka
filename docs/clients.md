@@ -1,6 +1,6 @@
 # Typed clients
 
-A workflow calls the connector through Nexus by naming a service, an operation, and an input. You
+A workflow calls the Connector through Nexus by naming a service, an operation, and an input. You
 can build that input by hand as JSON, but a typed client is easier: your editor knows the fields,
 and a bad request fails in your code, with the field named, before it is sent.
 
@@ -9,12 +9,12 @@ and a bad request fails in your code, with the field named, before it is sent.
 The Kafka connector's operations are defined in one file,
 [`kafka.nexusrpc.yaml`](../kafka.nexusrpc.yaml), its *contract*. It names two services:
 
-- **`KafkaService`**, served by the connector: `write`.
-- **`KafkaMessageReceiver`**, which the relay calls: `receive`, one call per partition batch.
+- **`KafkaService`**, served by the Connector: `write`.
+- **`KafkaMessageReceiver`**, which the Reader calls: `receive`, one call per partition batch.
   Implement this service to receive the topic's messages.
 
 The contract also defines every input and output type as JSON Schema. It is the source of truth for
-what a request may contain; the connector rejects anything it doesn't allow.
+what a request may contain; the Connector rejects anything it doesn't allow.
 
 ## nexgen
 
@@ -25,7 +25,7 @@ it writes, for one language:
 - a service definition you pass to that language's Nexus client.
 
 It doesn't write the call itself; you still use your Temporal SDK's Nexus client, as in the
-[connector usage examples](../AGENTS.md#run-the-connector).
+[Connector usage examples](../AGENTS.md#run-the-connector).
 
 ## Go
 

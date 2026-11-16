@@ -110,21 +110,21 @@ func deadLetters(t *testing.T, cfg kafka.Config, n int) []*kgo.Record {
 	return out
 }
 
-// running is a relay running in the background.
+// running is a Reader running in the background.
 type running struct {
 	stop func()
 	done chan error
 }
 
-// startRelay starts a relay for group with starter, and stops it when the test ends. options, if
-// any, change the relay before it starts.
-func startRelay(t *testing.T, cfg kafka.Config, group string, starter operationStarter, maxInputBytes int, options ...func(*relay)) running {
+// startReader starts a Reader for group with starter, and stops it when the test ends. options, if
+// any, change the Reader before it starts.
+func startReader(t *testing.T, cfg kafka.Config, group string, starter operationStarter, maxInputBytes int, options ...func(*reader)) running {
 	t.Helper()
 	member, err := kafka.NewGroupMember(cfg, group)
 	require.NoError(t, err)
 	writer, err := kafka.NewWriter(cfg)
 	require.NoError(t, err)
-	rl := &relay{
+	rd := &reader{
 		member:          member,
 		starter:         starter,
 		deadLetters:     writer,
@@ -139,11 +139,11 @@ func startRelay(t *testing.T, cfg kafka.Config, group string, starter operationS
 		retryDelay:      func(int) time.Duration { return 10 * time.Millisecond },
 	}
 	for _, option := range options {
-		option(rl)
+		option(rd)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	r := running{done: make(chan error, 1)}
-	go func() { r.done <- rl.run(ctx) }()
+	go func() { r.done <- rd.run(ctx) }()
 	var once sync.Once
 	r.stop = func() {
 		once.Do(func() {
@@ -159,7 +159,7 @@ func startRelay(t *testing.T, cfg kafka.Config, group string, starter operationS
 
 const bigEnough = 2 * 1024 * 1024
 
-// source is the relay's source key for group, as main works it out.
+// source is the Reader's source key for group, as main works it out.
 func source(t *testing.T, cfg kafka.Config, group string) string {
 	t.Helper()
 	id, err := kafka.Identify(context.Background(), cfg)
@@ -175,12 +175,12 @@ func opID(t *testing.T, cfg kafka.Config, partition, first, last int64) string {
 
 // Each partition's part of a batch is one operation, named by its offsets, and within a partition
 // messages start in order.
-func TestRelay_DeliversEachPartitionInOrder(t *testing.T) {
+func TestReader_DeliversEachPartitionInOrder(t *testing.T) {
 	cfg := testenv.Kafka(t)
 	produce(t, cfg, 0, "a0", "a1", "a2", "a3")
 	produce(t, cfg, 1, "b0", "b1")
 	starter := newFakeStarter()
-	startRelay(t, cfg, "g", starter, bigEnough)
+	startReader(t, cfg, "g", starter, bigEnough)
 	starter.waitFor(t, 6)
 
 	var a, b []string
@@ -206,14 +206,14 @@ func TestRelay_DeliversEachPartitionInOrder(t *testing.T) {
 }
 
 // A partition's records are split into as few operations as fit the input size limit.
-func TestRelay_SplitsBatchesToFitTheInputLimit(t *testing.T) {
+func TestReader_SplitsBatchesToFitTheInputLimit(t *testing.T) {
 	cfg := testenv.Kafka(t)
 	value := strings.Repeat("x", 300)
 	produce(t, cfg, 0, value, value, value, value, value)
 	// Room for two records; timestamps vary in length by a few bytes, far less than half a record.
 	recSize := kafka.EncodedSize(kafkaapi.Record{Topic: "events", Timestamp: "2026-10-23T00:00:00.123456789Z", Value: []byte(value)})
 	starter := newFakeStarter()
-	startRelay(t, cfg, "g", starter, inputOverhead+2*recSize+recSize/2)
+	startReader(t, cfg, "g", starter, inputOverhead+2*recSize+recSize/2)
 	starter.waitFor(t, 5)
 
 	starter.mu.Lock()
@@ -229,33 +229,33 @@ func TestRelay_SplitsBatchesToFitTheInputLimit(t *testing.T) {
 	require.Contains(t, starter.ids, opID(t, cfg, 0, 0, 1))
 }
 
-// A delivered batch is committed: a relay started later for the group delivers only new
+// A delivered batch is committed: a Reader started later for the group delivers only new
 // messages.
-func TestRelay_RestartDoesNotRedeliver(t *testing.T) {
+func TestReader_RestartDoesNotRedeliver(t *testing.T) {
 	cfg := testenv.Kafka(t)
 	produce(t, cfg, 0, "m0", "m1")
 	first := newFakeStarter()
-	r := startRelay(t, cfg, "g", first, bigEnough)
+	r := startReader(t, cfg, "g", first, bigEnough)
 	first.waitFor(t, 2)
 	r.stop()
 
 	produce(t, cfg, 0, "m2")
 	second := newFakeStarter()
-	startRelay(t, cfg, "g", second, bigEnough)
+	startReader(t, cfg, "g", second, bigEnough)
 	second.waitFor(t, 1)
 	// Anything redelivered would arrive with m2.
 	require.Never(t, func() bool { return len(second.values()) > 1 }, time.Second, 50*time.Millisecond)
 	require.Equal(t, []string{"m2"}, second.values())
 }
 
-// A relay stopped mid-batch commits nothing, so the next one delivers the whole batch again. If
+// A Reader stopped mid-batch commits nothing, so the next one delivers the whole batch again. If
 // the batch is the same, so is its operation ID: the operation already started matches.
-func TestRelay_UncommittedBatchIsDeliveredAgainWithTheSameID(t *testing.T) {
+func TestReader_UncommittedBatchIsDeliveredAgainWithTheSameID(t *testing.T) {
 	cfg := testenv.Kafka(t)
 	produce(t, cfg, 0, "m0", "m1", "m2")
 	stuck := newFakeStarter()
 	stuck.fail = func(kafkaapi.ReceiveInput, int) error { return errors.New("unavailable") }
-	r := startRelay(t, cfg, "g", stuck, bigEnough)
+	r := startReader(t, cfg, "g", stuck, bigEnough)
 	id := opID(t, cfg, 0, 0, 2)
 	require.Eventually(t, func() bool {
 		stuck.mu.Lock()
@@ -265,7 +265,7 @@ func TestRelay_UncommittedBatchIsDeliveredAgainWithTheSameID(t *testing.T) {
 	r.stop()
 
 	again := newFakeStarter()
-	startRelay(t, cfg, "g", again, bigEnough)
+	startReader(t, cfg, "g", again, bigEnough)
 	again.waitFor(t, 3)
 	require.Equal(t, []string{"m0", "m1", "m2"}, again.values())
 	require.Equal(t, []string{opID(t, cfg, 0, 0, 2)}, again.ids)
@@ -273,7 +273,7 @@ func TestRelay_UncommittedBatchIsDeliveredAgainWithTheSameID(t *testing.T) {
 
 // The duplicate the README warns about: a batch delivered again can end at a different offset,
 // so it gets a different operation ID and its messages start a second operation.
-func TestRelay_RedeliveredBatchWithMoreMessagesIsANewOperation(t *testing.T) {
+func TestReader_RedeliveredBatchWithMoreMessagesIsANewOperation(t *testing.T) {
 	cfg := testenv.Kafka(t)
 	produce(t, cfg, 0, "m0", "m1")
 	produce(t, cfg, 1, "other")
@@ -285,23 +285,23 @@ func TestRelay_RedeliveredBatchWithMoreMessagesIsANewOperation(t *testing.T) {
 		}
 		return nil
 	}
-	r := startRelay(t, cfg, "g", stuck, bigEnough)
+	r := startReader(t, cfg, "g", stuck, bigEnough)
 	stuck.waitFor(t, 2)
 	r.stop()
 	require.Equal(t, []string{opID(t, cfg, 0, 0, 1)}, stuck.ids)
 
 	produce(t, cfg, 0, "m2")
 	again := newFakeStarter()
-	startRelay(t, cfg, "g", again, bigEnough)
+	startReader(t, cfg, "g", again, bigEnough)
 	again.waitFor(t, 4)
 	require.Contains(t, again.ids, opID(t, cfg, 0, 0, 2))
 	require.Subset(t, again.values(), []string{"m0", "m1"}, "m0 and m1 are delivered a second time")
 }
 
-// A batch that can't be delivered doesn't hold up a rebalance: when another relay joins the
+// A batch that can't be delivered doesn't hold up a rebalance: when another Reader joins the
 // group, the stuck one gives up its batch without committing it, so the partitions it hands over
 // are delivered by the newcomer and the ones it keeps are delivered again, not skipped.
-func TestRelay_StuckBatchDoesNotBlockARebalance(t *testing.T) {
+func TestReader_StuckBatchDoesNotBlockARebalance(t *testing.T) {
 	cfg := testenv.Kafka(t)
 	produce(t, cfg, 0, "a0", "a1")
 	produce(t, cfg, 1, "b0", "b1")
@@ -315,15 +315,15 @@ func TestRelay_StuckBatchDoesNotBlockARebalance(t *testing.T) {
 		}
 		return nil
 	}
-	startRelay(t, cfg, "g", stuck, bigEnough)
+	startReader(t, cfg, "g", stuck, bigEnough)
 	require.Eventually(t, func() bool {
 		stuck.mu.Lock()
 		defer stuck.mu.Unlock()
 		return len(stuck.attempts) > 0
-	}, 30*time.Second, 10*time.Millisecond, "the first relay has a batch")
+	}, 30*time.Second, 10*time.Millisecond, "the first Reader has a batch")
 
 	newcomer := newFakeStarter()
-	startRelay(t, cfg, "g", newcomer, bigEnough)
+	startReader(t, cfg, "g", newcomer, bigEnough)
 	// Kafka's default rebalance timeout is a minute; a blocked rebalance would take that long.
 	newcomer.waitFor(t, 2)
 
@@ -336,11 +336,11 @@ func TestRelay_StuckBatchDoesNotBlockARebalance(t *testing.T) {
 			}
 		}
 		return true
-	}, 30*time.Second, 50*time.Millisecond, "every message is delivered by one relay or the other")
+	}, 30*time.Second, 50*time.Millisecond, "every message is delivered by one Reader or the other")
 }
 
 // Errors other than an undeliverable message are retried until the start succeeds.
-func TestRelay_RetriesUntilStarted(t *testing.T) {
+func TestReader_RetriesUntilStarted(t *testing.T) {
 	cfg := testenv.Kafka(t)
 	produce(t, cfg, 0, "m0")
 	starter := newFakeStarter()
@@ -350,14 +350,14 @@ func TestRelay_RetriesUntilStarted(t *testing.T) {
 		}
 		return nil
 	}
-	startRelay(t, cfg, "g", starter, bigEnough)
+	startReader(t, cfg, "g", starter, bigEnough)
 	starter.waitFor(t, 1)
 	require.Equal(t, 3, starter.attempts[opID(t, cfg, 0, 0, 0)])
 }
 
 // Messages the server refuses go to the dead-letter topic, with headers saying where each came
 // from and why, and the stream carries on and commits past them.
-func TestRelay_UndeliverableGoesToTheDeadLetterTopic(t *testing.T) {
+func TestReader_UndeliverableGoesToTheDeadLetterTopic(t *testing.T) {
 	cfg := testenv.Kafka(t)
 	produce(t, cfg, 0, "bad0", "bad1")
 	produce(t, cfg, 1, "good")
@@ -368,7 +368,7 @@ func TestRelay_UndeliverableGoesToTheDeadLetterTopic(t *testing.T) {
 		}
 		return nil
 	}
-	r := startRelay(t, cfg, "g", starter, bigEnough)
+	r := startReader(t, cfg, "g", starter, bigEnough)
 	starter.waitFor(t, 1)
 	require.Equal(t, []string{"good"}, starter.values())
 
@@ -391,14 +391,14 @@ func TestRelay_UndeliverableGoesToTheDeadLetterTopic(t *testing.T) {
 	r.stop()
 	produce(t, cfg, 0, "after")
 	next := newFakeStarter()
-	startRelay(t, cfg, "g", next, bigEnough)
+	startReader(t, cfg, "g", next, bigEnough)
 	next.waitFor(t, 1)
 	require.Equal(t, []string{"after"}, next.values(), "the dead-lettered messages were committed past")
 }
 
 // Messages the server refuses as too large together are split until each part is accepted, so
 // none of them goes to the dead-letter topic.
-func TestRelay_RefusedPartIsSplit(t *testing.T) {
+func TestReader_RefusedPartIsSplit(t *testing.T) {
 	cfg := testenv.Kafka(t)
 	produce(t, cfg, 0, "m0", "m1", "m2", "m3")
 	starter := newFakeStarter()
@@ -408,21 +408,21 @@ func TestRelay_RefusedPartIsSplit(t *testing.T) {
 		}
 		return nil
 	}
-	startRelay(t, cfg, "g", starter, bigEnough)
+	startReader(t, cfg, "g", starter, bigEnough)
 	starter.waitFor(t, 4)
 	require.Equal(t, []string{"m0", "m1", "m2", "m3"}, starter.values(), "delivered in order")
 	require.Equal(t, []string{opID(t, cfg, 0, 0, 0), opID(t, cfg, 0, 1, 1), opID(t, cfg, 0, 2, 2), opID(t, cfg, 0, 3, 3)}, starter.ids)
 }
 
 // The topic's identity is asked for every batch, so a topic deleted and created again while the
-// relay runs gets operation IDs of its own.
-func TestRelay_IdentityIsCheckedForEveryBatch(t *testing.T) {
+// Reader runs gets operation IDs of its own.
+func TestReader_IdentityIsCheckedForEveryBatch(t *testing.T) {
 	cfg := testenv.Kafka(t)
 	var current atomic.Value
 	current.Store(kafka.TopicIdentity{Cluster: "c", TopicID: "first"})
 	starter := newFakeStarter()
-	startRelay(t, cfg, "g", starter, bigEnough, func(rl *relay) {
-		rl.identify = func(context.Context) (kafka.TopicIdentity, error) { return current.Load().(kafka.TopicIdentity), nil }
+	startReader(t, cfg, "g", starter, bigEnough, func(rd *reader) {
+		rd.identify = func(context.Context) (kafka.TopicIdentity, error) { return current.Load().(kafka.TopicIdentity), nil }
 	})
 
 	produce(t, cfg, 0, "m0")
@@ -439,7 +439,7 @@ func TestRelay_IdentityIsCheckedForEveryBatch(t *testing.T) {
 
 // With DELETE_DEAD_LETTERS, a message that can't be delivered is deleted: nothing is written, and
 // the stream commits past it.
-func TestRelay_DeleteDeadLetters(t *testing.T) {
+func TestReader_DeleteDeadLetters(t *testing.T) {
 	cfg := testenv.Kafka(t)
 	produce(t, cfg, 0, "bad", "good")
 	starter := newFakeStarter()
@@ -449,9 +449,9 @@ func TestRelay_DeleteDeadLetters(t *testing.T) {
 		}
 		return nil
 	}
-	r := startRelay(t, cfg, "g", starter, bigEnough, func(rl *relay) {
-		rl.deleteDeadLetters = true
-		rl.deadLetters = failingWriter{t}
+	r := startReader(t, cfg, "g", starter, bigEnough, func(rd *reader) {
+		rd.deleteDeadLetters = true
+		rd.deadLetters = failingWriter{t}
 	})
 	starter.waitFor(t, 1)
 	require.Equal(t, []string{"good"}, starter.values())
@@ -460,7 +460,7 @@ func TestRelay_DeleteDeadLetters(t *testing.T) {
 	r.stop()
 	produce(t, cfg, 0, "after")
 	next := newFakeStarter()
-	startRelay(t, cfg, "g", next, bigEnough)
+	startReader(t, cfg, "g", next, bigEnough)
 	next.waitFor(t, 1)
 	require.Equal(t, []string{"after"}, next.values(), "the deleted message was committed past")
 }
@@ -475,11 +475,11 @@ func (w failingWriter) Write(context.Context, ...*kgo.Record) error {
 
 // A message too large to be an operation's input goes to the dead-letter topic without a start,
 // and no operation spans it: the messages on either side of it start separate operations.
-func TestRelay_OversizedMessageGoesToTheDeadLetterTopic(t *testing.T) {
+func TestReader_OversizedMessageGoesToTheDeadLetterTopic(t *testing.T) {
 	cfg := testenv.Kafka(t)
 	produce(t, cfg, 0, "small0", strings.Repeat("x", 500), "small1")
 	starter := newFakeStarter()
-	startRelay(t, cfg, "g", starter, 400)
+	startReader(t, cfg, "g", starter, 400)
 	starter.waitFor(t, 2)
 	require.Equal(t, []string{"small0", "small1"}, starter.values())
 	require.Equal(t, []string{opID(t, cfg, 0, 0, 0), opID(t, cfg, 0, 2, 2)}, starter.ids)
@@ -510,7 +510,7 @@ func TestSourceKey(t *testing.T) {
 	require.NotEqual(t, key, sourceKey(kafka.TopicIdentity{Cluster: "cluster", TopicID: "recreated"}, "orders", "billing"))
 }
 
-// The relay finds the topic's identity in Kafka.
+// The Reader finds the topic's identity in Kafka.
 func TestIdentify(t *testing.T) {
 	cfg := testenv.Kafka(t)
 	id, err := kafka.Identify(context.Background(), cfg)
@@ -535,10 +535,10 @@ func TestBackoff(t *testing.T) {
 	require.Equal(t, 30*time.Second, backoff(100))
 }
 
-// relayEnv is a valid relay environment with vars added; an empty value unsets a variable.
-func relayEnv(vars settings.Map) settings.Map {
+// readerEnv is a valid Reader environment with vars added; an empty value unsets a variable.
+func readerEnv(vars settings.Map) settings.Map {
 	env := settings.Map{
-		"KAFKA_BROKERS": "localhost:9092", "KAFKA_TOPIC": "events", "KAFKA_GROUP": "g", "RELAY_ENDPOINT": "ep",
+		"KAFKA_BROKERS": "localhost:9092", "KAFKA_TOPIC": "events", "KAFKA_GROUP": "g", "READER_ENDPOINT": "ep",
 		"KAFKA_DEAD_LETTER_TOPIC": "events-dlq",
 	}
 	for k, v := range vars {
@@ -552,14 +552,14 @@ func relayEnv(vars settings.Map) settings.Map {
 }
 
 func TestConfigFrom(t *testing.T) {
-	_, err := configFrom(relayEnv(settings.Map{"KAFKA_GROUP": "", "RELAY_ENDPOINT": ""}))
-	require.EqualError(t, err, "set KAFKA_GROUP: the consumer group the relay joins\n"+
-		"set RELAY_ENDPOINT: the Nexus endpoint to deliver to")
+	_, err := configFrom(readerEnv(settings.Map{"KAFKA_GROUP": "", "READER_ENDPOINT": ""}))
+	require.EqualError(t, err, "set KAFKA_GROUP: the consumer group the Reader joins\n"+
+		"set READER_ENDPOINT: the Nexus endpoint to deliver to")
 
-	_, err = configFrom(relayEnv(settings.Map{"KAFKA_DEAD_LETTER_TOPIC": ""}))
+	_, err = configFrom(readerEnv(settings.Map{"KAFKA_DEAD_LETTER_TOPIC": ""}))
 	require.ErrorContains(t, err, "set KAFKA_DEAD_LETTER_TOPIC, the topic undeliverable messages go to, or DELETE_DEAD_LETTERS=true")
 
-	cfg, err := configFrom(relayEnv(nil))
+	cfg, err := configFrom(readerEnv(nil))
 	require.NoError(t, err)
 	require.Equal(t, "events", cfg.kafka.Topic)
 	require.Equal(t, "g", cfg.group)
@@ -573,35 +573,35 @@ func TestConfigFrom(t *testing.T) {
 	require.Equal(t, "receive", cfg.operation)
 	require.Equal(t, setup.DefaultMaxInputBytes, cfg.maxInputBytes)
 
-	cfg, err = configFrom(relayEnv(settings.Map{"KAFKA_BATCH_TIME_LIMIT": "2s", "KAFKA_BATCH_SIZE": "500"}))
+	cfg, err = configFrom(readerEnv(settings.Map{"KAFKA_BATCH_TIME_LIMIT": "2s", "KAFKA_BATCH_SIZE": "500"}))
 	require.NoError(t, err)
 	require.Equal(t, 2*time.Second, cfg.timeLimit)
 	require.Equal(t, 500, cfg.batchSize)
 
-	_, err = configFrom(relayEnv(settings.Map{"KAFKA_DEAD_LETTER_TOPIC": "events"}))
+	_, err = configFrom(readerEnv(settings.Map{"KAFKA_DEAD_LETTER_TOPIC": "events"}))
 	require.ErrorContains(t, err, "must differ")
 
-	_, err = configFrom(relayEnv(settings.Map{"RELAY_OPERATION_TIMEOUT": "0s"}))
-	require.EqualError(t, err, "RELAY_OPERATION_TIMEOUT must be more than 0")
+	_, err = configFrom(readerEnv(settings.Map{"READER_OPERATION_TIMEOUT": "0s"}))
+	require.EqualError(t, err, "READER_OPERATION_TIMEOUT must be more than 0")
 }
 
 // DELETE_DEAD_LETTERS replaces KAFKA_DEAD_LETTER_TOPIC: one or the other, not both.
 func TestConfigFrom_DeleteDeadLetters(t *testing.T) {
-	cfg, err := configFrom(relayEnv(settings.Map{"KAFKA_DEAD_LETTER_TOPIC": "", "DELETE_DEAD_LETTERS": "true"}))
+	cfg, err := configFrom(readerEnv(settings.Map{"KAFKA_DEAD_LETTER_TOPIC": "", "DELETE_DEAD_LETTERS": "true"}))
 	require.NoError(t, err)
 	require.True(t, cfg.deleteDeadLetters)
 
-	_, err = configFrom(relayEnv(settings.Map{"DELETE_DEAD_LETTERS": "true"}))
+	_, err = configFrom(readerEnv(settings.Map{"DELETE_DEAD_LETTERS": "true"}))
 	require.ErrorContains(t, err, "not both")
 
-	_, err = configFrom(relayEnv(settings.Map{"KAFKA_DEAD_LETTER_TOPIC": "", "DELETE_DEAD_LETTERS": "yes please"}))
+	_, err = configFrom(readerEnv(settings.Map{"KAFKA_DEAD_LETTER_TOPIC": "", "DELETE_DEAD_LETTERS": "yes please"}))
 	require.EqualError(t, err, `DELETE_DEAD_LETTERS must be true or false, not "yes please"`)
 }
 
 // The startup report shows every setting, marks the ones left to their defaults, never shows the
-// password, and says what the relay will do with undeliverable messages.
+// password, and says what the Reader will do with undeliverable messages.
 func TestReport(t *testing.T) {
-	env := relayEnv(settings.Map{"KAFKA_USERNAME": "connector", "KAFKA_PASSWORD": "secret-password"})
+	env := readerEnv(settings.Map{"KAFKA_USERNAME": "connector", "KAFKA_PASSWORD": "secret-password"})
 	cfg, err := configFrom(env)
 	require.NoError(t, err)
 	report := cfg.report(env, "connectors", "localhost:7233")
@@ -613,7 +613,7 @@ func TestReport(t *testing.T) {
 	require.Contains(t, report, `Send messages that can't be delivered to the topic "events-dlq".`)
 	require.Contains(t, report, "can be delivered twice")
 
-	env = relayEnv(settings.Map{"KAFKA_DEAD_LETTER_TOPIC": "", "DELETE_DEAD_LETTERS": "true", "KAFKA_BATCH_SIZE": "100"})
+	env = readerEnv(settings.Map{"KAFKA_DEAD_LETTER_TOPIC": "", "DELETE_DEAD_LETTERS": "true", "KAFKA_BATCH_SIZE": "100"})
 	cfg, err = configFrom(env)
 	require.NoError(t, err)
 	report = cfg.report(env, "connectors", "localhost:7233")

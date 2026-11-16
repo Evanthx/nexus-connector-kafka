@@ -1,7 +1,7 @@
 // Package settings declares the environment variables a program reads, each with its help text,
 // default, whether it is required or secret, and how to check it, and reads them.
 //
-// One declaration serves three readers:
+// One declaration serves three uses:
 //
 //   - The program loads its configuration with Program.Load, which checks every variable, family
 //     and rule and reports every problem at once, then reads each typed value with From.
@@ -24,7 +24,7 @@ import (
 // setup page and the docs show them.
 type Program struct {
 	ID       string // short and unique among a repo's programs, such as "connector"
-	Name     string // for people, such as "HTTP connector"
+	Name     string // for people, such as "Nexus Connector"
 	Command  string // how to run it, such as "go run ./cmd/worker"
 	Sections []*Section
 	// Rules check variables against each other once each is valid on its own, such as "set A or B,

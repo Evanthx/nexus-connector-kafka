@@ -1,9 +1,9 @@
 // Package nexuscaller is for testing only. Its workflow, WriterWorkflow, runs in its own namespace
-// and calls the connector's KafkaService through a Nexus endpoint, the way a real caller would, to
+// and calls the Connector's KafkaService through a Nexus endpoint, the way a real caller would, to
 // write messages.
 //
-// Each connector serves one topic, so the endpoint a call goes to decides the topic. The
-// walkthrough in the README runs two connectors on two topics, behind CustomersEndpoint and
+// Each Connector serves one topic, so the endpoint a call goes to decides the topic. The
+// walkthrough in docs/testing.md runs two Connectors on two topics, behind CustomersEndpoint and
 // OrdersEndpoint.
 package nexuscaller
 
@@ -19,15 +19,15 @@ const (
 	Namespace = "kafka-test"
 	// TaskQueue is the test caller worker's task queue.
 	TaskQueue = "kafka-nexuscaller"
-	// CustomersEndpoint routes to a connector serving the customers topic.
+	// CustomersEndpoint routes to a Connector serving the customers topic.
 	CustomersEndpoint = "kafka-customers-endpoint"
-	// OrdersEndpoint routes to a second connector, serving the orders topic.
+	// OrdersEndpoint routes to a second Connector, serving the orders topic.
 	OrdersEndpoint = "kafka-orders-endpoint"
 )
 
 // WriterInput starts WriterWorkflow.
 type WriterInput struct {
-	// Endpoint is the Nexus endpoint to write through. Its connector decides the topic.
+	// Endpoint is the Nexus endpoint to write through. Its Connector decides the topic.
 	Endpoint string
 	// Messages are the messages to write, in order.
 	Messages []string
@@ -43,7 +43,7 @@ func WriterWorkflow(ctx workflow.Context, in WriterInput) (int64, error) {
 	}
 	var out kafkaapi.WriteOutput
 	err := kafkaService.ExecuteOperation(ctx, kafkaapi.KafkaService.Write, write, workflow.NexusOperationOptions{
-		// The write retries for up to ten minutes (or the connector's
+		// The write retries for up to ten minutes (or the Connector's
 		// KAFKA_MAX_DURATION_MINUTES), and stops 10 seconds before this if that comes first.
 		ScheduleToCloseTimeout: 15 * time.Minute,
 	}).Get(ctx, &out)

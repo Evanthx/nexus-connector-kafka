@@ -1,4 +1,4 @@
-# A single-node Kafka (KRaft) for trying the connector. Clients log in with SASL/SCRAM-SHA-256
+# A single-node Kafka (KRaft) for trying the Kafka connector. Clients log in with SASL/SCRAM-SHA-256
 # using the credentials in .env.
 #
 # Listeners:

@@ -14,7 +14,7 @@ import (
 )
 
 // programs are the programs whose variables the docs list, in order.
-var programs = []*settings.Program{setup.Relay, setup.Connector}
+var programs = []*settings.Program{setup.Reader, setup.Connector}
 
 func main() {
 	path := flag.String("file", "docs/setup.md", "the Markdown file to update")

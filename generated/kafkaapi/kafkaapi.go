@@ -19,7 +19,7 @@ var KafkaService = struct {
 	Write:       nexus.NewOperationReference[WriteInput, WriteOutput]("write"),
 }
 
-// The service the Nexus Connector Relay delivers messages to. Implement it to receive
+// The service the Nexus Connector Reader delivers messages to. Implement it to receive
 // the topic's messages.
 var KafkaMessageReceiver = struct {
 	ServiceName string
@@ -299,7 +299,7 @@ func (m ReceiveInput) MarshalJSON() ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// ReceiveOutput Empty: the Nexus Connector Relay does not wait for a result.
+// ReceiveOutput Empty: the Nexus Connector Reader does not wait for a result.
 type ReceiveOutput struct {
 }
 

@@ -16,14 +16,14 @@ What the tests cover:
 - `kafka/`: reading as a group member (batch size and time limits, commits, releasing a batch, a
   released first batch surviving a handoff, noticing a waiting rebalance, where it starts), fetch
   errors Kafka's client recovers from, and tombstones.
-- `relay/`: delivery order, splitting batches to fit an input, commits, redelivery with the
+- `reader/`: delivery order, splitting batches to fit an input, commits, redelivery with the
   same operation IDs, the duplicate when a redelivered batch ends elsewhere, releasing a stuck
   batch for a rebalance, operation IDs' source key and its check on every batch, splitting a
   refused operation, which refusals count as undeliverable, retries, and the dead-letter topic.
   Its end-to-end tests start a dev server and deliver to a receiver in another namespace.
 - `connector/`: its configuration and startup report, and how long a write may retry. Its
   end-to-end tests write across namespaces through the endpoint, write two topics through two
-  connectors, and refuse a caller's Nexus timeout too short to run a write.
+  Connectors, and refuse a caller's Nexus timeout too short to run a write.
 
 ## Demo
 
@@ -50,7 +50,7 @@ temporal server start-dev \
   --namespace kafka-test
 ```
 
-The `connectors` namespace is where the relay and the connector run, and `kafka-test` is where the
+The `connectors` namespace is where the Reader and the Connector run, and `kafka-test` is where the
 test programs run. The Web UI is at <http://localhost:8233>.
 
 ### 2. Start Kafka and seed it (terminal 2)
@@ -62,7 +62,7 @@ test/kafka/scripts/seed.sh
 
 This starts a single-node Kafka on `localhost:9092` that requires a SASL/SCRAM login, and returns
 when it is up. The seed script creates two topics with 3 partitions each, `customers` and `orders`,
-plus `customers-dead-letters` for the relay. It writes 10 messages to `customers` and 3 to
+plus `customers-dead-letters` for the Reader. It writes 10 messages to `customers` and 3 to
 `orders`. The settings are in [`test/kafka/.env`](../test/kafka/.env).
 
 ## Method 1: stream messages into Temporal
@@ -74,18 +74,18 @@ temporal operator nexus endpoint create \
   --name kafka-receiver-endpoint \
   --target-namespace kafka-test \
   --target-task-queue kafka-receiver
-go run ./test/relayreceiver
+go run ./test/readerreceiver
 ```
 
-### 4. Start the relay (terminal 3)
+### 4. Start the Reader (terminal 3)
 
 ```bash
 set -a; source test/kafka/.env; set +a
-export KAFKA_GROUP=relay KAFKA_DEAD_LETTER_TOPIC=customers-dead-letters RELAY_ENDPOINT=kafka-receiver-endpoint
-go run ./relay
+export KAFKA_GROUP=reader KAFKA_DEAD_LETTER_TOPIC=customers-dead-letters READER_ENDPOINT=kafka-receiver-endpoint
+go run ./reader
 ```
 
-The relay delivers the 10 seeded messages as one batch per partition. Terminal 2 logs each one:
+The Reader delivers the 10 seeded messages as one batch per partition. Terminal 2 logs each one:
 
 ```
 INFO  Received message ... WorkflowID kafka-batch-customers-0-0-2 ... topic customers partition 0 offset 0 value seed message 1 of 10
@@ -99,19 +99,19 @@ Open another terminal; step 9 uses it too.
 test/kafka/scripts/produce.sh "hello from the console producer"
 ```
 
-Terminal 2 logs it within a second or two. **Leave the relay running** before you go on.
+Terminal 2 logs it within a second or two. **Leave the Reader running** before you go on.
 
 In the Web UI, the `connectors` namespace shows one standalone Nexus operation per batch under
 Nexus, and `kafka-test` shows the `ReceiveWorkflow` each one started.
 
-## Method 2: write through the connector
+## Method 2: write through the Connector
 
-Keep everything from steps 1 to 5 running. Each connector serves one topic behind a Nexus
-endpoint. Here two connectors serve the two topics: `kafka-customers-endpoint` routes to
-`customers`, and `kafka-orders-endpoint` routes to `orders`. The relay from step 4 still streams
+Keep everything from steps 1 to 5 running. Each Connector serves one topic behind a Nexus
+endpoint. Here two Connectors serve the two topics: `kafka-customers-endpoint` routes to
+`customers`, and `kafka-orders-endpoint` routes to `orders`. The Reader from step 4 still streams
 `customers`, so what you write there reaches the receiver.
 
-### 6. Start a connector for the customers topic (terminal 4)
+### 6. Start a Connector for the customers topic (terminal 4)
 
 ```bash
 temporal operator nexus endpoint create \
@@ -123,7 +123,7 @@ set -a; source test/kafka/.env; set +a
 go run ./connector
 ```
 
-### 7. Start a second connector for the orders topic (terminal 5)
+### 7. Start a second Connector for the orders topic (terminal 5)
 
 ```bash
 temporal operator nexus endpoint create \
@@ -136,7 +136,7 @@ export KAFKA_TOPIC=orders NEXUS_TASK_QUEUE=nexus-connector-kafka-orders
 go run ./connector
 ```
 
-Each connector needs its own `NEXUS_TASK_QUEUE`, since both run in `connectors`.
+Each Connector needs its own `NEXUS_TASK_QUEUE`, since both run in `connectors`.
 
 ### 8. Start the test caller's worker (terminal 6)
 
@@ -155,7 +155,7 @@ go run ./test/nexuscaller/starter write -endpoint kafka-orders-endpoint "first o
 ```
 
 Each command starts a `WriterWorkflow` and waits for it. The receiver in terminal 2 logs the two
-`customers` messages, delivered by the relay. No relay streams `orders`, so confirm that write
+`customers` messages, delivered by the Reader. No Reader streams `orders`, so confirm that write
 from the command line:
 
 ```bash
@@ -164,8 +164,8 @@ test/kafka/scripts/consume.sh orders
 
 It prints every message in the topic, with its partition, offset and headers, then exits after 5
 seconds without new messages. It reads from the beginning under a throwaway consumer group of its
-own, so it never moves the relay's offsets; run it as often as you like. Among the 3 seeded orders
-is `first order`, with a `dedupe-id` header the connector added. Partitions print interleaved, so
+own, so it never moves the Reader's offsets; run it as often as you like. Among the 3 seeded orders
+is `first order`, with a `dedupe-id` header the Connector added. Partitions print interleaved, so
 it isn't necessarily the last line. Pass another topic name, such as `customers`, to see that topic.
 
 ## Tear down

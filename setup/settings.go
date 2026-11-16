@@ -1,4 +1,4 @@
-// Package setup lists every environment variable the relay and the connector read, as one
+// Package setup lists every environment variable the Reader and the Connector read, as one
 // settings.Program each, and loads their Temporal client options.
 //
 // The programs are main packages, which nothing can import, so their variables are declared here
@@ -20,17 +20,17 @@ import (
 	"go.temporal.io/sdk/contrib/envconfig"
 )
 
-// Relay is the relay's process and every environment variable it reads.
-var Relay = &settings.Program{
-	ID:      "relay",
-	Name:    "Nexus Connector Relay",
-	Command: "go run ./relay",
+// Reader is the Reader's process and every environment variable it reads.
+var Reader = &settings.Program{
+	ID:      "reader",
+	Name:    "Nexus Connector Reader",
+	Command: "go run ./reader",
 	Sections: []*settings.Section{
 		kafka.SettingsSection,
-		{Title: "Relay", Variables: []*settings.Variable{
-			RelayGroup.Variable, kafka.StartFromSetting.Variable, DeadLetterTopic.Variable, DeleteDeadLetters.Variable, BatchSize.Variable,
-			BatchTimeLimit.Variable, RelayEndpoint.Variable, RelayService.Variable, RelayOperation.Variable,
-			RelayOperationTimeout.Variable, RelayMaxInputBytes.Variable,
+		{Title: "Reader", Variables: []*settings.Variable{
+			ReaderGroup.Variable, kafka.StartFromSetting.Variable, DeadLetterTopic.Variable, DeleteDeadLetters.Variable, BatchSize.Variable,
+			BatchTimeLimit.Variable, ReaderEndpoint.Variable, ReaderService.Variable, ReaderOperation.Variable,
+			ReaderOperationTimeout.Variable, ReaderMaxInputBytes.Variable,
 		}},
 		temporalSection,
 		networkSection,
@@ -38,7 +38,7 @@ var Relay = &settings.Program{
 	Rules: []func(settings.Env) error{deadLetterRule},
 }
 
-// Connector is the connector's process and every environment variable it reads.
+// Connector is the Connector's process and every environment variable it reads.
 var Connector = &settings.Program{
 	ID:      "connector",
 	Name:    "Nexus Connector",
@@ -57,8 +57,8 @@ var Connector = &settings.Program{
 // them, so they have no check here.
 var temporalSection = settings.Temporal{
 	Namespace: defaultNamespace,
-	NamespaceHelp: "The namespace the program runs in. The relay needs standalone Nexus operations enabled in it; the " +
-		"connector, standalone activities with completion callbacks. All connectors default to `" +
+	NamespaceHelp: "The namespace the program runs in. The Reader needs standalone Nexus operations enabled in it; the " +
+		"Connector, standalone activities with completion callbacks. All connectors default to `" +
 		defaultNamespace + "` and are kept apart by task queue.",
 	Docs: "See [Connecting to Temporal Cloud](#connecting-to-temporal-cloud).",
 }.Section()
@@ -82,14 +82,14 @@ var networkSection = &settings.Section{Title: "Network", Variables: []*settings.
 	},
 }}
 
-// The relay's own variables.
+// The Reader's own variables.
 var (
-	RelayGroup = settings.Define(settings.Variable{
+	ReaderGroup = settings.Define(settings.Variable{
 		Name:     "KAFKA_GROUP",
 		Required: "yes",
-		Help: "The consumer group the relay joins. Relays with the same consumer group share the topic's " +
+		Help: "The consumer group the Reader joins. Readers with the same consumer group share the topic's " +
 			"partitions. Don't share it with any other consumer.",
-	}, requiredText("KAFKA_GROUP", "the consumer group the relay joins"))
+	}, requiredText("KAFKA_GROUP", "the consumer group the Reader joins"))
 
 	DeadLetterTopic = settings.Define(settings.Variable{
 		Name:     "KAFKA_DEAD_LETTER_TOPIC",
@@ -119,47 +119,47 @@ var (
 			"a quiet topic, which costs fewer operations.",
 	}, duration("KAFKA_BATCH_TIME_LIMIT", 0))
 
-	RelayEndpoint = settings.Define(settings.Variable{
-		Name:     "RELAY_ENDPOINT",
+	ReaderEndpoint = settings.Define(settings.Variable{
+		Name:     "READER_ENDPOINT",
 		Required: "yes",
-		Help: "The Nexus endpoint the relay delivers batches to. It routes to the receiver you implement, " +
+		Help: "The Nexus endpoint the Reader delivers batches to. It routes to the receiver you implement, " +
 			"`KafkaMessageReceiver.receive`.",
-	}, requiredText("RELAY_ENDPOINT", "the Nexus endpoint to deliver to"))
+	}, requiredText("READER_ENDPOINT", "the Nexus endpoint to deliver to"))
 
-	RelayService = settings.Define(settings.Variable{
-		Name:    "RELAY_SERVICE",
+	ReaderService = settings.Define(settings.Variable{
+		Name:    "READER_SERVICE",
 		Default: kafkaapi.KafkaMessageReceiver.ServiceName,
 		Help:    "The Nexus service the receiver serves.",
 	}, textOr(kafkaapi.KafkaMessageReceiver.ServiceName))
 
-	RelayOperation = settings.Define(settings.Variable{
-		Name:    "RELAY_OPERATION",
+	ReaderOperation = settings.Define(settings.Variable{
+		Name:    "READER_OPERATION",
 		Default: kafkaapi.KafkaMessageReceiver.Receive.Name(),
 		Help:    "The operation started for each batch.",
 	}, textOr(kafkaapi.KafkaMessageReceiver.Receive.Name()))
 
-	RelayOperationTimeout = settings.Define(settings.Variable{
-		Name:    "RELAY_OPERATION_TIMEOUT",
+	ReaderOperationTimeout = settings.Define(settings.Variable{
+		Name:    "READER_OPERATION_TIMEOUT",
 		Default: "24h",
 		Help:    "How long each operation may take, such as `30m` or `24h`. More than 0.",
 	}, func(v string) (time.Duration, error) {
-		d, err := duration("RELAY_OPERATION_TIMEOUT", 24*time.Hour)(v)
+		d, err := duration("READER_OPERATION_TIMEOUT", 24*time.Hour)(v)
 		if err == nil && d == 0 {
-			return 0, errors.New("RELAY_OPERATION_TIMEOUT must be more than 0")
+			return 0, errors.New("READER_OPERATION_TIMEOUT must be more than 0")
 		}
 		return d, err
 	})
 
-	RelayMaxInputBytes = settings.Define(settings.Variable{
-		Name:    "RELAY_MAX_INPUT_BYTES",
+	ReaderMaxInputBytes = settings.Define(settings.Variable{
+		Name:    "READER_MAX_INPUT_BYTES",
 		Default: strconv.Itoa(DefaultMaxInputBytes) + " (2 MiB less 64 KiB)",
 		Help: "The largest encoded batch sent to one operation. Larger batches are split; a single larger " +
 			"message goes to the dead-letter topic.",
-	}, positiveInt("RELAY_MAX_INPUT_BYTES", DefaultMaxInputBytes))
+	}, positiveInt("READER_MAX_INPUT_BYTES", DefaultMaxInputBytes))
 )
 
 // DefaultMaxInputBytes is under Temporal's 2 MiB payload limit by 64 KiB: the limit applies to
-// the whole payload, metadata included, and the size the relay counts is an estimate of the
+// the whole payload, metadata included, and the size the Reader counts is an estimate of the
 // encoded records.
 const DefaultMaxInputBytes = 2*1024*1024 - 64*1024
 
@@ -181,12 +181,12 @@ func deadLetterRule(env settings.Env) error {
 	return nil
 }
 
-// The connector's own variables.
+// The Connector's own variables.
 var (
 	TaskQueue = settings.Define(settings.Variable{
 		Name:    "NEXUS_TASK_QUEUE",
 		Default: DefaultTaskQueue,
-		Help:    "The task queue the connector's Nexus endpoint targets. Give each connector for another topic its own.",
+		Help:    "The task queue the Connector's Nexus endpoint targets. Give each Connector for another topic its own.",
 	}, textOr(DefaultTaskQueue))
 
 	// MaxDuration is 0 when unset: a write may then take 10 minutes.
@@ -207,7 +207,7 @@ var (
 	})
 )
 
-// DefaultTaskQueue is the connector's task queue unless NEXUS_TASK_QUEUE says otherwise.
+// DefaultTaskQueue is the Connector's task queue unless NEXUS_TASK_QUEUE says otherwise.
 const DefaultTaskQueue = "nexus-connector-kafka"
 
 // defaultNamespace is both programs' namespace when neither TEMPORAL_NAMESPACE nor the profile

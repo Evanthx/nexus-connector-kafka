@@ -10,7 +10,7 @@ import (
 )
 
 // ErrRejected means Kafka refused a write for a reason that retrying won't change, such as a
-// record larger than the broker allows or a topic the connector may not write to.
+// record larger than the broker allows or a topic the Connector may not write to.
 var ErrRejected = errors.New("kafka rejected the write")
 
 // Writer writes records and waits for the brokers to acknowledge them.

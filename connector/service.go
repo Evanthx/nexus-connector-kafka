@@ -12,7 +12,7 @@ import (
 	"go.temporal.io/sdk/worker"
 )
 
-// defaultTaskQueue is the connector's task queue unless NEXUS_TASK_QUEUE says otherwise.
+// defaultTaskQueue is the Connector's task queue unless NEXUS_TASK_QUEUE says otherwise.
 const defaultTaskQueue = setup.DefaultTaskQueue
 
 // writeOptions are the options for the activity behind one write, which may take total in all
@@ -49,7 +49,7 @@ func newService(a *activities) *nexus.Service {
 	return svc
 }
 
-// newWorker creates the connector's worker. It polls taskQueue, which the Nexus endpoint targets,
+// newWorker creates the Connector's worker. It polls taskQueue, which the Nexus endpoint targets,
 // serves the Nexus service, and runs writes.
 func newWorker(c client.Client, taskQueue string, a *activities) worker.Worker {
 	w := worker.New(c, taskQueue, worker.Options{})

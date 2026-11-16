@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Writes one message to a topic with Kafka's console producer, bypassing the connector.
+# Writes one message to a topic with Kafka's console producer, bypassing the Connector.
 #
 # Usage: test/kafka/scripts/produce.sh <message> [topic]    (default: the topic in .env)
 set -euo pipefail

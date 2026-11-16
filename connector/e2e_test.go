@@ -53,7 +53,7 @@ func start(t *testing.T) harness {
 	return h
 }
 
-// serve runs a connector for cfg's topic on taskQueue, behind a Nexus endpoint, as one process
+// serve runs a Connector for cfg's topic on taskQueue, behind a Nexus endpoint, as one process
 // of main would.
 func (h harness) serve(t *testing.T, endpoint, taskQueue string, cfg kafka.Config) {
 	t.Helper()
@@ -116,7 +116,7 @@ func requireErrorType(t *testing.T, err error, errType string) {
 	require.Equal(t, errType, appErr.Type(), err.Error())
 }
 
-// A caller in another namespace writes messages through the connector, and they reach the topic,
+// A caller in another namespace writes messages through the Connector, and they reach the topic,
 // each with a dedupe-id from the write's activity ID.
 func TestEndToEnd_Write(t *testing.T) {
 	h := start(t)
@@ -155,7 +155,7 @@ func TestEndToEnd_CallerTimeoutTooShort(t *testing.T) {
 	require.False(t, found, "the refused write wrote nothing")
 }
 
-// Two connectors serve two topics through two endpoints, as two processes of main would, and each
+// Two Connectors serve two topics through two endpoints, as two processes of main would, and each
 // endpoint writes to its own topic.
 func TestEndToEnd_TwoEndpointsTwoTopics(t *testing.T) {
 	h := newHarness(t)

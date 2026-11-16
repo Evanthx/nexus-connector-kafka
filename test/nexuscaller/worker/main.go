@@ -5,7 +5,7 @@
 // polls again.
 //
 // It needs no Kafka settings. Its workflows reach Kafka only through the Nexus endpoints
-// (CustomersEndpoint and OrdersEndpoint), which route to connectors in another namespace.
+// (CustomersEndpoint and OrdersEndpoint), which route to Connectors in another namespace.
 package main
 
 import (

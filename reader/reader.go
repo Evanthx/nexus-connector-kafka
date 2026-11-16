@@ -34,10 +34,10 @@ type deadLetterWriter interface {
 	Write(ctx context.Context, records ...*kgo.Record) error
 }
 
-// relay reads the topic as a member of a consumer group and starts one Nexus operation for each
+// reader reads the topic as a member of a consumer group and starts one Nexus operation for each
 // partition's part of a batch. It commits a batch only after every message in it has an operation
 // (or is in the dead-letter topic), so a crash means messages are delivered again, never lost.
-type relay struct {
+type reader struct {
 	member          *kafka.GroupMember
 	starter         operationStarter
 	deadLetters     deadLetterWriter                                   // nil when deleteDeadLetters is set
@@ -55,7 +55,7 @@ type relay struct {
 }
 
 // run streams until ctx ends, then returns nil. It returns an error only if Kafka can't be read.
-func (r *relay) run(ctx context.Context) error {
+func (r *reader) run(ctx context.Context) error {
 	for {
 		batch, err := r.member.Next(ctx, r.batchSize, r.timeLimit)
 		if ctx.Err() != nil {
@@ -73,14 +73,14 @@ func (r *relay) run(ctx context.Context) error {
 			r.member.Release(batch)
 			continue
 		}
-		// Commit even if the relay is stopping, so a clean stop doesn't deliver a finished batch
+		// Commit even if the Reader is stopping, so a clean stop doesn't deliver a finished batch
 		// again.
 		commitCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commitTimeout)
 		err = r.member.Commit(commitCtx, batch)
 		cancel()
 		if err != nil {
-			// Delivered but not committed. If this relay keeps the partitions, its next commit
-			// covers these too. If they move to another relay, or this one restarts, they are
+			// Delivered but not committed. If this Reader keeps the partitions, its next commit
+			// covers these too. If they move to another Reader, or this one restarts, they are
 			// delivered again.
 			r.logger.Warn("Commit failed; these messages may be delivered again", "records", len(batch.Records), "error", err)
 		}
@@ -92,7 +92,7 @@ func (r *relay) run(ctx context.Context) error {
 
 // deliverBeforeRebalance delivers a batch, giving up if a rebalance is waiting. It returns an
 // error if ctx ends or it gave up.
-func (r *relay) deliverBeforeRebalance(ctx context.Context, records []kafkaapi.Record) error {
+func (r *reader) deliverBeforeRebalance(ctx context.Context, records []kafkaapi.Record) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go func() {
@@ -114,9 +114,9 @@ func (r *relay) deliverBeforeRebalance(ctx context.Context, records []kafkaapi.R
 
 // source is the source key for this batch's operation IDs (see sourceKey). It asks Kafka for the
 // topic's identity for every batch, retrying until it answers or ctx ends, so a topic deleted and
-// created again while the relay runs gets new IDs: the new topic's offsets mean different
+// created again while the Reader runs gets new IDs: the new topic's offsets mean different
 // messages.
-func (r *relay) source(ctx context.Context) (string, error) {
+func (r *reader) source(ctx context.Context) (string, error) {
 	for attempt := 1; ; attempt++ {
 		id, err := r.identify(ctx)
 		if err == nil {
@@ -131,7 +131,7 @@ func (r *relay) source(ctx context.Context) (string, error) {
 
 // deliver delivers a batch. Partitions are delivered in parallel; within a partition, operations
 // start in offset order. It returns an error only if ctx ends first.
-func (r *relay) deliver(ctx context.Context, source string, records []kafkaapi.Record) error {
+func (r *reader) deliver(ctx context.Context, source string, records []kafkaapi.Record) error {
 	byPartition := map[int64][]kafkaapi.Record{}
 	for _, rec := range records {
 		byPartition[rec.Partition] = append(byPartition[rec.Partition], rec)
@@ -155,7 +155,7 @@ const inputOverhead = len(`{"records":[]}`)
 
 // deliverPartition delivers one partition's records, as few operations as fit maxInputBytes. A
 // message too large for an input on its own goes to the dead-letter topic.
-func (r *relay) deliverPartition(ctx context.Context, source string, recs []kafkaapi.Record) error {
+func (r *reader) deliverPartition(ctx context.Context, source string, recs []kafkaapi.Record) error {
 	var part []kafkaapi.Record
 	size := inputOverhead
 	flush := func() error {
@@ -192,7 +192,7 @@ func (r *relay) deliverPartition(ctx context.Context, source string, recs []kafk
 // deliverPart starts the operation for consecutive records of one partition, retrying until it
 // starts or ctx ends. If the server refuses the records as too large, they are split in two and
 // each half delivered in turn, so only a message refused on its own goes to the dead-letter topic.
-func (r *relay) deliverPart(ctx context.Context, source string, recs []kafkaapi.Record) error {
+func (r *reader) deliverPart(ctx context.Context, source string, recs []kafkaapi.Record) error {
 	id := operationID(source, recs)
 	for attempt := 1; ; attempt++ {
 		err := r.starter.start(ctx, id, kafkaapi.ReceiveInput{Records: recs})
@@ -221,7 +221,7 @@ func (r *relay) deliverPart(ctx context.Context, source string, recs []kafkaapi.
 // batch is committed once this returns, so the message must not be dropped. With
 // deleteDeadLetters, it deletes rec instead: it logs it and returns, so the batch is committed
 // past it and it is never delivered. It stays in Kafka until retention removes it.
-func (r *relay) deadLetter(ctx context.Context, rec kafkaapi.Record, reason error) error {
+func (r *reader) deadLetter(ctx context.Context, rec kafkaapi.Record, reason error) error {
 	if r.deleteDeadLetters {
 		r.logger.Error("Deleting a message that can't be delivered (DELETE_DEAD_LETTERS)",
 			"topic", rec.Topic, "partition", rec.Partition, "offset", rec.Offset, "reason", reason)
@@ -241,7 +241,7 @@ func (r *relay) deadLetter(ctx context.Context, rec kafkaapi.Record, reason erro
 	}
 }
 
-func (r *relay) sleep(ctx context.Context, attempt int) error {
+func (r *reader) sleep(ctx context.Context, attempt int) error {
 	select {
 	case <-time.After(r.retryDelay(attempt)):
 		return nil

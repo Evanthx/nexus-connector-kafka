@@ -14,8 +14,8 @@ import (
 )
 
 // clientMakers are what makes or is a client for the outside world in net/http, as "import
-// path.Name". The page's checks must go through the connector's own construction (NewWithEnv and
-// the like), so that the Test sends what the connector would, with its settings, timeouts and
+// path.Name". The page's checks must go through the program's own construction (NewWithEnv and
+// the like), so that the Test sends what the program would, with its settings, timeouts and
 // redirect and secret handling, rather than through a client of the page's own.
 var clientMakers = []string{
 	"net/http.Client", "net/http.Transport", "net/http.DefaultClient", "net/http.DefaultTransport",
@@ -23,8 +23,8 @@ var clientMakers = []string{
 }
 
 // TestNoOwnClient fails if a non-test Go file of configui names one of clientMakers, or one of
-// connectorClientMakers, which each repo's main_test.go lists for the client library its connector
-// uses (empty for one that uses net/http alone).
+// connectorClientMakers, which each repo's main_test.go lists for the client library its programs
+// use (empty for a repo that uses net/http alone).
 func TestNoOwnClient(t *testing.T) {
 	forbidden := map[string]bool{}
 	for _, m := range append(clientMakers, connectorClientMakers...) {
@@ -38,7 +38,7 @@ func TestNoOwnClient(t *testing.T) {
 			found = append(found, namedIn(t, path, forbidden)...)
 		}
 	}
-	require.Empty(t, found, "configui must check through the connector's own client construction, not make its own client")
+	require.Empty(t, found, "configui must check through the program's own client construction, not make its own client")
 }
 
 // namedIn are the uses of a forbidden "import path.Name" in the Go file at path, as
