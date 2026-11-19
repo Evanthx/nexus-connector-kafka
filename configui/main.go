@@ -64,8 +64,8 @@ type program struct {
 	EndpointName            string
 	EndpointDescriptionFile string
 	// CallsEndpoint is the name of the Nexus endpoint the program calls, given env, such as the
-	// Reader's; the Temporal check confirms it exists. nil, or "" from it, if the program calls
-	// none.
+	// Inbound Connector's; the Temporal check confirms it exists. nil, or "" from it, if the
+	// program calls none.
 	CallsEndpoint func(env settings.Env) string
 	// TestFields are extra inputs for the Test, such as a URL to try. Check gets their values.
 	TestFields []testField

@@ -26,8 +26,8 @@ If anything fails, the program reports every problem in one message rather than 
 first:
 
 ```
-The Connector can't start:
-Invalid Connector configuration:
+The Outbound Connector can't start:
+Invalid Outbound Connector configuration:
   - KAFKA_MAX_DURATION_MINUTES must be a whole number of minutes, at least 1, not "0"
 Failed to connect to Temporal:
   - failed reaching server: ... connection refused
@@ -51,14 +51,14 @@ seconds before the caller's Nexus operation times out, if that comes first.
 
 ## Consumer group rules
 
-**Never share the Reader's consumer group** with any other live Kafka consumer. Each consumer group
-gets every message, so separate groups can read the same topic independently.
+**Never share the Inbound Connector's consumer group** with any other live Kafka consumer. Each
+consumer group gets every message, so separate groups can read the same topic independently.
 
 **Kafka forgets an idle group's offsets** after `offsets.retention.minutes` (7 days by default)
-since the group's last commit. A consumer group whose Readers all stop for longer starts again
-where `KAFKA_START_FROM` says.
+since the group's last commit. A consumer group whose Inbound Connectors all stop for longer starts
+again where `KAFKA_START_FROM` says.
 
-## When a Reader operation fails
+## When an Inbound Connector operation fails
 
 A batch is committed once Temporal accepts its operation. Find operations that ended
 unsuccessfully:
@@ -74,8 +74,9 @@ To replay them:
 
 - **If the receiving service still has the work**, retry it there. For a workflow-backed `receive`,
   the workflow's history holds the messages, so you can reset the workflow.
-- **To re-deliver the messages from Kafka**, stop every Reader in the group, move the group's
-  offset for that partition back to the operation's first offset, then restart the Readers:
+- **To re-deliver the messages from Kafka**, stop every Inbound Connector in the group, move the
+  group's offset for that partition back to the operation's first offset, then restart the Inbound
+  Connectors:
 
   ```bash
   kafka-consumer-groups.sh --bootstrap-server <brokers> --command-config <client config> \
@@ -85,18 +86,18 @@ To replay them:
   With `KAFKA_BATCH_SIZE=1`, each message's ID is the same as before, so messages whose operations
   completed start nothing new, and only the failed ones run again.
 
-## The Reader won't dead-letter on outages
+## The Inbound Connector won't dead-letter on outages
 
 Only messages too large for an operation's input go to the dead-letter topic. Every other error
 (Temporal unreachable, endpoint missing, standalone Nexus operations not enabled) is retried
 forever. The stream waits rather than drain working messages into dead letters. Read the
-Reader's log to diagnose a stalled stream.
+Inbound Connector's log to diagnose a stalled stream.
 
 ## Known limitations
 
-- **One topic** per Connector or Reader process, set by `KAFKA_TOPIC`.
+- **One topic** per Outbound Connector or Inbound Connector process, set by `KAFKA_TOPIC`.
 - **SASL/SCRAM-SHA-256 or no authentication.** TLS and other SASL mechanisms aren't supported yet.
-- **The dead-letter topic is only for messages Temporal refuses.** The Reader doesn't see
+- **The dead-letter topic is only for messages Temporal refuses.** The Inbound Connector doesn't see
   failures inside the operations it starts.
 - **`write` can't write a tombstone.** A message's `value` is always bytes, so `write` has no way
   to write a null value.

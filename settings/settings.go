@@ -23,9 +23,9 @@ import (
 // Program is one program and every environment variable it reads, in sections, in the order the
 // setup page and the docs show them.
 type Program struct {
-	ID       string // short and unique among a repo's programs, such as "connector"
-	Name     string // for people, such as "Nexus Connector"
-	Command  string // how to run it, such as "go run ./cmd/worker"
+	ID       string // short and unique among a repo's programs, such as "outbound"
+	Name     string // for people, such as "Outbound Connector"
+	Command  string // how to run it, such as "go run ./cmd/outbound"
 	Sections []*Section
 	// Rules check variables against each other once each is valid on its own, such as "set A or B,
 	// not both". Each returns every problem it finds, joined, or nil.

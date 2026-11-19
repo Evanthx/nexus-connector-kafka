@@ -50,9 +50,9 @@ func run(args []string) error {
 	return write(c, args[1:])
 }
 
-// write runs a WriterWorkflow that writes each argument as one message, in order, and waits for
-// it. -endpoint (default kafka-customers-endpoint) chooses the Nexus endpoint, and so the topic. The
-// workflow calls that Connector's write operation, which adds a dedupe-id header to each
+// write runs a WriterWorkflow that writes each argument as one message, in order, and waits for it.
+// -endpoint (default kafka-customers-endpoint) chooses the Nexus endpoint, and so the topic. The
+// workflow calls that Outbound Connector's write operation, which adds a dedupe-id header to each
 // message so a consumer can drop a copy left by a retried write.
 func write(c client.Client, args []string) error {
 	flags := flag.NewFlagSet("write", flag.ContinueOnError)

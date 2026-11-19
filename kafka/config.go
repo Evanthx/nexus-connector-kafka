@@ -1,8 +1,8 @@
-// Package kafka is the Kafka code the Connector and the Reader share: connecting, reading in
-// batches, and writing. It has no Temporal code.
+// Package kafka is the Kafka code the Outbound Connector and the Inbound Connector share:
+// connecting, reading in batches, and writing. It has no Temporal code.
 //
-// The Reader reads with a GroupMember, which joins a consumer group so Kafka splits the partitions
-// among the running Readers. The Connector only writes.
+// The Inbound Connector reads with a GroupMember, which joins a consumer group so Kafka splits the
+// partitions among the running Inbound Connectors. The Outbound Connector only writes.
 package kafka
 
 import (

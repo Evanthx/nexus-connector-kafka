@@ -1,5 +1,5 @@
-// Package setup lists every environment variable the Reader and the Connector read, as one
-// settings.Program each, and loads their Temporal client options.
+// Package setup lists every environment variable the Inbound Connector and the Outbound Connector
+// read, as one settings.Program each, and loads their Temporal client options.
 //
 // The programs are main packages, which nothing can import, so their variables are declared here
 // for the programs, the setup page (configui) and the docs (configui/gendocs) to share. The Kafka
@@ -20,17 +20,17 @@ import (
 	"go.temporal.io/sdk/contrib/envconfig"
 )
 
-// Reader is the Reader's process and every environment variable it reads.
-var Reader = &settings.Program{
-	ID:      "reader",
-	Name:    "Nexus Connector Reader",
-	Command: "go run ./reader",
+// Inbound is the Inbound Connector's process and every environment variable it reads.
+var Inbound = &settings.Program{
+	ID:      "inbound",
+	Name:    "Inbound Connector",
+	Command: "go run ./inbound",
 	Sections: []*settings.Section{
 		kafka.SettingsSection,
-		{Title: "Reader", Variables: []*settings.Variable{
-			ReaderGroup.Variable, kafka.StartFromSetting.Variable, DeadLetterTopic.Variable, DeleteDeadLetters.Variable, BatchSize.Variable,
-			BatchTimeLimit.Variable, ReaderEndpoint.Variable, ReaderService.Variable, ReaderOperation.Variable,
-			ReaderOperationTimeout.Variable, ReaderMaxInputBytes.Variable,
+		{Title: "Inbound Connector", Variables: []*settings.Variable{
+			InboundGroup.Variable, kafka.StartFromSetting.Variable, DeadLetterTopic.Variable, DeleteDeadLetters.Variable, BatchSize.Variable,
+			BatchTimeLimit.Variable, InboundEndpoint.Variable, InboundService.Variable, InboundOperation.Variable,
+			InboundOperationTimeout.Variable, InboundMaxInputBytes.Variable,
 		}},
 		temporalSection,
 		networkSection,
@@ -38,14 +38,14 @@ var Reader = &settings.Program{
 	Rules: []func(settings.Env) error{deadLetterRule},
 }
 
-// Connector is the Connector's process and every environment variable it reads.
-var Connector = &settings.Program{
-	ID:      "connector",
-	Name:    "Nexus Connector",
-	Command: "go run ./connector",
+// Outbound is the Outbound Connector's process and every environment variable it reads.
+var Outbound = &settings.Program{
+	ID:      "outbound",
+	Name:    "Outbound Connector",
+	Command: "go run ./outbound",
 	Sections: []*settings.Section{
 		kafka.SettingsSection,
-		{Title: "Connector", Variables: []*settings.Variable{
+		{Title: "Outbound Connector", Variables: []*settings.Variable{
 			TaskQueue.Variable, MaxDuration.Variable,
 		}},
 		temporalSection,
@@ -57,8 +57,8 @@ var Connector = &settings.Program{
 // them, so they have no check here.
 var temporalSection = settings.Temporal{
 	Namespace: defaultNamespace,
-	NamespaceHelp: "The namespace the program runs in. The Reader needs standalone Nexus operations enabled in it; the " +
-		"Connector, standalone activities with completion callbacks. All connectors default to `" +
+	NamespaceHelp: "The namespace the program runs in. The Inbound Connector needs standalone Nexus operations enabled in it; the " +
+		"Outbound Connector, standalone activities with completion callbacks. All connectors default to `" +
 		defaultNamespace + "` and are kept apart by task queue.",
 	Docs: "See [Connecting to Temporal Cloud](#connecting-to-temporal-cloud).",
 }.Section()
@@ -82,14 +82,14 @@ var networkSection = &settings.Section{Title: "Network", Variables: []*settings.
 	},
 }}
 
-// The Reader's own variables.
+// The Inbound Connector's own variables.
 var (
-	ReaderGroup = settings.Define(settings.Variable{
+	InboundGroup = settings.Define(settings.Variable{
 		Name:     "KAFKA_GROUP",
 		Required: "yes",
-		Help: "The consumer group the Reader joins. Readers with the same consumer group share the topic's " +
+		Help: "The consumer group the Inbound Connector joins. Inbound Connectors with the same consumer group share the topic's " +
 			"partitions. Don't share it with any other consumer.",
-	}, requiredText("KAFKA_GROUP", "the consumer group the Reader joins"))
+	}, requiredText("KAFKA_GROUP", "the consumer group the Inbound Connector joins"))
 
 	DeadLetterTopic = settings.Define(settings.Variable{
 		Name:     "KAFKA_DEAD_LETTER_TOPIC",
@@ -119,47 +119,47 @@ var (
 			"a quiet topic, which costs fewer operations.",
 	}, duration("KAFKA_BATCH_TIME_LIMIT", 0))
 
-	ReaderEndpoint = settings.Define(settings.Variable{
-		Name:     "READER_ENDPOINT",
+	InboundEndpoint = settings.Define(settings.Variable{
+		Name:     "INBOUND_ENDPOINT",
 		Required: "yes",
-		Help: "The Nexus endpoint the Reader delivers batches to. It routes to the receiver you implement, " +
+		Help: "The Nexus endpoint the Inbound Connector delivers batches to. It routes to the receiver you implement, " +
 			"`KafkaMessageReceiver.receive`.",
-	}, requiredText("READER_ENDPOINT", "the Nexus endpoint to deliver to"))
+	}, requiredText("INBOUND_ENDPOINT", "the Nexus endpoint to deliver to"))
 
-	ReaderService = settings.Define(settings.Variable{
-		Name:    "READER_SERVICE",
+	InboundService = settings.Define(settings.Variable{
+		Name:    "INBOUND_SERVICE",
 		Default: kafkaapi.KafkaMessageReceiver.ServiceName,
 		Help:    "The Nexus service the receiver serves.",
 	}, textOr(kafkaapi.KafkaMessageReceiver.ServiceName))
 
-	ReaderOperation = settings.Define(settings.Variable{
-		Name:    "READER_OPERATION",
+	InboundOperation = settings.Define(settings.Variable{
+		Name:    "INBOUND_OPERATION",
 		Default: kafkaapi.KafkaMessageReceiver.Receive.Name(),
 		Help:    "The operation started for each batch.",
 	}, textOr(kafkaapi.KafkaMessageReceiver.Receive.Name()))
 
-	ReaderOperationTimeout = settings.Define(settings.Variable{
-		Name:    "READER_OPERATION_TIMEOUT",
+	InboundOperationTimeout = settings.Define(settings.Variable{
+		Name:    "INBOUND_OPERATION_TIMEOUT",
 		Default: "24h",
 		Help:    "How long each operation may take, such as `30m` or `24h`. More than 0.",
 	}, func(v string) (time.Duration, error) {
-		d, err := duration("READER_OPERATION_TIMEOUT", 24*time.Hour)(v)
+		d, err := duration("INBOUND_OPERATION_TIMEOUT", 24*time.Hour)(v)
 		if err == nil && d == 0 {
-			return 0, errors.New("READER_OPERATION_TIMEOUT must be more than 0")
+			return 0, errors.New("INBOUND_OPERATION_TIMEOUT must be more than 0")
 		}
 		return d, err
 	})
 
-	ReaderMaxInputBytes = settings.Define(settings.Variable{
-		Name:    "READER_MAX_INPUT_BYTES",
+	InboundMaxInputBytes = settings.Define(settings.Variable{
+		Name:    "INBOUND_MAX_INPUT_BYTES",
 		Default: strconv.Itoa(DefaultMaxInputBytes) + " (2 MiB less 64 KiB)",
 		Help: "The largest encoded batch sent to one operation. Larger batches are split; a single larger " +
 			"message goes to the dead-letter topic.",
-	}, positiveInt("READER_MAX_INPUT_BYTES", DefaultMaxInputBytes))
+	}, positiveInt("INBOUND_MAX_INPUT_BYTES", DefaultMaxInputBytes))
 )
 
-// DefaultMaxInputBytes is under Temporal's 2 MiB payload limit by 64 KiB: the limit applies to
-// the whole payload, metadata included, and the size the Reader counts is an estimate of the
+// DefaultMaxInputBytes is under Temporal's 2 MiB payload limit by 64 KiB: the limit applies to the
+// whole payload, metadata included, and the size the Inbound Connector counts is an estimate of the
 // encoded records.
 const DefaultMaxInputBytes = 2*1024*1024 - 64*1024
 
@@ -181,12 +181,12 @@ func deadLetterRule(env settings.Env) error {
 	return nil
 }
 
-// The Connector's own variables.
+// The Outbound Connector's own variables.
 var (
 	TaskQueue = settings.Define(settings.Variable{
 		Name:    "NEXUS_TASK_QUEUE",
 		Default: DefaultTaskQueue,
-		Help:    "The task queue the Connector's Nexus endpoint targets. Give each Connector for another topic its own.",
+		Help:    "The task queue the Outbound Connector's Nexus endpoint targets. Give each Outbound Connector for another topic its own.",
 	}, textOr(DefaultTaskQueue))
 
 	// MaxDuration is 0 when unset: a write may then take 10 minutes.
@@ -207,7 +207,7 @@ var (
 	})
 )
 
-// DefaultTaskQueue is the Connector's task queue unless NEXUS_TASK_QUEUE says otherwise.
+// DefaultTaskQueue is the Outbound Connector's task queue unless NEXUS_TASK_QUEUE says otherwise.
 const DefaultTaskQueue = "nexus-connector-kafka"
 
 // defaultNamespace is both programs' namespace when neither TEMPORAL_NAMESPACE nor the profile

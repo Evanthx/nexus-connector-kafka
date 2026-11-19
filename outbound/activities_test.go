@@ -9,7 +9,7 @@ import (
 	"github.com/temporalio/nexus-connector-kafka/settings"
 )
 
-// kafkaEnv is the Kafka variables the Connector needs, with vars added.
+// kafkaEnv is the Kafka variables the Outbound Connector needs, with vars added.
 func kafkaEnv(vars settings.Map) settings.Map {
 	env := settings.Map{"KAFKA_BROKERS": "localhost:9092", "KAFKA_TOPIC": "orders"}
 	maps.Copy(env, vars)
@@ -56,10 +56,10 @@ func TestReport(t *testing.T) {
 	report := s.report(env, cfg, "connectors", "localhost:7233")
 	require.NotContains(t, report, "secret-password")
 	require.Contains(t, report, "with the operation write")
-	require.Contains(t, report, `point this Connector's Nexus endpoint at it`)
+	require.Contains(t, report, `point this Outbound Connector's Nexus endpoint at it`)
 	require.Regexp(t, `NEXUS_TASK_QUEUE +nexus-connector-kafka-orders\n`, report)
 	require.Regexp(t, `KAFKA_MAX_DURATION_MINUTES +10m \(default\)`, report)
-	require.NotContains(t, report, "KAFKA_START_FROM", "only the Reader reads it")
+	require.NotContains(t, report, "KAFKA_START_FROM", "only the Inbound Connector reads it")
 
 	env = kafkaEnv(nil)
 	cfg, s, err = configFrom(env)

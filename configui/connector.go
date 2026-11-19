@@ -1,8 +1,8 @@
 package main
 
-// This file is what the setup page knows about this repo's programs, the Reader and the Connector,
-// and the checks particular to them. The variables themselves come from setup.Reader and
-// setup.Connector. The rest of configui is the same in every Go connector repo.
+// This file is what the setup page knows about this repo's programs, the Inbound Connector and the
+// Outbound Connector, and the checks particular to them. The variables themselves come from
+// setup.Inbound and setup.Outbound. The rest of configui is the same in every Go connector repo.
 
 import (
 	"context"
@@ -23,16 +23,16 @@ const pageTitle = "Kafka connector setup"
 
 var programs = []program{
 	{
-		Settings:      setup.Reader,
+		Settings:      setup.Inbound,
 		ClientOptions: setup.ClientOptions,
-		// No endpoint targets the Reader: it calls one, READER_ENDPOINT.
-		CallsEndpoint: func(env settings.Env) string { return settings.Get(env, setup.ReaderEndpoint.Name) },
+		// No endpoint targets the Inbound Connector: it calls one, INBOUND_ENDPOINT.
+		CallsEndpoint: func(env settings.Env) string { return settings.Get(env, setup.InboundEndpoint.Name) },
 		Check: func(ctx context.Context, env settings.Env, _ map[string]string) check {
-			return checkKafka(ctx, env, readerChecks)
+			return checkKafka(ctx, env, inboundChecks)
 		},
 	},
 	{
-		Settings:      setup.Connector,
+		Settings:      setup.Outbound,
 		ClientOptions: setup.ClientOptions,
 		TaskQueue: func(env settings.Env) string {
 			q, _ := setup.TaskQueue.Get(env) // any value is valid
@@ -91,8 +91,8 @@ func checkKafka(ctx context.Context, env settings.Env, more func(ctx context.Con
 	return c
 }
 
-// readerChecks checks that the dead-letter topic exists, if one is set.
-func readerChecks(ctx context.Context, env settings.Env, cfg kafka.Config, c *check) {
+// inboundChecks checks that the dead-letter topic exists, if one is set.
+func inboundChecks(ctx context.Context, env settings.Env, cfg kafka.Config, c *check) {
 	topic := settings.Get(env, setup.DeadLetterTopic.Name)
 	if topic == "" {
 		return

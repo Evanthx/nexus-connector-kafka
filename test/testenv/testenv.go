@@ -1,6 +1,6 @@
 // Package testenv is for tests only. It starts what the end-to-end tests need: an in-memory Kafka
-// and a Temporal dev server with the namespace the Connector and the Reader run in, and the test
-// programs' namespace.
+// and a Temporal dev server with the namespace the Outbound Connector and the Inbound Connector run
+// in, and the test programs' namespace.
 package testenv
 
 import (
@@ -19,15 +19,15 @@ import (
 )
 
 const (
-	// ConnectorNamespace is where the Reader and the Connector run.
+	// ConnectorNamespace is where the Inbound Connector and the Outbound Connector run.
 	ConnectorNamespace = "connectors"
 	// TestNamespace is where the test programs run.
 	TestNamespace = "kafka-test"
 	// Topic is the topic Kafka starts with, with three partitions.
 	Topic = "customers"
-	// DeadLetterTopic is a second topic, for the Reader's dead letters.
+	// DeadLetterTopic is a second topic, for the Inbound Connector's dead letters.
 	DeadLetterTopic = "customers-dead-letters"
-	// OrdersTopic is a second topic, with three partitions, for a second Connector.
+	// OrdersTopic is a second topic, with three partitions, for a second Outbound Connector.
 	OrdersTopic = "orders"
 )
 
@@ -41,9 +41,9 @@ func Kafka(t *testing.T) kafka.Config {
 	return kafka.Config{Brokers: c.ListenAddrs(), Topic: Topic, StartFrom: kafka.StartFromOldest}
 }
 
-// Temporal starts a dev server with both namespaces and the dynamic config the Connector and the
-// Reader need, and returns a client for each namespace. It skips the test if the temporal CLI isn't on the
-// PATH, or with -short.
+// Temporal starts a dev server with both namespaces and the dynamic config the Outbound Connector
+// and the Inbound Connector need, and returns a client for each namespace. It skips the test if the
+// temporal CLI isn't on the PATH, or with -short.
 func Temporal(t *testing.T) (connector, test client.Client) {
 	t.Helper()
 	if testing.Short() {
@@ -60,9 +60,10 @@ func Temporal(t *testing.T) (connector, test client.Client) {
 		ClientOptions: &client.Options{Namespace: ConnectorNamespace},
 		ExtraArgs: []string{
 			"--namespace", TestNamespace,
-			// The Connector's operations complete through standalone activities' callbacks.
+			// The Outbound Connector's operations complete through standalone activities'
+			// callbacks.
 			"--dynamic-config-value", "activity.enableCallbacks=true",
-			// The Reader starts standalone Nexus operations.
+			// The Inbound Connector starts standalone Nexus operations.
 			"--dynamic-config-value", "nexusoperation.enableStandalone=true",
 		},
 	})

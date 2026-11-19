@@ -1,4 +1,4 @@
-// Command readerreceiver receives the Reader's messages. For testing only.
+// Command inboundreceiver receives the Inbound Connector's messages. For testing only.
 //
 // It serves the KafkaMessageReceiver Nexus service. Each receive starts ReceiveWorkflow, which
 // logs the batch's messages. It connects with the standard TEMPORAL_* variables and the temporal CLI's
@@ -21,7 +21,7 @@ import (
 
 const (
 	defaultNamespace = "kafka-test"
-	// taskQueue is the receiver's task queue. The Reader's Nexus endpoint targets it.
+	// taskQueue is the receiver's task queue. The Inbound Connector's Nexus endpoint targets it.
 	taskQueue = "kafka-receiver"
 )
 
@@ -36,8 +36,8 @@ const (
 //   - walk the batch and run an activity per message, in parallel or in order: each message
 //     retries on its own, but costs an Action.
 //
-// It doesn't loop. Each run handles one batch and returns. The loop is in the Reader, which
-// starts a new receive operation, and so a new ReceiveWorkflow, for every batch it reads. The
+// It doesn't loop. Each run handles one batch and returns. The loop is in the Inbound Connector,
+// which starts a new receive operation, and so a new ReceiveWorkflow, for every batch it reads. The
 // worker in main keeps running and takes each one from the task queue.
 func ReceiveWorkflow(ctx workflow.Context, input kafkaapi.ReceiveInput) (kafkaapi.ReceiveOutput, error) {
 	for _, rec := range input.Records {
@@ -77,8 +77,8 @@ func main() {
 	w.RegisterNexusService(svc)
 	w.RegisterWorkflow(ReceiveWorkflow)
 	log.Printf("Receiving on namespace %q, task queue %q", opts.Namespace, taskQueue)
-	// Run polls the task queue until interrupted: each batch the Reader delivers arrives as a
-	// receive operation, which starts a ReceiveWorkflow on this worker.
+	// Run polls the task queue until interrupted: each batch the Inbound Connector delivers arrives
+	// as a receive operation, which starts a ReceiveWorkflow on this worker.
 	if err := w.Run(worker.InterruptCh()); err != nil {
 		log.Fatalf("Worker stopped: %v", err)
 	}

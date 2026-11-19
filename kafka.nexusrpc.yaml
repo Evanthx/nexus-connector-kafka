@@ -5,7 +5,7 @@ services:
   KafkaService:
     fqn: KafkaService
     x-go-name: KafkaService
-    description: "Writes to one Kafka topic. Served by the Nexus Connector, which decides the topic."
+    description: "Writes to one Kafka topic. Served by the Outbound Connector, which decides the topic."
     operations:
       write:
         fqn: write
@@ -18,7 +18,7 @@ services:
   KafkaMessageReceiver:
     fqn: KafkaMessageReceiver
     x-go-name: KafkaMessageReceiver
-    description: "The service the Nexus Connector Reader delivers messages to. Implement it to receive the topic's messages."
+    description: "The service the Inbound Connector delivers messages to. Implement it to receive the topic's messages."
     operations:
       receive:
         fqn: receive
@@ -123,6 +123,6 @@ $defs:
 
   ReceiveOutput:
     type: object
-    description: "Empty: the Nexus Connector Reader does not wait for a result."
+    description: "Empty: the Inbound Connector does not wait for a result."
     properties: {}
     additionalProperties: false

@@ -1,20 +1,20 @@
 # Typed clients
 
-A workflow calls the Connector through Nexus by naming a service, an operation, and an input. You
-can build that input by hand as JSON, but a typed client is easier: your editor knows the fields,
-and a bad request fails in your code, with the field named, before it is sent.
+A workflow calls the Outbound Connector through Nexus by naming a service, an operation, and an
+input. You can build that input by hand as JSON, but a typed client is easier: your editor knows the
+fields, and a bad request fails in your code, with the field named, before it is sent.
 
 ## The contract
 
 The Kafka connector's operations are defined in one file,
 [`kafka.nexusrpc.yaml`](../kafka.nexusrpc.yaml), its *contract*. It names two services:
 
-- **`KafkaService`**, served by the Connector: `write`.
-- **`KafkaMessageReceiver`**, which the Reader calls: `receive`, one call per partition batch.
-  Implement this service to receive the topic's messages.
+- **`KafkaService`**, served by the Outbound Connector: `write`.
+- **`KafkaMessageReceiver`**, which the Inbound Connector calls: `receive`, one call per partition
+  batch. Implement this service to receive the topic's messages.
 
 The contract also defines every input and output type as JSON Schema. It is the source of truth for
-what a request may contain; the Connector rejects anything it doesn't allow.
+what a request may contain; the Outbound Connector rejects anything it doesn't allow.
 
 ## nexgen
 
@@ -25,7 +25,7 @@ it writes, for one language:
 - a service definition you pass to that language's Nexus client.
 
 It doesn't write the call itself; you still use your Temporal SDK's Nexus client, as in the
-[Connector usage examples](../AGENTS.md#run-the-connector).
+[Outbound Connector usage examples](../AGENTS.md#run-the-outbound-connector).
 
 ## Go
 
@@ -66,8 +66,8 @@ It generates all four into `.build/clients/<language>`, which is not committed.
 
 Any Nexus client can send the input as plain JSON. The fields are defined in
 [`kafka.nexusrpc.yaml`](../kafka.nexusrpc.yaml) and described in
-[AGENTS.md](../AGENTS.md#run-the-connector). A request that breaks the contract is rejected with
-a `BAD_REQUEST` handler error.
+[AGENTS.md](../AGENTS.md#run-the-outbound-connector). A request that breaks the contract is
+rejected with a `BAD_REQUEST` handler error.
 
 ## When the contract changes
 

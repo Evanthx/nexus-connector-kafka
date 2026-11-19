@@ -73,15 +73,15 @@ func (r *reader) run(ctx context.Context) error {
 			r.member.Release(batch)
 			continue
 		}
-		// Commit even if the Reader is stopping, so a clean stop doesn't deliver a finished batch
-		// again.
+		// Commit even if the Inbound Connector is stopping, so a clean stop doesn't deliver a
+		// finished batch again.
 		commitCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commitTimeout)
 		err = r.member.Commit(commitCtx, batch)
 		cancel()
 		if err != nil {
-			// Delivered but not committed. If this Reader keeps the partitions, its next commit
-			// covers these too. If they move to another Reader, or this one restarts, they are
-			// delivered again.
+			// Delivered but not committed. If this Inbound Connector keeps the partitions, its next
+			// commit covers these too. If they move to another Inbound Connector, or this one
+			// restarts, they are delivered again.
 			r.logger.Warn("Commit failed; these messages may be delivered again", "records", len(batch.Records), "error", err)
 		}
 		if len(batch.Records) > 0 {
@@ -114,8 +114,8 @@ func (r *reader) deliverBeforeRebalance(ctx context.Context, records []kafkaapi.
 
 // source is the source key for this batch's operation IDs (see sourceKey). It asks Kafka for the
 // topic's identity for every batch, retrying until it answers or ctx ends, so a topic deleted and
-// created again while the Reader runs gets new IDs: the new topic's offsets mean different
-// messages.
+// created again while the Inbound Connector runs gets new IDs: the new topic's offsets mean
+// different messages.
 func (r *reader) source(ctx context.Context) (string, error) {
 	for attempt := 1; ; attempt++ {
 		id, err := r.identify(ctx)

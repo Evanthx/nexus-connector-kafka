@@ -24,19 +24,18 @@ following the principle of least privilege.
 ## What is the Kafka Connector?
 
 **Durable Kafka integration for Temporal workflows.** The Kafka connector bridges a Kafka topic and
-Temporal. It ships as two programs, the Nexus Connector and the Nexus Connector Reader, called the
-Connector and the Reader from here on. They share their Kafka code and can run side by side on the
-same topic.
+Temporal. It ships as two programs, the Inbound Connector and the Outbound Connector. They share
+their Kafka code and can run side by side on the same topic.
 
-- **The Connector** (`connector/`) serves the topic as `KafkaService`, with a `write` operation.
-  Each write runs as a standalone activity.
-- **The Reader** (`reader/`) joins a consumer group and starts one standalone Nexus operation per
-  partition batch, delivering every message to a service you implement
+- **The Outbound Connector** (`outbound/`) serves the topic as `KafkaService`, with a `write`
+  operation. Each write runs as a standalone activity.
+- **The Inbound Connector** (`inbound/`) joins a consumer group and starts one standalone Nexus
+  operation per partition batch, delivering every message to a service you implement
   (`KafkaMessageReceiver.receive`). It scales across partitions, costs nothing while the topic is
   idle, and doesn't wait for results.
 
 ```
- Reader                                      namespace: kafka-test
+ Inbound Connector                           namespace: kafka-test
 ┌──────────────────────────────┐  Nexus     ┌─────────────────────────────────┐
 │ consumer group member        │──────────▶ │ KafkaMessageReceiver.receive    │
 │  one operation per batch     │  endpoint  │  (your service; one call per    │
@@ -45,32 +44,33 @@ same topic.
 
  namespace: kafka-test                       namespace: connectors
 ┌──────────────────────────────┐  Nexus     ┌─────────────────────────────────┐
-│ your workflow                │──────────▶ │ Connector: KafkaService         │
-│  write(messages)             │  endpoint  │  write → standalone activity    │
-│                              │ ◀───────── │                                 │
+│ your workflow                │──────────▶ │ Outbound Connector:             │
+│  write(messages)             │  endpoint  │  KafkaService.write →           │
+│                              │ ◀───────── │  standalone activity            │
 └──────────────────────────────┘            └─────────────────────────────────┘
 ```
 
-Use the **Reader** to move every message from Kafka into Temporal as it arrives; it is the only
-way to consume a topic. Use the **Connector** to write to Kafka.
+Use the **Inbound Connector** to move every message from Kafka into Temporal as it arrives; it is
+the only way to consume a topic. Use the **Outbound Connector** to write to Kafka.
 
 ## The problem it solves
 
 Every team that connects Kafka to Temporal tends to build the same things:
 
 - **A polling and delivery loop.** Kafka splits a topic's partitions across a consumer group's
-  members. The Reader handles assignment, rebalancing, commits, and at-least-once delivery into
-  Temporal, so each message reaches a Nexus operation without you writing any of that.
+  members. The Inbound Connector handles assignment, rebalancing, commits, and at-least-once
+  delivery into Temporal, so each message reaches a Nexus operation without you writing any of
+  that.
 - **At-least-once delivery guarantees.** A batch is committed only after Temporal accepts its
-  operations. If the Reader restarts before committing, a redelivered batch reuses its operation
-  ID, so a batch that already completed isn't started again. With batches of more than one
-  message, a message can still be delivered twice; `KAFKA_BATCH_SIZE=1` rules that out.
+  operations. If the Inbound Connector restarts before committing, a redelivered batch reuses its
+  operation ID, so a batch that already completed isn't started again. With batches of more than
+  one message, a message can still be delivered twice; `KAFKA_BATCH_SIZE=1` rules that out.
 - **Dead-letter handling.** Messages too large to deliver go to a dead-letter topic instead of
   stalling the stream indefinitely.
-- **Identifying retried writes.** The Connector adds a `dedupe-id` header to each written
+- **Identifying retried writes.** The Outbound Connector adds a `dedupe-id` header to each written
   message, the same on every retry, so consumers can drop a message a retried write sent twice.
-- **Keeping credentials in one place.** The Connector holds the SASL credentials. Callers reach
-  the topic through a Nexus endpoint without needing Kafka access themselves.
+- **Keeping credentials in one place.** The Outbound Connector holds the SASL credentials. Callers
+  reach the topic through a Nexus endpoint without needing Kafka access themselves.
 
 ## When to use it
 
@@ -79,8 +79,8 @@ Use it when:
 - Workflows need to receive every message from a Kafka topic without writing a polling loop.
 - Workflows write to Kafka and want retries, retry-safe `dedupe-id` headers, and credential isolation handled for
   them.
-- Multiple namespaces or languages write to the same topic through one Connector that holds the
-  SASL credentials.
+- Multiple namespaces or languages write to the same topic through one Outbound Connector that
+  holds the SASL credentials.
 - You want to control who can write by granting access to a Nexus endpoint rather than
   distributing credentials.
 
@@ -89,50 +89,50 @@ It is not a fit when:
 - Your Kafka cluster uses TLS or a SASL mechanism other than SCRAM-SHA-256 (not currently
   supported; set `KAFKA_USERNAME` and `KAFKA_PASSWORD` for SCRAM-SHA-256, or leave both unset for
   no authentication).
-- You need exactly-once delivery; the Reader delivers at least once.
-- You need to serve more than one topic from one process; run a separate Connector or Reader per
-  topic.
+- You need exactly-once delivery; the Inbound Connector delivers at least once.
+- You need to serve more than one topic from one process; run a separate Outbound Connector or
+  Inbound Connector per topic.
 
 ## FAQ
 
 **Why do I need this? I can write an Activity that reads from or writes to Kafka myself.**
 You can, and for a single write that is often enough. To consume a topic, you also need to manage
 consumer group membership and offsets, commit them correctly, and restart cleanly after a failure.
-The Reader does all of that. Running the Connector behind a Nexus endpoint adds what an activity in
-your own worker can't: other teams, namespaces, and languages call the same
-Connector, the SASL credentials live only on the Connector, and access is granted per endpoint.
+The Inbound Connector does all of that. Running the Outbound Connector behind a Nexus endpoint adds
+what an activity in your own worker can't: other teams, namespaces, and languages call the same
+Outbound Connector, the SASL credentials live only on it, and access is granted per endpoint.
 The trade-off is a Nexus call in front of each operation.
 
-**Can I generate strongly typed clients for this Connector?**
-Yes. The Connector's operations are defined in `kafka.nexusrpc.yaml`, and a tool called nexgen
-generates typed input and output classes in Go, Python, TypeScript, and Java. See
+**Can I generate strongly typed clients for this Outbound Connector?**
+Yes. The Outbound Connector's operations are defined in `kafka.nexusrpc.yaml`, and a tool called
+nexgen generates typed input and output classes in Go, Python, TypeScript, and Java. See
 [Typed clients](docs/clients.md).
 
 **How do I configure SASL credentials?**
-Set `KAFKA_USERNAME` and `KAFKA_PASSWORD` on the Connector or Reader process. Only
-SASL/SCRAM-SHA-256 is supported; TLS and other SASL mechanisms are not currently supported. Leave
+Set `KAFKA_USERNAME` and `KAFKA_PASSWORD` on the Outbound Connector or Inbound Connector process.
+Only SASL/SCRAM-SHA-256 is supported; TLS and other SASL mechanisms are not currently supported. Leave
 both unset for no authentication. See [Environment variables](docs/setup.md#environment-variables)
 for every variable, and [the setup page](docs/setup.md#work-out-your-settings-in-a-browser) to try
 your settings before running either program.
 
 **Is delivery at-least-once or exactly-once?**
-At-least-once. The Reader commits a batch only after Temporal accepts its operations. If it
-restarts before committing, the batch is delivered again. Set `KAFKA_BATCH_SIZE=1` to ensure each
+At-least-once. The Inbound Connector commits a batch only after Temporal accepts its operations. If
+it restarts before committing, the batch is delivered again. Set `KAFKA_BATCH_SIZE=1` to ensure each
 message always has the same operation ID and can't be delivered twice with different offsets. The
-Connector's `write` adds a `dedupe-id` header that is stable across retries; use it to
+Outbound Connector's `write` adds a `dedupe-id` header that is stable across retries; use it to
 deduplicate on the consumer side.
 
 **Where does reading start — from the beginning of the topic or from now?**
 From `KAFKA_START_FROM`: `oldest` (the default) starts at the oldest message still in the topic;
-`newest` reads only messages written after the Reader starts. This applies only when the Reader's
-consumer group has no committed offsets yet. See
+`newest` reads only messages written after the Inbound Connector starts. This applies only when the
+Inbound Connector's consumer group has no committed offsets yet. See
 [How it works: where reading starts](docs/how-it-works.md#where-reading-starts).
 
-**What is the difference between the Reader and the Connector?**
-The Reader pushes every message into Temporal as it arrives: it is a live member of a consumer
-group, delivers continuously, scales across partitions, and costs nothing while the topic is idle.
-The Connector lets workflows write messages through `write`. Both can run on the same topic at the
-same time.
+**What is the difference between the Inbound Connector and the Outbound Connector?**
+The Inbound Connector pushes every message into Temporal as it arrives: it is a live member of a
+consumer group, delivers continuously, scales across partitions, and costs nothing while the topic is idle.
+The Outbound Connector lets workflows write messages through `write`. Both can run on the same
+topic at the same time.
 See [How it works](docs/how-it-works.md) for more detail.
 
 ## Documentation
@@ -147,8 +147,8 @@ See [How it works](docs/how-it-works.md) for more detail.
   and end-to-end tests.
 - [Typed clients](docs/clients.md): the contract, and generating clients for Go, Python,
   TypeScript, and Java.
-- [How it works](docs/how-it-works.md): folders, the contract, reading in batches, the Reader
-  and the Connector in depth, cost, and possible future changes.
+- [How it works](docs/how-it-works.md): folders, the contract, reading in batches, the Inbound
+  Connector and the Outbound Connector in depth, cost, and possible future changes.
 - [Troubleshooting](docs/troubleshooting.md): startup diagnostics, error types, consumer group
   rules, and known limitations.
 

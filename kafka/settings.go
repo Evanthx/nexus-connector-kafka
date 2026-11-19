@@ -7,8 +7,8 @@ import (
 	"github.com/temporalio/nexus-connector-kafka/settings"
 )
 
-// This file lists the Kafka variables both programs read, as one section that setup.Reader and
-// setup.Connector share. The programs load them with their Program and read them with ConfigFrom;
+// This file lists the Kafka variables both programs read, as one section that setup.Inbound and
+// setup.Outbound share. The programs load them with their Program and read them with ConfigFrom;
 // the setup page shows them and `make docs` generates docs/setup.md's tables from them. Add a new
 // Kafka variable here only, with its help text and check, then run `make docs`.
 
@@ -54,8 +54,9 @@ var passwordSetting = settings.Define(settings.Variable{
 	Help:    "The password for `KAFKA_USERNAME`. The startup report shows only whether it is set.",
 }, text)
 
-// StartFromSetting is KAFKA_START_FROM. Only the Reader reads it, since only the Reader consumes
-// with a consumer group, so it is in the Reader's section rather than SettingsSection.
+// StartFromSetting is KAFKA_START_FROM. Only the Inbound Connector reads it, since only the Inbound
+// Connector consumes with a consumer group, so it is in the Inbound Connector's section rather than
+// SettingsSection.
 var StartFromSetting = settings.Define(settings.Variable{
 	Name:    "KAFKA_START_FROM",
 	Default: string(StartFromOldest),

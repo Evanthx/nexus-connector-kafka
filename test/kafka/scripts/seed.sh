@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Creates the topic (3 partitions), its dead-letter topic, and a second topic, orders, for the
-# second Connector in the docs/testing.md walkthrough. Writes count messages to the topic and 3 to orders.
+# second Outbound Connector in the docs/testing.md walkthrough. Writes count messages to the topic
+# and 3 to orders.
 #
 # Usage: test/kafka/scripts/seed.sh [count]    (default 10)
 set -euo pipefail

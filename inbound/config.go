@@ -9,45 +9,45 @@ import (
 	"github.com/temporalio/nexus-connector-kafka/setup"
 )
 
-// config is the Reader's settings, read from the environment by configFrom.
+// config is the Inbound Connector's settings, read from the environment by configFrom.
 type config struct {
 	kafka             kafka.Config
-	group             string        // KAFKA_GROUP: the consumer group the Reader joins
+	group             string        // KAFKA_GROUP: the consumer group the Inbound Connector joins
 	deadLetterTopic   string        // KAFKA_DEAD_LETTER_TOPIC: where undeliverable messages go
 	deleteDeadLetters bool          // DELETE_DEAD_LETTERS: log and skip undeliverable messages instead
 	batchSize         int           // KAFKA_BATCH_SIZE: most messages per batch; 1 for exactly one operation per message
 	timeLimit         time.Duration // KAFKA_BATCH_TIME_LIMIT: how long a batch waits to fill
-	endpoint          string        // READER_ENDPOINT: the Nexus endpoint messages are sent to
-	service           string        // READER_SERVICE: the Nexus service
-	operation         string        // READER_OPERATION: the operation started for each batch
-	operationTimeout  time.Duration // READER_OPERATION_TIMEOUT: how long each operation may take
-	maxInputBytes     int           // READER_MAX_INPUT_BYTES: the largest encoded input sent to an operation
+	endpoint          string        // INBOUND_ENDPOINT: the Nexus endpoint messages are sent to
+	service           string        // INBOUND_SERVICE: the Nexus service
+	operation         string        // INBOUND_OPERATION: the operation started for each batch
+	operationTimeout  time.Duration // INBOUND_OPERATION_TIMEOUT: how long each operation may take
+	maxInputBytes     int           // INBOUND_MAX_INPUT_BYTES: the largest encoded input sent to an operation
 }
 
-// configFrom checks every variable the Reader reads (setup.Reader) in env, reporting every problem
-// at once, and returns them.
+// configFrom checks every variable the Inbound Connector reads (setup.Inbound) in env, reporting
+// every problem at once, and returns them.
 func configFrom(env settings.Env) (config, error) {
-	vals, err := setup.Reader.Load(env)
+	vals, err := setup.Inbound.Load(env)
 	if err != nil {
 		return config{}, err
 	}
 	return config{
 		kafka:             kafka.ConfigFrom(vals),
-		group:             setup.ReaderGroup.From(vals),
+		group:             setup.InboundGroup.From(vals),
 		deadLetterTopic:   setup.DeadLetterTopic.From(vals),
 		deleteDeadLetters: setup.DeleteDeadLetters.From(vals),
 		batchSize:         setup.BatchSize.From(vals),
 		timeLimit:         setup.BatchTimeLimit.From(vals),
-		endpoint:          setup.ReaderEndpoint.From(vals),
-		service:           setup.ReaderService.From(vals),
-		operation:         setup.ReaderOperation.From(vals),
-		operationTimeout:  setup.ReaderOperationTimeout.From(vals),
-		maxInputBytes:     setup.ReaderMaxInputBytes.From(vals),
+		endpoint:          setup.InboundEndpoint.From(vals),
+		service:           setup.InboundService.From(vals),
+		operation:         setup.InboundOperation.From(vals),
+		operationTimeout:  setup.InboundOperationTimeout.From(vals),
+		maxInputBytes:     setup.InboundMaxInputBytes.From(vals),
 	}, nil
 }
 
-// report is the configuration and what the Reader will do with it, for the log when it starts. env
-// is what c was read from; namespace and address are where it connects to Temporal.
+// report is the configuration and what the Inbound Connector will do with it, for the log when it
+// starts. env is what c was read from; namespace and address are where it connects to Temporal.
 func (c config) report(env settings.Env, namespace, address string) string {
 	deadLetters := kafka.Setting{Name: "KAFKA_DEAD_LETTER_TOPIC", Value: c.deadLetterTopic}
 	if c.deadLetterTopic == "" {
@@ -55,18 +55,18 @@ func (c config) report(env settings.Env, namespace, address string) string {
 	}
 	sections := []kafka.Section{
 		c.kafka.Settings(env),
-		{Title: "Reader", Settings: []kafka.Setting{
+		{Title: "Inbound Connector", Settings: []kafka.Setting{
 			{Name: "KAFKA_GROUP", Value: c.group},
 			kafka.EnvSetting(env, "KAFKA_START_FROM", c.kafka.StartFrom),
 			deadLetters,
 			kafka.EnvSetting(env, "DELETE_DEAD_LETTERS", c.deleteDeadLetters),
 			kafka.EnvSetting(env, "KAFKA_BATCH_SIZE", c.batchSize),
 			kafka.EnvSetting(env, "KAFKA_BATCH_TIME_LIMIT", c.timeLimit),
-			{Name: "READER_ENDPOINT", Value: c.endpoint},
-			kafka.EnvSetting(env, "READER_SERVICE", c.service),
-			kafka.EnvSetting(env, "READER_OPERATION", c.operation),
-			kafka.EnvSetting(env, "READER_OPERATION_TIMEOUT", c.operationTimeout),
-			kafka.EnvSetting(env, "READER_MAX_INPUT_BYTES", c.maxInputBytes),
+			{Name: "INBOUND_ENDPOINT", Value: c.endpoint},
+			kafka.EnvSetting(env, "INBOUND_SERVICE", c.service),
+			kafka.EnvSetting(env, "INBOUND_OPERATION", c.operation),
+			kafka.EnvSetting(env, "INBOUND_OPERATION_TIMEOUT", c.operationTimeout),
+			kafka.EnvSetting(env, "INBOUND_MAX_INPUT_BYTES", c.maxInputBytes),
 		}},
 		{Title: "Temporal", Settings: []kafka.Setting{
 			{Name: "namespace", Value: namespace},
@@ -96,5 +96,5 @@ func (c config) report(env settings.Env, namespace, address string) string {
 		duplicates,
 		undeliverable,
 	}
-	return kafka.Report("Reader", sections, behavior)
+	return kafka.Report("Inbound Connector", sections, behavior)
 }

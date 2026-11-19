@@ -9,7 +9,7 @@ import (
 	"github.com/nexus-rpc/sdk-go/nexus"
 )
 
-// Writes to one Kafka topic. Served by the Nexus Connector, which decides the topic.
+// Writes to one Kafka topic. Served by the Outbound Connector, which decides the topic.
 var KafkaService = struct {
 	ServiceName string
 	// Write messages to the topic.
@@ -19,8 +19,8 @@ var KafkaService = struct {
 	Write:       nexus.NewOperationReference[WriteInput, WriteOutput]("write"),
 }
 
-// The service the Nexus Connector Reader delivers messages to. Implement it to receive
-// the topic's messages.
+// The service the Inbound Connector delivers messages to. Implement it to receive the
+// topic's messages.
 var KafkaMessageReceiver = struct {
 	ServiceName string
 	// Receive a batch of messages from one partition of the topic.
@@ -299,7 +299,7 @@ func (m ReceiveInput) MarshalJSON() ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// ReceiveOutput Empty: the Nexus Connector Reader does not wait for a result.
+// ReceiveOutput Empty: the Inbound Connector does not wait for a result.
 type ReceiveOutput struct {
 }
 

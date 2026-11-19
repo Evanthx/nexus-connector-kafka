@@ -1,8 +1,8 @@
-// Command connector is the Nexus Connector. It serves the topic named by KAFKA_TOPIC as the
+// Command outbound is the Outbound Connector. It serves the topic named by KAFKA_TOPIC as the
 // KafkaService Nexus service, whose one operation, write, writes messages to it. Each call runs as
-// a standalone activity. To consume the topic, use the Reader.
+// a standalone activity. To consume the topic, use the Inbound Connector.
 //
-// Every environment variable it reads is listed in setup.Connector: the topic's KAFKA_* settings
+// Every environment variable it reads is listed in setup.Outbound: the topic's KAFKA_* settings
 // and its own. It connects to Temporal with the standard TEMPORAL_* variables and the temporal
 // CLI's profile file; the namespace defaults to connectors.
 //
@@ -28,13 +28,13 @@ import (
 )
 
 func main() {
-	// Check the Connector's configuration and the connection to Temporal before stopping on
-	// either, so one run reports every problem rather than only the first.
+	// Check the Outbound Connector's configuration and the connection to Temporal before stopping
+	// on either, so one run reports every problem rather than only the first.
 	var problems []string
 	env := settings.OS()
 	cfg, s, err := configFrom(env)
 	if err != nil {
-		problems = append(problems, "Invalid Connector configuration:\n"+indent(err.Error()))
+		problems = append(problems, "Invalid Outbound Connector configuration:\n"+indent(err.Error()))
 	}
 	opts, err := setup.ClientOptions(env)
 	if err != nil {
@@ -51,7 +51,7 @@ func main() {
 		if c != nil {
 			c.Close()
 		}
-		log.Fatalf("The Connector can't start:\n%s", strings.Join(problems, "\n"))
+		log.Fatalf("The Outbound Connector can't start:\n%s", strings.Join(problems, "\n"))
 	}
 	defer c.Close()
 
@@ -90,16 +90,16 @@ func indent(s string) string {
 	return "  - " + strings.ReplaceAll(s, "\n", "\n  - ")
 }
 
-// config is the Connector's settings besides the topic's.
+// config is the Outbound Connector's settings besides the topic's.
 type config struct {
 	taskQueue   string        // NEXUS_TASK_QUEUE: the task queue the Nexus endpoint targets
 	maxDuration time.Duration // KAFKA_MAX_DURATION_MINUTES: the longest a write may take; 0 for the default
 }
 
-// configFrom checks every variable the Connector reads (setup.Connector) in env, reporting every
-// problem at once, and returns the topic's settings and the Connector's own.
+// configFrom checks every variable the Outbound Connector reads (setup.Outbound) in env, reporting
+// every problem at once, and returns the topic's settings and the Outbound Connector's own.
 func configFrom(env settings.Env) (kafka.Config, config, error) {
-	vals, err := setup.Connector.Load(env)
+	vals, err := setup.Outbound.Load(env)
 	if err != nil {
 		return kafka.Config{}, config{}, err
 	}
@@ -109,7 +109,7 @@ func configFrom(env settings.Env) (kafka.Config, config, error) {
 	}, nil
 }
 
-// report is the configuration and what the Connector will do with it, for the log when it
+// report is the configuration and what the Outbound Connector will do with it, for the log when it
 // starts. env is what s and cfg, the topic's settings, were read from; namespace and address are
 // where it connects to Temporal.
 func (s config) report(env settings.Env, cfg kafka.Config, namespace, address string) string {
@@ -119,7 +119,7 @@ func (s config) report(env settings.Env, cfg kafka.Config, namespace, address st
 	}
 	sections := []kafka.Section{
 		cfg.Settings(env),
-		{Title: "Connector", Settings: []kafka.Setting{
+		{Title: "Outbound Connector", Settings: []kafka.Setting{
 			kafka.EnvSetting(env, "NEXUS_TASK_QUEUE", s.taskQueue),
 			maxDuration,
 		}},
@@ -130,8 +130,8 @@ func (s config) report(env settings.Env, cfg kafka.Config, namespace, address st
 	}
 	behavior := []string{
 		fmt.Sprintf("Serve the topic %q as the KafkaService Nexus service, with the operation write.", cfg.Topic),
-		fmt.Sprintf("Take Nexus requests and run writes on the task queue %q: point this Connector's Nexus endpoint at it.", s.taskQueue),
+		fmt.Sprintf("Take Nexus requests and run writes on the task queue %q: point this Outbound Connector's Nexus endpoint at it.", s.taskQueue),
 		fmt.Sprintf("Write messages to the topic %q, each with a dedupe-id header.", cfg.Topic),
 	}
-	return kafka.Report("Connector", sections, behavior)
+	return kafka.Report("Outbound Connector", sections, behavior)
 }
