@@ -24,15 +24,13 @@ following the principle of least privilege.
 ## What is the Kafka Connector?
 
 **Durable Kafka integration for Temporal workflows.** The Kafka connector bridges a Kafka topic and
-Temporal. It ships as two programs, the Inbound Connector and the Outbound Connector. They share
-their Kafka code and can run side by side on the same topic.
+Temporal. It ships as two programs, which share their Kafka code and can run side by side on the
+same topic:
 
-- **The Outbound Connector** (`outbound/`) serves the topic as `KafkaService`, with a `write`
-  operation. Each write runs as a standalone activity.
-- **The Inbound Connector** (`inbound/`) joins a consumer group and starts one standalone Nexus
-  operation per partition batch, delivering every message to a service you implement
-  (`KafkaMessageReceiver.receive`). It scales across partitions, costs nothing while the topic is
-  idle, and doesn't wait for results.
+- **The Inbound Connector** reads messages from a Kafka topic and sends them to a Nexus endpoint
+  you implement: it brings messages **in** to Temporal from Kafka.
+- **The Outbound Connector** runs as a Nexus operation that writes messages to a Kafka topic: it
+  sends messages **out** of Temporal to Kafka.
 
 ```
  Inbound Connector                           namespace: kafka-test
@@ -49,9 +47,6 @@ their Kafka code and can run side by side on the same topic.
 │                              │ ◀───────── │  standalone activity            │
 └──────────────────────────────┘            └─────────────────────────────────┘
 ```
-
-Use the **Inbound Connector** to move every message from Kafka into Temporal as it arrives; it is
-the only way to consume a topic. Use the **Outbound Connector** to write to Kafka.
 
 ## The problem it solves
 
