@@ -15,11 +15,11 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/temporalio/nexus-connector-kafka/generated/kafkaapi"
 	"github.com/temporalio/nexus-connector-kafka/kafka"
+	"github.com/temporalio/nexus-connector-kafka/nexussend"
 	"github.com/temporalio/nexus-connector-kafka/settings"
 	"github.com/temporalio/nexus-connector-kafka/setup"
 	"github.com/temporalio/nexus-connector-kafka/test/testenv"
 	"github.com/twmb/franz-go/pkg/kgo"
-	"go.temporal.io/api/serviceerror"
 )
 
 // fakeStarter records each start. fail, if set, decides an attempt's error.
@@ -37,7 +37,8 @@ func newFakeStarter() *fakeStarter {
 	return &fakeStarter{attempts: map[string]int{}, notify: make(chan struct{}, 1000)}
 }
 
-func (f *fakeStarter) start(_ context.Context, id string, input kafkaapi.ReceiveInput) error {
+func (f *fakeStarter) Send(_ context.Context, op nexussend.Operation) error {
+	id, input := op.ID, op.Input.(kafkaapi.ReceiveInput)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.attempts[id]++
@@ -116,9 +117,9 @@ type running struct {
 	done chan error
 }
 
-// startInbound starts an Inbound Connector for group with starter, and stops it when the test ends.
-// options, if any, change the Inbound Connector before it starts.
-func startInbound(t *testing.T, cfg kafka.Config, group string, starter operationStarter, maxInputBytes int, options ...func(*reader)) running {
+// startInbound starts an Inbound Connector for group with starter, retrying as the real one does,
+// and stops it when the test ends. options, if any, change the Inbound Connector before it starts.
+func startInbound(t *testing.T, cfg kafka.Config, group string, starter nexussend.Sender, maxInputBytes int, options ...func(*reader)) running {
 	t.Helper()
 	member, err := kafka.NewGroupMember(cfg, group)
 	require.NoError(t, err)
@@ -126,7 +127,7 @@ func startInbound(t *testing.T, cfg kafka.Config, group string, starter operatio
 	require.NoError(t, err)
 	rd := &reader{
 		member:          member,
-		starter:         starter,
+		sender:          nexussend.NewRetrying(starter, func(int) time.Duration { return 10 * time.Millisecond }, slog.Default()),
 		deadLetters:     writer,
 		identify:        member.Identity,
 		topic:           cfg.Topic,
@@ -364,7 +365,7 @@ func TestInbound_UndeliverableGoesToTheDeadLetterTopic(t *testing.T) {
 	starter := newFakeStarter()
 	starter.fail = func(input kafkaapi.ReceiveInput, _ int) error {
 		if input.Records[0].Partition == 0 {
-			return fmt.Errorf("%w: input exceeds size limit", errUndeliverable)
+			return fmt.Errorf("%w: input exceeds size limit", nexussend.ErrTooLarge)
 		}
 		return nil
 	}
@@ -404,7 +405,7 @@ func TestInbound_RefusedPartIsSplit(t *testing.T) {
 	starter := newFakeStarter()
 	starter.fail = func(input kafkaapi.ReceiveInput, _ int) error {
 		if len(input.Records) > 1 {
-			return fmt.Errorf("%w: input exceeds size limit", errUndeliverable)
+			return fmt.Errorf("%w: input exceeds size limit", nexussend.ErrTooLarge)
 		}
 		return nil
 	}
@@ -445,7 +446,7 @@ func TestInbound_DeleteDeadLetters(t *testing.T) {
 	starter := newFakeStarter()
 	starter.fail = func(input kafkaapi.ReceiveInput, _ int) error {
 		if string(input.Records[0].Value) == "bad" {
-			return fmt.Errorf("%w: input exceeds size limit", errUndeliverable)
+			return fmt.Errorf("%w: input exceeds size limit", nexussend.ErrTooLarge)
 		}
 		return nil
 	}
@@ -517,22 +518,6 @@ func TestIdentify(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, id.Cluster)
 	require.NotEmpty(t, id.TopicID)
-}
-
-// Only a refusal for size counts as undeliverable; other refusals concern the setup, so they are
-// retried rather than sending every batch to the dead-letter topic.
-func TestRefusedAsTooLarge(t *testing.T) {
-	require.True(t, refusedAsTooLarge(serviceerror.NewInvalidArgument("input exceeds size limit")))
-	require.False(t, refusedAsTooLarge(serviceerror.NewInvalidArgument("schedule-to-close timeout exceeds the namespace maximum")))
-	require.False(t, refusedAsTooLarge(serviceerror.NewNotFound("endpoint not found")))
-}
-
-func TestBackoff(t *testing.T) {
-	require.Equal(t, time.Second, backoff(1))
-	require.Equal(t, 2*time.Second, backoff(2))
-	require.Equal(t, 16*time.Second, backoff(5))
-	require.Equal(t, 30*time.Second, backoff(6))
-	require.Equal(t, 30*time.Second, backoff(100))
 }
 
 // inboundEnv is a valid Inbound Connector environment with vars added; an empty value unsets a

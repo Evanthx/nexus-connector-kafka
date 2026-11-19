@@ -211,6 +211,7 @@ variable there, not here.
 | `INBOUND_OPERATION` |  | receive | The operation started for each batch. |
 | `INBOUND_OPERATION_TIMEOUT` |  | 24h | How long each operation may take, such as `30m` or `24h`. More than 0. |
 | `INBOUND_MAX_INPUT_BYTES` |  | 2031616 (2 MiB less 64 KiB) | The largest encoded batch sent to one operation. Larger batches are split; a single larger message goes to the dead-letter topic. |
+| `INBOUND_MAX_MESSAGES_PER_MINUTE` |  | no limit | The most messages this Inbound Connector sends to Temporal a minute, such as `600`, spread evenly: it waits before each operation until the batch fits, and the waiting messages stay in Kafka. A whole number, at least `KAFKA_BATCH_SIZE`; a full batch can go at once, so one minute can see up to this plus one batch. The limit is per process: three Inbound Connectors with `600` send up to 1,800 a minute between them. Messages sent to the dead-letter topic don't count. |
 
 ### Temporal
 

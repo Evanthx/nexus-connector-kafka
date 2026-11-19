@@ -87,7 +87,9 @@ selected Temporal profile file sets beside each `TEMPORAL_*` field.
    Optional: `KAFKA_START_FROM` (`oldest`, the default, or `newest`; where a new consumer group
    starts), `KAFKA_BATCH_SIZE` (100),
    `KAFKA_BATCH_TIME_LIMIT` (0; `1s` lets batches fill on a quiet topic, which costs fewer
-   operations), `INBOUND_OPERATION_TIMEOUT` (`24h`). `docs/setup.md` lists every variable.
+   operations), `INBOUND_OPERATION_TIMEOUT` (`24h`), `INBOUND_MAX_MESSAGES_PER_MINUTE` (no
+   limit; per process, spread evenly, at least `KAFKA_BATCH_SIZE`). `docs/setup.md` lists every
+   variable.
 6. **Scale out** by running more Inbound Connectors with the same `KAFKA_GROUP`, up to one per
    partition.
 
@@ -275,8 +277,9 @@ Needs Go SDK v1.50 or later (`temporalnexus.StartActivity`, the standalone Nexus
   - `deliver` handles partitions in parallel. Each partition's records are split into as few
     `ReceiveInput`s as fit `INBOUND_MAX_INPUT_BYTES`, started in order.
   - `Commit` uses a context that survives shutdown.
-- `nexusStarter` starts operations with `USE_EXISTING` and `ALLOW_DUPLICATE_FAILED_ONLY`;
-  `NexusOperationExecutionAlreadyStarted` counts as delivered.
+- `reader` sends each operation through a `nexussend.Sender` built by `layers` in `main.go`:
+  `RateLimited` (only with `INBOUND_MAX_MESSAGES_PER_MINUTE`) around `Retrying` around `Nexus`. The
+  rate limit is outside the retries so a batch counts once.
 - Only two things go to the dead-letter topic: an `InvalidArgument` saying the input exceeds the
   size limit (`refusedAsTooLarge`; a part of several records is first split in half and retried),
   and single messages over `INBOUND_MAX_INPUT_BYTES`. The size check is local because gRPC's own
@@ -287,6 +290,16 @@ Needs Go SDK v1.50 or later (`temporalnexus.StartActivity`, the standalone Nexus
   topic ID, topic, and group as a JSON array, which can't be ambiguous, and the identity is
   fetched for every batch. A redelivered batch can end at another offset and get a new ID, so
   batches can duplicate messages; `KAFKA_BATCH_SIZE=1` rules that out.
+
+**`nexussend/`** (no Kafka code; meant to move to a shared module once a second Inbound Connector
+exists)
+- `Nexus` starts operations with `USE_EXISTING` and `ALLOW_DUPLICATE_FAILED_ONLY`;
+  `NexusOperationExecutionAlreadyStarted` counts as sent; `refusedAsTooLarge` maps the server's size
+  refusal to `ErrTooLarge`.
+- `Retrying` retries every other error forever, with `Backoff`, until ctx ends.
+- `RateLimited` is a token bucket (`golang.org/x/time/rate`): `perMinute`, burst = the batch size.
+  It reserves and waits itself, so a wait ends only when ctx does, and cancels the reservation if
+  it does, so unsent messages aren't counted.
 
 **`outbound/`**
 - One process serves one topic (`KAFKA_TOPIC`) behind one endpoint.

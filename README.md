@@ -62,6 +62,8 @@ Every team that connects Kafka to Temporal tends to build the same things:
   one message, a message can still be delivered twice; `KAFKA_BATCH_SIZE=1` rules that out.
 - **Dead-letter handling.** Messages too large to deliver go to a dead-letter topic instead of
   stalling the stream indefinitely.
+- **Rate limiting.** `INBOUND_MAX_MESSAGES_PER_MINUTE` caps how many messages a minute go into
+  Temporal, so a burst on the topic can't overwhelm your service; the rest wait in Kafka.
 - **Identifying retried writes.** The Outbound Connector adds a `dedupe-id` header to each written
   message, the same on every retry, so consumers can drop a message a retried write sent twice.
 - **Keeping credentials in one place.** The Outbound Connector holds the SASL credentials. Callers

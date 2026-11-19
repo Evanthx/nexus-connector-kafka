@@ -93,6 +93,14 @@ Only messages too large for an operation's input go to the dead-letter topic. Ev
 forever. The stream waits rather than drain working messages into dead letters. Read the
 Inbound Connector's log to diagnose a stalled stream.
 
+## The Inbound Connector falls behind the topic
+
+If `INBOUND_MAX_MESSAGES_PER_MINUTE` is set and messages arrive faster than that, the Inbound
+Connector sends at the limit and the rest wait in Kafka: the consumer group's lag grows, and the
+log shows batches delivered steadily with no errors. That is the limit working. Raise it, or run
+more Inbound Connectors in the same group (up to one per partition; the limit is per process). The
+startup report's `INBOUND_MAX_MESSAGES_PER_MINUTE` line shows the limit in use.
+
 ## Known limitations
 
 - **One topic** per Outbound Connector or Inbound Connector process, set by `KAFKA_TOPIC`.

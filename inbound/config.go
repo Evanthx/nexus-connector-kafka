@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/temporalio/nexus-connector-kafka/kafka"
@@ -22,6 +23,7 @@ type config struct {
 	operation         string        // INBOUND_OPERATION: the operation started for each batch
 	operationTimeout  time.Duration // INBOUND_OPERATION_TIMEOUT: how long each operation may take
 	maxInputBytes     int           // INBOUND_MAX_INPUT_BYTES: the largest encoded input sent to an operation
+	maxPerMinute      int           // INBOUND_MAX_MESSAGES_PER_MINUTE: the most messages sent a minute; 0 for no limit
 }
 
 // configFrom checks every variable the Inbound Connector reads (setup.Inbound) in env, reporting
@@ -43,6 +45,7 @@ func configFrom(env settings.Env) (config, error) {
 		operation:         setup.InboundOperation.From(vals),
 		operationTimeout:  setup.InboundOperationTimeout.From(vals),
 		maxInputBytes:     setup.InboundMaxInputBytes.From(vals),
+		maxPerMinute:      setup.InboundMaxMessagesPerMinute.From(vals),
 	}, nil
 }
 
@@ -67,6 +70,7 @@ func (c config) report(env settings.Env, namespace, address string) string {
 			kafka.EnvSetting(env, "INBOUND_OPERATION", c.operation),
 			kafka.EnvSetting(env, "INBOUND_OPERATION_TIMEOUT", c.operationTimeout),
 			kafka.EnvSetting(env, "INBOUND_MAX_INPUT_BYTES", c.maxInputBytes),
+			kafka.EnvSetting(env, "INBOUND_MAX_MESSAGES_PER_MINUTE", c.rateMeaning()),
 		}},
 		{Title: "Temporal", Settings: []kafka.Setting{
 			{Name: "namespace", Value: namespace},
@@ -93,8 +97,25 @@ func (c config) report(env settings.Env, namespace, address string) string {
 		fmt.Sprintf("Read batches of up to %d messages, %s.", c.batchSize, batching),
 		fmt.Sprintf("For each batch, start one standalone Nexus operation per partition, %s/%s through the endpoint %q, "+
 			"each allowed %s to complete. Nothing comes back: results aren't collected.", c.service, c.operation, c.endpoint, c.operationTimeout),
+		c.rateBehavior(),
 		duplicates,
 		undeliverable,
 	}
 	return kafka.Report("Inbound Connector", sections, behavior)
+}
+
+// rateMeaning is INBOUND_MAX_MESSAGES_PER_MINUTE for the report.
+func (c config) rateMeaning() string {
+	if c.maxPerMinute == 0 {
+		return "no limit"
+	}
+	return strconv.Itoa(c.maxPerMinute)
+}
+
+// rateBehavior says how fast the Inbound Connector sends, for the report.
+func (c config) rateBehavior() string {
+	if c.maxPerMinute == 0 {
+		return "Send messages as fast as Kafka has them: INBOUND_MAX_MESSAGES_PER_MINUTE isn't set."
+	}
+	return fmt.Sprintf("Send at most %d messages a minute from this process, spread evenly; messages waiting their turn stay in Kafka.", c.maxPerMinute)
 }

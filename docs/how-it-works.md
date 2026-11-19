@@ -8,6 +8,7 @@ The Kafka connector ships as two programs: the Inbound Connector and the Outboun
 |---|---|
 | `kafka/` | Kafka code both programs share: connecting, reading in batches, writing, dead letters. No Temporal code. `settings.go` declares the Kafka variables both programs read. |
 | `inbound/` | Method 1: the Inbound Connector, which streams each message into Temporal. |
+| `nexussend/` | How the Inbound Connector sends each batch to Temporal: starting the standalone Nexus operation, retrying until it starts, and the rate limit (`INBOUND_MAX_MESSAGES_PER_MINUTE`). No Kafka code, so a future Inbound Connector for another system can use it too. |
 | `outbound/` | Method 2: the Outbound Connector, which serves `write` as a Nexus operation. |
 | `setup/` | Every environment variable each program reads (`setup.Inbound`, `setup.Outbound`), with its help, default and check, and the Temporal client options. The programs load their configuration through it. |
 | `settings/` | Declaring and reading environment variables: `Program`, `Variable`, `Env` (the process's or a map). The only code that reads the process's environment; a test fails if any other does. Also generates the tables in `docs/setup.md`. The same in every Go connector repo. |
@@ -96,6 +97,17 @@ large. When the server refuses an operation of several messages as too large, th
 splits it in two and tries each half. Set `DELETE_DEAD_LETTERS=true` to delete undeliverable
 messages instead. Every other error (Temporal unreachable, missing endpoint, etc.) is retried with
 backoff until it works. The stream waits rather than drain into dead letters.
+
+**The rate limit.** With `INBOUND_MAX_MESSAGES_PER_MINUTE` set, the Inbound Connector sends at
+most that many messages a minute, spread evenly. Before each operation it waits until the
+operation's messages fit in the rate; messages waiting their turn stay in Kafka, not in Temporal,
+so a slow receiver or a downstream limit doesn't pile operations up in Temporal. A full batch can go
+at once, so one minute can see up to the limit plus one batch. The limit is per process: three
+Inbound Connectors in one group, each with `600`, send up to 1,800 a minute between them. A batch is
+counted once, however many attempts its start takes; messages sent to the dead-letter topic aren't
+counted. `KAFKA_BATCH_SIZE` can't be more than the limit, or a full batch could never be sent, so the
+Inbound Connector refuses to start with one. While it waits, Kafka can still rebalance: the wait
+ends, the batch is released, and it is delivered later.
 
 **When an Inbound Connector operation fails.** Once Temporal accepts an operation, it is durable. An
 operation still ends unsuccessfully if the receiving service fails it, it is cancelled or

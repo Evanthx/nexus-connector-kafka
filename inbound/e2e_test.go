@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/temporalio/nexus-connector-kafka/generated/kafkaapi"
 	"github.com/temporalio/nexus-connector-kafka/kafka"
+	"github.com/temporalio/nexus-connector-kafka/nexussend"
 	"github.com/temporalio/nexus-connector-kafka/test/testenv"
 	"go.temporal.io/sdk/worker"
 )
@@ -61,7 +62,7 @@ func (r *receiver) service() *nexus.Service {
 
 type e2e struct {
 	kafkaCfg kafka.Config
-	starter  *nexusStarter
+	starter  *nexussend.Nexus
 	receiver *receiver
 }
 
@@ -78,12 +79,8 @@ func startE2E(t *testing.T, rcv *receiver) e2e {
 	require.NoError(t, w.Start())
 	t.Cleanup(w.Stop)
 
-	starter, err := newNexusStarter(connector, config{
-		endpoint:         receiverEndpoint,
-		service:          kafkaapi.KafkaMessageReceiver.ServiceName,
-		operation:        kafkaapi.KafkaMessageReceiver.Receive.Name(),
-		operationTimeout: time.Hour,
-	})
+	starter, err := nexussend.NewNexus(connector, receiverEndpoint, kafkaapi.KafkaMessageReceiver.ServiceName,
+		kafkaapi.KafkaMessageReceiver.Receive.Name(), time.Hour)
 	require.NoError(t, err)
 	return e2e{kafkaCfg: kafkaCfg, starter: starter, receiver: rcv}
 }
@@ -104,9 +101,9 @@ func TestEndToEnd_RedeliveryStartsNothing(t *testing.T) {
 	env := startE2E(t, &receiver{})
 	input := kafkaapi.ReceiveInput{Records: []kafkaapi.Record{{Topic: "events", Partition: 0, Offset: 7, Timestamp: "2026-10-22T00:00:00Z", Value: []byte("once")}}}
 	id := operationID("g", input.Records)
-	require.NoError(t, env.starter.start(context.Background(), id, input))
+	require.NoError(t, env.starter.Send(context.Background(), nexussend.Operation{ID: id, Input: input, Messages: len(input.Records)}))
 	env.receiver.waitFor(t, 1)
-	require.NoError(t, env.starter.start(context.Background(), id, input))
+	require.NoError(t, env.starter.Send(context.Background(), nexussend.Operation{ID: id, Input: input, Messages: len(input.Records)}))
 	require.Never(t, func() bool { return len(env.receiver.values()) > 1 }, time.Second, 50*time.Millisecond)
 }
 
@@ -115,21 +112,21 @@ func TestEndToEnd_FailedOperationRunsAgainOnRedelivery(t *testing.T) {
 	env := startE2E(t, &receiver{failFirst: func(v string) bool { return v == "retry-me" }})
 	input := kafkaapi.ReceiveInput{Records: []kafkaapi.Record{{Topic: "events", Partition: 0, Offset: 8, Timestamp: "2026-10-22T00:00:00Z", Value: []byte("retry-me")}}}
 	id := operationID("g", input.Records)
-	require.NoError(t, env.starter.start(context.Background(), id, input))
+	require.NoError(t, env.starter.Send(context.Background(), nexussend.Operation{ID: id, Input: input, Messages: len(input.Records)}))
 	env.receiver.waitFor(t, 1)
 	// While the failed operation is still closing, a start attaches to it; once it has closed, a
 	// start runs it again.
 	require.Eventually(t, func() bool {
-		return env.starter.start(context.Background(), id, input) == nil && len(env.receiver.values()) >= 2
+		return env.starter.Send(context.Background(), nexussend.Operation{ID: id, Input: input, Messages: len(input.Records)}) == nil && len(env.receiver.values()) >= 2
 	}, 30*time.Second, 200*time.Millisecond)
 	require.Equal(t, []string{"retry-me", "retry-me"}, env.receiver.values())
 }
 
-// The server refuses an input over its size limit, and the starter reports it as undeliverable,
+// The server refuses an input over its size limit, and the sender reports it as too large,
 // so it goes to the dead-letter topic rather than being retried.
 func TestEndToEnd_ServerRefusalIsUndeliverable(t *testing.T) {
 	env := startE2E(t, &receiver{})
 	input := kafkaapi.ReceiveInput{Records: []kafkaapi.Record{{Topic: "events", Timestamp: "2026-10-22T00:00:00Z", Value: []byte(strings.Repeat("x", 1700*1024))}}}
-	err := env.starter.start(context.Background(), operationID("g", input.Records), input)
-	require.ErrorIs(t, err, errUndeliverable, "%v", err)
+	err := env.starter.Send(context.Background(), nexussend.Operation{ID: operationID("g", input.Records), Input: input, Messages: len(input.Records)})
+	require.ErrorIs(t, err, nexussend.ErrTooLarge, "%v", err)
 }

@@ -13,21 +13,12 @@ import (
 
 	"github.com/temporalio/nexus-connector-kafka/generated/kafkaapi"
 	"github.com/temporalio/nexus-connector-kafka/kafka"
+	"github.com/temporalio/nexus-connector-kafka/nexussend"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
 // commitTimeout bounds committing a delivered batch.
 const commitTimeout = 10 * time.Second
-
-// errUndeliverable marks a batch that no retry can deliver. Its messages go to the dead-letter
-// topic.
-var errUndeliverable = errors.New("undeliverable")
-
-// operationStarter starts the Nexus operation for one batch. An error wrapping errUndeliverable
-// means the batch itself was refused; any other error is retried.
-type operationStarter interface {
-	start(ctx context.Context, operationID string, input kafkaapi.ReceiveInput) error
-}
 
 // deadLetterWriter writes records to the dead-letter topic.
 type deadLetterWriter interface {
@@ -38,8 +29,10 @@ type deadLetterWriter interface {
 // partition's part of a batch. It commits a batch only after every message in it has an operation
 // (or is in the dead-letter topic), so a crash means messages are delivered again, never lost.
 type reader struct {
-	member          *kafka.GroupMember
-	starter         operationStarter
+	member *kafka.GroupMember
+	// sender starts each operation: retrying until it starts, and within the rate limit if one is
+	// set. It returns an error only if the input is refused as too large or ctx ends.
+	sender          nexussend.Sender
 	deadLetters     deadLetterWriter                                   // nil when deleteDeadLetters is set
 	identify        func(context.Context) (kafka.TopicIdentity, error) // the topic's current identity
 	topic           string
@@ -189,32 +182,32 @@ func (r *reader) deliverPartition(ctx context.Context, source string, recs []kaf
 	return flush()
 }
 
-// deliverPart starts the operation for consecutive records of one partition, retrying until it
-// starts or ctx ends. If the server refuses the records as too large, they are split in two and
-// each half delivered in turn, so only a message refused on its own goes to the dead-letter topic.
+// deliverPart starts the operation for consecutive records of one partition. The sender retries
+// until it starts or ctx ends. If the server refuses the records as too large, they are split in
+// two and each half delivered in turn, so only a message refused on its own goes to the
+// dead-letter topic.
 func (r *reader) deliverPart(ctx context.Context, source string, recs []kafkaapi.Record) error {
 	id := operationID(source, recs)
-	for attempt := 1; ; attempt++ {
-		err := r.starter.start(ctx, id, kafkaapi.ReceiveInput{Records: recs})
-		switch {
-		case err == nil:
-			return nil
-		case errors.Is(err, errUndeliverable) && len(recs) > 1:
-			r.logger.Warn("The operation was refused as too large; splitting it", "operationID", id, "records", len(recs), "error", err)
-			half := len(recs) / 2
-			if err := r.deliverPart(ctx, source, recs[:half]); err != nil {
-				return err
-			}
-			return r.deliverPart(ctx, source, recs[half:])
-		case errors.Is(err, errUndeliverable):
-			r.logger.Error("The operation was refused", "operationID", id, "error", err)
-			return r.deadLetter(ctx, recs[0], err)
-		}
-		r.logger.Warn("Could not start the operation; retrying", "operationID", id, "attempt", attempt, "error", err)
-		if err := r.sleep(ctx, attempt); err != nil {
+	first, last := recs[0], recs[len(recs)-1]
+	err := r.sender.Send(ctx, nexussend.Operation{
+		ID:       id,
+		Input:    kafkaapi.ReceiveInput{Records: recs},
+		Messages: len(recs),
+		Summary:  fmt.Sprintf("Kafka %s/%d/%d-%d", first.Topic, first.Partition, first.Offset, last.Offset),
+	})
+	switch {
+	case errors.Is(err, nexussend.ErrTooLarge) && len(recs) > 1:
+		r.logger.Warn("The operation was refused as too large; splitting it", "operationID", id, "records", len(recs), "error", err)
+		half := len(recs) / 2
+		if err := r.deliverPart(ctx, source, recs[:half]); err != nil {
 			return err
 		}
+		return r.deliverPart(ctx, source, recs[half:])
+	case errors.Is(err, nexussend.ErrTooLarge):
+		r.logger.Error("The operation was refused", "operationID", id, "error", err)
+		return r.deadLetter(ctx, recs[0], err)
 	}
+	return err
 }
 
 // deadLetter writes rec to the dead-letter topic, retrying until it is written or ctx ends: the
@@ -248,11 +241,6 @@ func (r *reader) sleep(ctx context.Context, attempt int) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-}
-
-// backoff is the delay before retry attempt+1: one second, doubling, at most 30 seconds.
-func backoff(attempt int) time.Duration {
-	return min(time.Second<<min(attempt-1, 5), 30*time.Second)
 }
 
 // sourceKey names where messages come from: the Kafka cluster, the topic (its ID changes if it

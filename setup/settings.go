@@ -30,12 +30,12 @@ var Inbound = &settings.Program{
 		{Title: "Inbound Connector", Variables: []*settings.Variable{
 			InboundGroup.Variable, kafka.StartFromSetting.Variable, DeadLetterTopic.Variable, DeleteDeadLetters.Variable, BatchSize.Variable,
 			BatchTimeLimit.Variable, InboundEndpoint.Variable, InboundService.Variable, InboundOperation.Variable,
-			InboundOperationTimeout.Variable, InboundMaxInputBytes.Variable,
+			InboundOperationTimeout.Variable, InboundMaxInputBytes.Variable, InboundMaxMessagesPerMinute.Variable,
 		}},
 		temporalSection,
 		networkSection,
 	},
-	Rules: []func(settings.Env) error{deadLetterRule},
+	Rules: []func(settings.Env) error{deadLetterRule, rateLimitRule},
 }
 
 // Outbound is the Outbound Connector's process and every environment variable it reads.
@@ -156,6 +156,27 @@ var (
 		Help: "The largest encoded batch sent to one operation. Larger batches are split; a single larger " +
 			"message goes to the dead-letter topic.",
 	}, positiveInt("INBOUND_MAX_INPUT_BYTES", DefaultMaxInputBytes))
+
+	// InboundMaxMessagesPerMinute is 0 when unset: no limit.
+	InboundMaxMessagesPerMinute = settings.Define(settings.Variable{
+		Name:    "INBOUND_MAX_MESSAGES_PER_MINUTE",
+		Default: "no limit",
+		Help: "The most messages this Inbound Connector sends to Temporal a minute, such as `600`, spread evenly: " +
+			"it waits before each operation until the batch fits, and the waiting messages stay in Kafka. " +
+			"A whole number, at least `KAFKA_BATCH_SIZE`; a full batch can go at once, so one minute can see up to " +
+			"this plus one batch. The limit is per process: three Inbound Connectors with `600` send up to 1,800 " +
+			"a minute between them. Messages sent to the dead-letter topic don't count.",
+	}, func(v string) (int, error) {
+		if v == "" {
+			return 0, nil
+		}
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			return 0, fmt.Errorf("INBOUND_MAX_MESSAGES_PER_MINUTE must be a whole number of messages, at least 1, not %q; "+
+				"leave it unset for no limit", v)
+		}
+		return n, nil
+	})
 )
 
 // DefaultMaxInputBytes is under Temporal's 2 MiB payload limit by 64 KiB: the limit applies to the
@@ -177,6 +198,18 @@ func deadLetterRule(env settings.Env) error {
 			"undeliverable messages either go to that topic or are deleted")
 	case topic != "" && topic == settings.Get(env, "KAFKA_TOPIC"):
 		return errors.New("KAFKA_DEAD_LETTER_TOPIC must differ from KAFKA_TOPIC")
+	}
+	return nil
+}
+
+// rateLimitRule: a batch must fit in a minute's messages, or it could never be sent.
+func rateLimitRule(env settings.Env) error {
+	perMinute, _ := InboundMaxMessagesPerMinute.Get(env) // rules run only once every value is valid
+	batchSize, _ := BatchSize.Get(env)
+	if perMinute > 0 && batchSize > perMinute {
+		return fmt.Errorf("KAFKA_BATCH_SIZE (%d) is more than INBOUND_MAX_MESSAGES_PER_MINUTE (%d), so a full batch "+
+			"could never be sent: set KAFKA_BATCH_SIZE to %d or less, or raise INBOUND_MAX_MESSAGES_PER_MINUTE",
+			batchSize, perMinute, perMinute)
 	}
 	return nil
 }
