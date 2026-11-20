@@ -80,3 +80,35 @@ func TestLayers_RetriesDontCountAgainstTheRate(t *testing.T) {
 	require.Less(t, time.Since(start), 500*time.Millisecond)
 	require.Equal(t, 3, attempts)
 }
+
+func TestConfigFrom_StatusInterval(t *testing.T) {
+	cfg, err := configFrom(inboundEnv(settings.Map{}))
+	require.NoError(t, err)
+	require.Equal(t, 5*time.Minute, cfg.statusInterval)
+
+	cfg, err = configFrom(inboundEnv(settings.Map{"INBOUND_STATUS_INTERVAL": "0"}))
+	require.NoError(t, err)
+	require.Zero(t, cfg.statusInterval, "0 turns it off")
+
+	env := inboundEnv(settings.Map{"INBOUND_STATUS_INTERVAL": "1h"})
+	cfg, err = configFrom(env)
+	require.NoError(t, err)
+	report := cfg.report(env, "connectors", "localhost:7233")
+	require.Contains(t, report, "INBOUND_STATUS_INTERVAL")
+	require.Contains(t, report, "KAFKA_CLIENT_LOG_LEVEL")
+}
+
+func TestConfigFrom_Ordering(t *testing.T) {
+	cfg, err := configFrom(inboundEnv(settings.Map{}))
+	require.NoError(t, err)
+	require.False(t, cfg.ordered, "none by default")
+
+	env := inboundEnv(settings.Map{"INBOUND_ORDERING": "partition"})
+	cfg, err = configFrom(env)
+	require.NoError(t, err)
+	require.True(t, cfg.ordered)
+	require.Contains(t, cfg.report(env, "connectors", "localhost:7233"), "Process each partition in order")
+
+	_, err = configFrom(inboundEnv(settings.Map{"INBOUND_ORDERING": "strict"}))
+	require.EqualError(t, err, `INBOUND_ORDERING must be none or partition, not "strict"`)
+}

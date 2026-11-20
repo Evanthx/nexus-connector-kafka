@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -28,8 +30,9 @@ type GroupMember struct {
 	topic     string
 	startFrom StartFrom
 
-	mu     sync.Mutex
-	wanted chan struct{} // closed when a rebalance is waiting for the batch that is out
+	mu       sync.Mutex
+	wanted   chan struct{}  // closed when a rebalance is waiting for the batch that is out
+	assigned map[int32]bool // the partitions the group has given this member
 }
 
 // NewGroupMember joins group for the topic in cfg. A partition the group has no committed offset
@@ -40,7 +43,10 @@ func NewGroupMember(cfg Config, group string) (*GroupMember, error) {
 	if cfg.StartFrom == StartFromNewest {
 		reset = kgo.NewOffset().AtEnd()
 	}
-	m := &GroupMember{ready: make(chan struct{}), topic: cfg.Topic, startFrom: cfg.StartFrom, wanted: make(chan struct{})}
+	m := &GroupMember{
+		ready: make(chan struct{}), topic: cfg.Topic, startFrom: cfg.StartFrom,
+		wanted: make(chan struct{}), assigned: map[int32]bool{},
+	}
 	client, err := kgo.NewClient(cfg.readOpts(
 		kgo.ConsumerGroup(group),
 		kgo.ConsumeTopics(cfg.Topic),
@@ -49,6 +55,9 @@ func NewGroupMember(cfg Config, group string) (*GroupMember, error) {
 		kgo.BlockRebalanceOnPoll(),
 		kgo.OnPartitionsCallbackBlocked(func(context.Context, *kgo.Client) { m.rebalanceWaiting() }),
 		kgo.AdjustFetchOffsetsFn(m.chooseStarts),
+		kgo.OnPartitionsAssigned(func(_ context.Context, _ *kgo.Client, p map[string][]int32) { m.assign(p) }),
+		kgo.OnPartitionsRevoked(func(_ context.Context, _ *kgo.Client, p map[string][]int32) { m.unassign(p, false) }),
+		kgo.OnPartitionsLost(func(_ context.Context, _ *kgo.Client, p map[string][]int32) { m.unassign(p, true) }),
 	)...)
 	if err != nil {
 		return nil, fmt.Errorf("create Kafka consumer: %w", err)
@@ -226,4 +235,57 @@ func (m *GroupMember) Close() {
 	// Leaving is a rebalance, which waits for AllowRebalance while a batch is out.
 	m.client.AllowRebalance()
 	m.client.Close()
+}
+
+// assign records and logs partitions the group gave this member.
+func (m *GroupMember) assign(p map[string][]int32) {
+	parts := p[m.topic]
+	if len(parts) == 0 {
+		return
+	}
+	m.mu.Lock()
+	for _, n := range parts {
+		m.assigned[n] = true
+	}
+	m.mu.Unlock()
+	slog.Info("The consumer group gave this Inbound Connector partitions", "topic", m.topic, "partitions", sorted(parts), "now", m.Partitions())
+}
+
+// unassign records and logs partitions taken from this member: revoked in a rebalance, or lost,
+// which happens when the member's group session ended, such as after Kafka was unreachable.
+func (m *GroupMember) unassign(p map[string][]int32, lost bool) {
+	parts := p[m.topic]
+	if len(parts) == 0 {
+		return
+	}
+	m.mu.Lock()
+	for _, n := range parts {
+		delete(m.assigned, n)
+	}
+	m.mu.Unlock()
+	if lost {
+		slog.Warn("This Inbound Connector lost partitions: its consumer group session ended, such as when Kafka was "+
+			"unreachable; it rejoins the group by itself", "topic", m.topic, "partitions", sorted(parts), "now", m.Partitions())
+		return
+	}
+	slog.Info("The consumer group took partitions from this Inbound Connector: a rebalance, or it is leaving the group", "topic", m.topic,
+		"partitions", sorted(parts), "now", m.Partitions())
+}
+
+// Partitions is the partitions this member has now, in order.
+func (m *GroupMember) Partitions() []int32 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]int32, 0, len(m.assigned))
+	for n := range m.assigned {
+		out = append(out, n)
+	}
+	slices.Sort(out)
+	return out
+}
+
+func sorted(parts []int32) []int32 {
+	out := slices.Clone(parts)
+	slices.Sort(out)
+	return out
 }

@@ -24,6 +24,8 @@ type config struct {
 	operationTimeout  time.Duration // INBOUND_OPERATION_TIMEOUT: how long each operation may take
 	maxInputBytes     int           // INBOUND_MAX_INPUT_BYTES: the largest encoded input sent to an operation
 	maxPerMinute      int           // INBOUND_MAX_MESSAGES_PER_MINUTE: the most messages sent a minute; 0 for no limit
+	ordered           bool          // INBOUND_ORDERING=partition: wait for each operation to complete before the next
+	statusInterval    time.Duration // INBOUND_STATUS_INTERVAL: log a status line after this long with nothing delivered; 0 for never
 }
 
 // configFrom checks every variable the Inbound Connector reads (setup.Inbound) in env, reporting
@@ -46,6 +48,8 @@ func configFrom(env settings.Env) (config, error) {
 		operationTimeout:  setup.InboundOperationTimeout.From(vals),
 		maxInputBytes:     setup.InboundMaxInputBytes.From(vals),
 		maxPerMinute:      setup.InboundMaxMessagesPerMinute.From(vals),
+		ordered:           setup.InboundOrdering.From(vals),
+		statusInterval:    setup.InboundStatusInterval.From(vals),
 	}, nil
 }
 
@@ -71,6 +75,8 @@ func (c config) report(env settings.Env, namespace, address string) string {
 			kafka.EnvSetting(env, "INBOUND_OPERATION_TIMEOUT", c.operationTimeout),
 			kafka.EnvSetting(env, "INBOUND_MAX_INPUT_BYTES", c.maxInputBytes),
 			kafka.EnvSetting(env, "INBOUND_MAX_MESSAGES_PER_MINUTE", c.rateMeaning()),
+			kafka.EnvSetting(env, "INBOUND_ORDERING", c.orderingMeaning()),
+			kafka.EnvSetting(env, "INBOUND_STATUS_INTERVAL", c.statusInterval),
 		}},
 		{Title: "Temporal", Settings: []kafka.Setting{
 			{Name: "namespace", Value: namespace},
@@ -97,6 +103,7 @@ func (c config) report(env settings.Env, namespace, address string) string {
 		fmt.Sprintf("Read batches of up to %d messages, %s.", c.batchSize, batching),
 		fmt.Sprintf("For each batch, start one standalone Nexus operation per partition, %s/%s through the endpoint %q, "+
 			"each allowed %s to complete. Nothing comes back: results aren't collected.", c.service, c.operation, c.endpoint, c.operationTimeout),
+		c.orderingBehavior(),
 		c.rateBehavior(),
 		duplicates,
 		undeliverable,
@@ -118,4 +125,23 @@ func (c config) rateBehavior() string {
 		return "Send messages as fast as Kafka has them: INBOUND_MAX_MESSAGES_PER_MINUTE isn't set."
 	}
 	return fmt.Sprintf("Send at most %d messages a minute from this process, spread evenly; messages waiting their turn stay in Kafka.", c.maxPerMinute)
+}
+
+// orderingMeaning is INBOUND_ORDERING for the report.
+func (c config) orderingMeaning() string {
+	if c.ordered {
+		return "partition"
+	}
+	return "none"
+}
+
+// orderingBehavior says whether batches wait for each other, for the report.
+func (c config) orderingBehavior() string {
+	if c.ordered {
+		return "Process each partition in order (INBOUND_ORDERING=partition): wait for each operation to complete before " +
+			"starting the next for its partition, and commit only then. At most one operation per partition runs at once. " +
+			"A failed operation starts again if its error is retryable; otherwise its messages go to the dead-letter topic."
+	}
+	return "Start each batch's operation without waiting for the one before (INBOUND_ORDERING=none): a later batch can " +
+		"be processed before an earlier one, even from the same partition."
 }

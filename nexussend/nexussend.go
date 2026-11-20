@@ -37,6 +37,11 @@ type Operation struct {
 	Summary string
 }
 
+// ErrFailed means the operation completed unsuccessfully and starting it again can't help (see
+// Final), such as a receiver that failed it with a non-retryable error. Only a Nexus that waits
+// returns it. The batch goes to the dead-letter destination.
+var ErrFailed = errors.New("the operation failed and retrying can't help")
+
 // ErrTooLarge means the server refused the operation's input as larger than it allows. No retry
 // can deliver it: split the batch, or send a single message that is too large to the dead-letter
 // destination.

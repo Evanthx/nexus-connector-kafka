@@ -30,7 +30,7 @@ var Inbound = &settings.Program{
 		{Title: "Inbound Connector", Variables: []*settings.Variable{
 			InboundGroup.Variable, kafka.StartFromSetting.Variable, DeadLetterTopic.Variable, DeleteDeadLetters.Variable, BatchSize.Variable,
 			BatchTimeLimit.Variable, InboundEndpoint.Variable, InboundService.Variable, InboundOperation.Variable,
-			InboundOperationTimeout.Variable, InboundMaxInputBytes.Variable, InboundMaxMessagesPerMinute.Variable,
+			InboundOperationTimeout.Variable, InboundMaxInputBytes.Variable, InboundMaxMessagesPerMinute.Variable, InboundOrdering.Variable, InboundStatusInterval.Variable,
 		}},
 		temporalSection,
 		networkSection,
@@ -201,6 +201,40 @@ func deadLetterRule(env settings.Env) error {
 	}
 	return nil
 }
+
+// InboundOrdering is true for INBOUND_ORDERING=partition: wait for each operation to complete
+// before starting the next for its partition.
+var InboundOrdering = settings.Define(settings.Variable{
+	Name:    "INBOUND_ORDERING",
+	Default: "none",
+	Help: "`none` to start each batch's operation without waiting for the one before, as fast as possible and " +
+		"using every worker your receiver has, but a later batch can be processed before an earlier one. " +
+		"`partition` to process each partition's messages in order: wait for each operation to complete " +
+		"before starting the next for that partition, and commit only then. At most one operation per " +
+		"partition runs at a time, so parallelism is the number of partitions. A failed operation is " +
+		"started again if its error is retryable; one failed with a non-retryable error, cancelled or " +
+		"terminated goes to the dead-letter topic, and the partition carries on.",
+	Docs: "See [Ordering](how-it-works.md#ordering).",
+}, func(v string) (bool, error) {
+	switch v {
+	case "", "none":
+		return false, nil
+	case "partition":
+		return true, nil
+	default:
+		return false, fmt.Errorf("INBOUND_ORDERING must be none or partition, not %q", v)
+	}
+})
+
+// InboundStatusInterval is how long the Inbound Connector goes without delivering before it logs a
+// status line; 0 for never.
+var InboundStatusInterval = settings.Define(settings.Variable{
+	Name:    "INBOUND_STATUS_INTERVAL",
+	Default: "5m",
+	Help: "When nothing has been delivered for this long, such as `5m` or `1h`, the Inbound Connector logs a " +
+		"status line saying which partitions it has and when it last delivered, and again each interval " +
+		"after, so a quiet topic can be told apart from a stalled Inbound Connector. `0` to turn it off.",
+}, duration("INBOUND_STATUS_INTERVAL", 5*time.Minute))
 
 // rateLimitRule: a batch must fit in a minute's messages, or it could never be sent.
 func rateLimitRule(env settings.Env) error {

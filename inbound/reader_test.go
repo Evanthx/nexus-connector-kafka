@@ -607,3 +607,119 @@ func TestReport(t *testing.T) {
 	require.Regexp(t, `KAFKA_DEAD_LETTER_TOPIC +\(not set\)`, report)
 	require.Regexp(t, `KAFKA_BATCH_SIZE +100\n`, report, "set to the default value: not marked as the default")
 }
+
+// With nothing delivered for statusInterval, the Inbound Connector says it is waiting and which
+// partitions it has, or that it has none, so a quiet topic can be told from a stall.
+func TestReportStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		parts []int32
+		want  string
+	}{
+		{"with partitions", []int32{0, 2}, `msg="Waiting for messages" topic=events partitions="[0 2]"`},
+		{"without partitions", nil, "the consumer group has given this Inbound Connector no partitions"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf syncBuffer
+			r := &reader{
+				topic: "events", group: "g", statusInterval: 20 * time.Millisecond,
+				partitions: func() []int32 { return tc.parts },
+				logger:     slog.New(slog.NewTextHandler(&buf, nil)),
+			}
+			r.lastDelivered.Store(time.Now().Add(-time.Hour).UnixNano())
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go r.reportStatus(ctx)
+			require.Eventually(t, func() bool { return strings.Contains(buf.String(), tc.want) }, 2*time.Second, 10*time.Millisecond, buf.String())
+			require.Contains(t, buf.String(), "lastDelivered=")
+		})
+	}
+}
+
+// No status line while batches are being delivered.
+func TestReportStatus_QuietWhileDelivering(t *testing.T) {
+	var buf syncBuffer
+	r := &reader{statusInterval: 50 * time.Millisecond, partitions: func() []int32 { return []int32{0} }, logger: slog.New(slog.NewTextHandler(&buf, nil))}
+	r.lastDelivered.Store(time.Now().UnixNano())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go r.reportStatus(ctx)
+	delivering := time.NewTicker(5 * time.Millisecond)
+	defer delivering.Stop()
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-delivering.C:
+				r.lastDelivered.Store(time.Now().UnixNano())
+			}
+		}
+	}()
+	require.Never(t, func() bool { return buf.String() != "" }, 300*time.Millisecond, 10*time.Millisecond)
+}
+
+// syncBuffer is a strings.Builder safe to write from another goroutine.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+// In ordered mode, an operation that failed and can't be retried sends every message in it to the
+// dead-letter topic, and the partition carries on past them.
+func TestInbound_FailedOperationGoesToTheDeadLetterTopic(t *testing.T) {
+	cfg := testenv.Kafka(t)
+	produce(t, cfg, 0, "bad0", "bad1")
+	produce(t, cfg, 1, "good")
+	starter := newFakeStarter()
+	starter.fail = func(input kafkaapi.ReceiveInput, _ int) error {
+		if input.Records[0].Partition == 0 {
+			return fmt.Errorf("%w: bad message (type: Bad, retryable: false)", nexussend.ErrFailed)
+		}
+		return nil
+	}
+	r := startInbound(t, cfg, "g", starter, bigEnough)
+	starter.waitFor(t, 1)
+
+	dls := deadLetters(t, cfg, 2)
+	require.Len(t, dls, 2, "every message of the failed operation is dead-lettered")
+	for i, dl := range dls {
+		require.Equal(t, fmt.Sprintf("bad%d", i), string(dl.Value))
+	}
+	starter.mu.Lock()
+	require.Equal(t, 1, starter.attempts[opID(t, cfg, 0, 0, 1)], "a final failure isn't retried")
+	starter.mu.Unlock()
+
+	r.stop()
+	produce(t, cfg, 0, "after")
+	next := newFakeStarter()
+	startInbound(t, cfg, "g", next, bigEnough)
+	next.waitFor(t, 1)
+	require.Equal(t, []string{"after"}, next.values(), "the dead-lettered messages were committed past")
+}
+
+// While a batch is being delivered, such as ordered mode waiting for a long operation, the status
+// line says so instead of "Waiting for messages".
+func TestReportStatus_StillDelivering(t *testing.T) {
+	var buf syncBuffer
+	r := &reader{topic: "events", statusInterval: 20 * time.Millisecond, partitions: func() []int32 { return []int32{0} }, logger: slog.New(slog.NewTextHandler(&buf, nil))}
+	r.lastDelivered.Store(time.Now().Add(-time.Hour).UnixNano())
+	r.batchStarted.Store(time.Now().Add(-time.Minute).UnixNano())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go r.reportStatus(ctx)
+	require.Eventually(t, func() bool { return strings.Contains(buf.String(), "Still delivering a batch") }, 2*time.Second, 10*time.Millisecond)
+	require.NotContains(t, buf.String(), "Waiting for messages")
+}

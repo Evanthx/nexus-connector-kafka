@@ -90,6 +90,41 @@ It is not a fit when:
 - You need to serve more than one topic from one process; run a separate Outbound Connector or
   Inbound Connector per topic.
 
+## Message order
+
+**By default, batches can be processed out of order.** The Inbound Connector goes as fast as it
+can (`INBOUND_ORDERING=none`): it starts each batch's operation without waiting for the one before,
+so your receiver can use every worker it has. Messages within one operation are in offset order,
+but two batches from the same partition can run at the same time and finish in either order, and a
+failed operation doesn't hold back the ones after it.
+
+**To process each partition in order, set `INBOUND_ORDERING=partition`.** The Inbound Connector
+then waits for each operation to complete before starting the next one for that partition, and
+commits only then. Partitions still run in parallel; Kafka never orders messages across partitions.
+
+- **It is slower.** At most one operation per partition runs at a time, so parallelism is the number
+  of partitions: with 6 partitions, 6 operations at once, however many workers you have. Add
+  partitions to go faster. A batch's partitions must all finish before the next batch is read.
+- **A failed operation is retried if its error is retryable.** A retryable application error, a
+  timeout, or Temporal being unreachable starts the operation again, with backoff, until it
+  succeeds; its partition waits, and each failure is logged as a warning.
+- **Otherwise its messages go to the dead-letter topic.** An operation that failed with a
+  non-retryable error (including a Nexus "operation failed"), or was cancelled or terminated,
+  can't succeed by running again. Its messages go to `KAFKA_DEAD_LETTER_TOPIC` (or are deleted with
+  `DELETE_DEAD_LETTERS=true`), logged as an error, and the partition moves on. This is the one place
+  ordered mode lets a later message go before an earlier one.
+- **Order covers only what the operation waits for.** Back the receiver's operation with a workflow
+  that does the work before it completes. An operation that only starts the work and returns lets
+  the next batch start while that work still runs.
+
+**Either way, a message can be delivered more than once.** If the Inbound Connector stops after
+starting a batch's operation but before committing, the batch is delivered again. Make the receiver
+idempotent: process each message in a workflow or activity whose ID is derived from the message,
+such as `<topic>-<partition>-<offset>`, so a second start for a message already handled is
+rejected as a duplicate.
+
+See [How it works: ordering](docs/how-it-works.md#ordering).
+
 ## FAQ
 
 **Why do I need this? I can write an Activity that reads from or writes to Kafka myself.**

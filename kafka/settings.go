@@ -15,7 +15,16 @@ import (
 // SettingsSection is the Kafka variables, in the order the setup page and the docs show them.
 var SettingsSection = &settings.Section{Title: "Kafka", Variables: []*settings.Variable{
 	brokersSetting.Variable, topicSetting.Variable, usernameSetting.Variable, passwordSetting.Variable,
+	clientLogLevelSetting.Variable,
 }}
+
+var clientLogLevelSetting = settings.Define(settings.Variable{
+	Name:    "KAFKA_CLIENT_LOG_LEVEL",
+	Default: "warn",
+	Help: "How much the Kafka client library (franz-go) logs, in the program's log; at `warn`, failed connections " +
+		"to brokers, failed logins and consumer group errors, which show why the program stopped making progress: " +
+		settings.LogLevelHelp,
+}, settings.LogLevel("KAFKA_CLIENT_LOG_LEVEL"))
 
 var brokersSetting = settings.Define(settings.Variable{
 	Name:     "KAFKA_BROKERS",
@@ -78,11 +87,12 @@ var StartFromSetting = settings.Define(settings.Variable{
 // made. StartFrom is set only if the program has StartFromSetting too.
 func ConfigFrom(vals *settings.Values) Config {
 	return Config{
-		Brokers:   brokersSetting.From(vals),
-		Topic:     topicSetting.From(vals),
-		Username:  usernameSetting.From(vals),
-		Password:  passwordSetting.From(vals),
-		StartFrom: StartFromSetting.From(vals),
+		Brokers:        brokersSetting.From(vals),
+		Topic:          topicSetting.From(vals),
+		Username:       usernameSetting.From(vals),
+		Password:       passwordSetting.From(vals),
+		StartFrom:      StartFromSetting.From(vals),
+		ClientLogLevel: clientLogLevelSetting.From(vals),
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/temporalio/nexus-connector-kafka/generated/kafkaapi"
@@ -45,10 +46,21 @@ type reader struct {
 	maxInputBytes     int
 	logger            *slog.Logger
 	retryDelay        func(attempt int) time.Duration
+	// statusInterval is how long the Inbound Connector goes without delivering before it logs a
+	// status line, and how often after; 0 for never.
+	statusInterval time.Duration
+	partitions     func() []int32 // the partitions this member has, for the status line
+	lastDelivered  atomic.Int64   // UnixNano of the last delivery, or of starting
+	batchStarted   atomic.Int64   // UnixNano when the batch being delivered was read; 0 between batches
 }
 
 // run streams until ctx ends, then returns nil. It returns an error only if Kafka can't be read.
 func (r *reader) run(ctx context.Context) error {
+	r.lastDelivered.Store(time.Now().UnixNano())
+	r.batchStarted.Store(0)
+	if r.statusInterval > 0 {
+		go r.reportStatus(ctx)
+	}
 	for {
 		batch, err := r.member.Next(ctx, r.batchSize, r.timeLimit)
 		if ctx.Err() != nil {
@@ -57,7 +69,12 @@ func (r *reader) run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if err := r.deliverBeforeRebalance(ctx, batch.Records); err != nil {
+		if len(batch.Records) > 0 {
+			r.batchStarted.Store(time.Now().UnixNano())
+		}
+		err = r.deliverBeforeRebalance(ctx, batch.Records)
+		r.batchStarted.Store(0)
+		if err != nil {
 			if ctx.Err() != nil {
 				return nil // stopping; the batch isn't committed, so it is delivered again
 			}
@@ -78,6 +95,7 @@ func (r *reader) run(ctx context.Context) error {
 			r.logger.Warn("Commit failed; these messages may be delivered again", "records", len(batch.Records), "error", err)
 		}
 		if len(batch.Records) > 0 {
+			r.lastDelivered.Store(time.Now().UnixNano())
 			r.logger.Info("Delivered batch", "records", len(batch.Records))
 		}
 	}
@@ -206,6 +224,17 @@ func (r *reader) deliverPart(ctx context.Context, source string, recs []kafkaapi
 	case errors.Is(err, nexussend.ErrTooLarge):
 		r.logger.Error("The operation was refused", "operationID", id, "error", err)
 		return r.deadLetter(ctx, recs[0], err)
+	case errors.Is(err, nexussend.ErrFailed):
+		// Only in ordered mode, which waits for each operation: it failed in a way retrying can't
+		// fix, so its messages go to the dead-letter topic and the partition carries on.
+		r.logger.Error("The operation failed and retrying can't help; sending its messages to the dead-letter topic",
+			"operationID", id, "records", len(recs), "error", err)
+		for _, rec := range recs {
+			if err := r.deadLetter(ctx, rec, err); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 	return err
 }
@@ -240,6 +269,40 @@ func (r *reader) sleep(ctx context.Context, attempt int) error {
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+}
+
+// reportStatus logs a status line every statusInterval in which nothing was delivered, until ctx
+// ends. With partitions, a quiet topic looks like this; with none, the group gave this Inbound
+// Connector nothing to read, which the log lines from the group explain.
+func (r *reader) reportStatus(ctx context.Context) {
+	ticker := time.NewTicker(r.statusInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		since := time.Since(time.Unix(0, r.lastDelivered.Load())).Round(time.Second)
+		if since < r.statusInterval {
+			continue
+		}
+		if started := r.batchStarted.Load(); started != 0 {
+			// Most often ordered mode waiting for a long operation; otherwise retries, which log
+			// their own warnings, or the rate limit.
+			r.logger.Info("Still delivering a batch: waiting for its operations to start, or with INBOUND_ORDERING=partition "+
+				"to complete", "topic", r.topic, "for", time.Since(time.Unix(0, started)).Round(time.Second).String())
+			continue
+		}
+		parts := r.partitions()
+		if len(parts) == 0 {
+			r.logger.Info("Waiting for messages, but the consumer group has given this Inbound Connector no partitions: "+
+				"other Inbound Connectors in the group have them all, or the group hasn't finished joining",
+				"topic", r.topic, "group", r.group, "lastDelivered", since.String()+" ago")
+			continue
+		}
+		r.logger.Info("Waiting for messages", "topic", r.topic, "partitions", parts, "lastDelivered", since.String()+" ago")
 	}
 }
 

@@ -23,17 +23,17 @@ func NewRetrying(next Sender, delay func(attempt int) time.Duration, logger *slo
 }
 
 // Send sends op, retrying until it is sent. It returns an error only if op was refused as too
-// large (ErrTooLarge) or ctx ended.
+// large (ErrTooLarge), failed for good (ErrFailed), or ctx ended.
 func (r *Retrying) Send(ctx context.Context, op Operation) error {
 	for attempt := 1; ; attempt++ {
 		err := r.next.Send(ctx, op)
-		if err == nil || errors.Is(err, ErrTooLarge) {
+		if err == nil || errors.Is(err, ErrTooLarge) || errors.Is(err, ErrFailed) {
 			return err
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		r.logger.Warn("Could not start the operation; retrying", "operationID", op.ID, "attempt", attempt, "error", err)
+		r.logger.Warn("The operation didn't start or didn't succeed; retrying", "operationID", op.ID, "attempt", attempt, "error", err)
 		select {
 		case <-time.After(r.delay(attempt)):
 		case <-ctx.Done():

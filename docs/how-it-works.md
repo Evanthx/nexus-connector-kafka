@@ -109,7 +109,8 @@ counted. `KAFKA_BATCH_SIZE` can't be more than the limit, or a full batch could 
 Inbound Connector refuses to start with one. While it waits, Kafka can still rebalance: the wait
 ends, the batch is released, and it is delivered later.
 
-**When an Inbound Connector operation fails.** Once Temporal accepts an operation, it is durable. An
+**When an Inbound Connector operation fails.** (With `INBOUND_ORDERING=partition`, see
+[Ordering](#ordering): the Inbound Connector waits for each operation and handles its failure.) Once Temporal accepts an operation, it is durable. An
 operation still ends unsuccessfully if the receiving service fails it, it is cancelled or
 terminated, or it runs past `INBOUND_OPERATION_TIMEOUT`. To find these:
 
@@ -119,6 +120,47 @@ temporal nexus operation list --namespace connectors \
 ```
 
 See [Troubleshooting](troubleshooting.md#when-an-inbound-connector-operation-fails) for how to replay them.
+
+## Ordering
+
+Kafka orders messages within a partition, never across partitions. `INBOUND_ORDERING` decides
+whether the Inbound Connector keeps that order through Temporal.
+
+**`none` (the default): as fast as possible.** For each batch, the Inbound Connector starts one
+operation per partition and moves on as soon as Temporal accepts them; it commits then too. It
+never waits for an operation to complete, so the next batch's operation for a partition can run
+alongside, or before, the previous one. A failed operation doesn't hold anything back: find it
+with `temporal nexus operation list` (see below).
+
+**`partition`: in order within each partition.** For each batch, the Inbound Connector starts one
+operation per partition and waits for it to complete (the standalone Nexus client's `Get`), then
+starts the next operation for that partition if the batch was split, and commits once every
+partition's operations have completed. Only then does it read the next batch. So for any one
+partition, one operation runs at a time, in offset order. Different partitions still run in
+parallel, so parallelism is the number of partitions this Inbound Connector has, and a slow
+partition holds back the next batch for the others.
+
+When an operation completes unsuccessfully in `partition` mode:
+
+| Outcome | What happens |
+|---|---|
+| Failed with a retryable application error (the default for a workflow's error) | Started again with the same ID, with backoff (1 second, doubling to 30), until it succeeds. The partition waits. Each failure is a `WARN`. |
+| Timed out (`INBOUND_OPERATION_TIMEOUT`), or Temporal unreachable while waiting | The same: retried. |
+| Failed with a non-retryable error: a non-retryable application error, a non-retryable handler error, or a Nexus "operation failed" from a synchronous handler | Its messages go to the dead-letter topic (or are deleted with `DELETE_DEAD_LETTERS=true`), an `ERROR` is logged, and the partition moves on. |
+| Cancelled or terminated, by someone | The same: dead-lettered. Cancelling or terminating an operation is how to skip a batch that will never succeed. |
+
+The order the receiver sees covers only what its operation waits for. An operation backed by a
+workflow completes when the workflow does, so the work is in order. An operation that starts work
+elsewhere and returns at once lets the next batch start before that work is done.
+
+**Duplicates, in either mode.** A batch can be delivered again: after a crash before its commit,
+or a rebalance while its operation was running. The second delivery reuses the operation ID when
+the batch has the same first and last offsets, and then attaches to the running operation (or, if
+it completed, starts nothing). A batch redelivered with different boundaries gets a new ID, so its
+messages can be processed twice and, in `partition` mode, can overlap a still-running operation.
+Make the receiver idempotent: process each message in a workflow or activity whose ID is derived
+from the message, such as `<topic>-<partition>-<offset>`, so a duplicate is rejected rather than
+run twice.
 
 ## The Outbound Connector
 

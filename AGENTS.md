@@ -88,7 +88,8 @@ selected Temporal profile file sets beside each `TEMPORAL_*` field.
    starts), `KAFKA_BATCH_SIZE` (100),
    `KAFKA_BATCH_TIME_LIMIT` (0; `1s` lets batches fill on a quiet topic, which costs fewer
    operations), `INBOUND_OPERATION_TIMEOUT` (`24h`), `INBOUND_MAX_MESSAGES_PER_MINUTE` (no
-   limit; per process, spread evenly, at least `KAFKA_BATCH_SIZE`). `docs/setup.md` lists every
+   limit; per process, spread evenly, at least `KAFKA_BATCH_SIZE`), `INBOUND_ORDERING` (`none`, or
+   `partition` to process each partition in order; see `docs/how-it-works.md#ordering`). `docs/setup.md` lists every
    variable.
 6. **Scale out** by running more Inbound Connectors with the same `KAFKA_GROUP`, up to one per
    partition.
@@ -128,7 +129,13 @@ selected Temporal profile file sets beside each `TEMPORAL_*` field.
   operation's input go to the dead-letter topic. Every other error, such as Temporal unreachable or
   an endpoint that doesn't exist, is retried forever, and the stream waits. Read the Inbound
   Connector's log, not the dead-letter topic, to diagnose a stalled stream.
-- **The Inbound Connector doesn't see failures in the receiver.** A batch is committed once Temporal
+- **Batches can be processed out of order** unless `INBOUND_ORDERING=partition`. With it, each
+  partition's operations run one at a time, in order, at the cost of parallelism (one operation
+  per partition at a time); a retryable failure is started again and its partition waits, and a
+  non-retryable, cancelled or terminated one sends its messages to the dead-letter topic. Order
+  covers only what the receiver's operation waits for: back it with a workflow. Either way, make the
+  receiver idempotent per message (a workflow or activity ID from topic, partition and offset).
+- **With the default `INBOUND_ORDERING=none`, the Inbound Connector doesn't see failures in the receiver.** A batch is committed once Temporal
   accepts its operation. Find failed ones with:
 
   ```bash
@@ -162,6 +169,10 @@ If configuration and Temporal are OK, both programs log:
    - `UNKNOWN_TOPIC_OR_PARTITION` means the topic doesn't exist.
 
    Fix the cause; the program carries on by itself once Kafka answers.
+
+   After startup, `Kafka client:` lines (`KAFKA_CLIENT_LOG_LEVEL`, warn by default), the consumer
+   group's partition lines, and the Inbound Connector's `Waiting for messages` status line show why
+   a stream stopped moving. `docs/troubleshooting.md` explains each.
 
 Then:
 - **Inbound Connector:** `INFO Delivered batch records=N` per batch. `temporal nexus operation list
@@ -260,6 +271,11 @@ Needs Go SDK v1.50 or later (`temporalnexus.StartActivity`, the standalone Nexus
     `AllowRebalance`.
 - `Identify` reads the cluster ID and topic ID with a plain client, since a new group client would
   join the group. `GroupMember.Identity` does the same through the member.
+- `clientOpts` gives every kgo client `kgo.WithLogger(clientLogger)` (`kafka/logger.go`): franz-go
+  logs nothing without one, so connection, login and group errors after startup were invisible.
+  Its level is `KAFKA_CLIENT_LOG_LEVEL`, warn by default (`Config.ClientLogLevel`, nil = warn).
+- `GroupMember` logs partitions assigned and revoked (INFO) and lost (WARN), and keeps them for
+  `Partitions()`.
 - `fetchErrors` logs `ErrDataLoss` and `ErrGroupSession`, which kgo recovers from, rather than
   failing.
 - `Record.tombstone` marks a null value; dead letters keep the null.
@@ -286,6 +302,8 @@ Needs Go SDK v1.50 or later (`temporalnexus.StartActivity`, the standalone Nexus
   too-large error is an internal SDK type. Every other error retries forever, so an outage stalls
   the stream instead of draining it into dead letters. `DELETE_DEAD_LETTERS=true` makes
   `deadLetter` log and skip instead.
+- `reportStatus` logs `Waiting for messages` with the member's partitions every
+  `INBOUND_STATUS_INTERVAL` (5m; 0 off) in which nothing was delivered.
 - The operation ID is `kafka-<source>-<partition>-<first>-<last>`. `sourceKey` hashes cluster ID,
   topic ID, topic, and group as a JSON array, which can't be ambiguous, and the identity is
   fetched for every batch. A redelivered batch can end at another offset and get a new ID, so
@@ -296,7 +314,13 @@ exists)
 - `Nexus` starts operations with `USE_EXISTING` and `ALLOW_DUPLICATE_FAILED_ONLY`;
   `NexusOperationExecutionAlreadyStarted` counts as sent; `refusedAsTooLarge` maps the server's size
   refusal to `ErrTooLarge`.
-- `Retrying` retries every other error forever, with `Backoff`, until ctx ends.
+- With `wait` (`INBOUND_ORDERING=partition`), `Nexus.Send` also waits on the handle's `Get`.
+  `Final` decides a completed failure: the outermost of a CanceledError/TerminatedError (final),
+  TimeoutError (retry), ApplicationError (final if NonRetryable) or nexus.HandlerError (final if not
+  Retryable) in the chain; anything else is retried. Final ones wrap `ErrFailed`, and `reader`
+  dead-letters every record of that operation.
+- `Retrying` retries every error but `ErrTooLarge` and `ErrFailed` forever, with `Backoff`, until ctx
+  ends; retrying a failed operation starts it again (`ALLOW_DUPLICATE_FAILED_ONLY`).
 - `RateLimited` is a token bucket (`golang.org/x/time/rate`): `perMinute`, burst = the batch size.
   It reserves and waits itself, so a wait ends only when ctx does, and cancels the reservation if
   it does, so unsent messages aren't counted.

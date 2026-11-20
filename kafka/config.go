@@ -37,6 +37,9 @@ type Config struct {
 	Username  string // SASL/SCRAM-SHA-256 username; empty for no authentication
 	Password  string
 	StartFrom StartFrom
+	// ClientLogLevel is the least severe of franz-go's own log lines the program logs
+	// (KAFKA_CLIENT_LOG_LEVEL); nil for warn.
+	ClientLogLevel slog.Leveler
 }
 
 // TopicIdentity names the topic beyond its name. Cluster is the Kafka cluster's ID. TopicID
@@ -132,11 +135,19 @@ func identify(ctx context.Context, cl *kgo.Client, topic string) (TopicIdentity,
 
 // clientOpts are the options every client of the topic uses, plus extra.
 func (c Config) clientOpts(extra ...kgo.Opt) []kgo.Opt {
-	opts := []kgo.Opt{kgo.SeedBrokers(c.Brokers...)}
+	opts := []kgo.Opt{kgo.SeedBrokers(c.Brokers...), kgo.WithLogger(clientLogger{level: c.clientLogLevel()})}
 	if c.Username != "" {
 		opts = append(opts, kgo.SASL(scram.Auth{User: c.Username, Pass: c.Password}.AsSha256Mechanism()))
 	}
 	return append(opts, extra...)
+}
+
+// clientLogLevel is ClientLogLevel, or warn if it isn't set.
+func (c Config) clientLogLevel() slog.Level {
+	if c.ClientLogLevel == nil {
+		return slog.LevelWarn
+	}
+	return c.ClientLogLevel.Level()
 }
 
 // readOpts are the options for clients that read. Records from aborted transactions are never

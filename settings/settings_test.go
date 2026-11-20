@@ -3,6 +3,7 @@ package settings
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"testing"
@@ -207,4 +208,15 @@ func TestReplaceGenerated(t *testing.T) {
 
 	_, err = ReplaceGenerated("no markers", "x")
 	require.Error(t, err)
+}
+
+func TestLogLevel(t *testing.T) {
+	parse := LogLevel("X_LOG_LEVEL")
+	for value, want := range map[string]slog.Level{"": slog.LevelWarn, "warn": slog.LevelWarn, "error": slog.LevelError, "info": slog.LevelInfo, "debug": slog.LevelDebug} {
+		got, err := parse(value)
+		require.NoError(t, err, value)
+		require.Equal(t, want, got, value)
+	}
+	_, err := parse("WARN")
+	require.EqualError(t, err, `X_LOG_LEVEL must be error, warn, info or debug, not "WARN"`)
 }

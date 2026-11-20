@@ -110,6 +110,8 @@ func run() error {
 		maxInputBytes:     cfg.maxInputBytes,
 		logger:            slog.Default(),
 		retryDelay:        nexussend.Backoff,
+		statusInterval:    cfg.statusInterval,
+		partitions:        member.Partitions,
 	}
 	log.Printf("Streaming topic %q as group %q to endpoint %q, operation %s/%s",
 		cfg.kafka.Topic, cfg.group, cfg.endpoint, cfg.service, cfg.operation)
@@ -123,7 +125,7 @@ func run() error {
 // until it starts, and, with INBOUND_MAX_MESSAGES_PER_MINUTE set, waits for each batch to fit in the
 // rate first. The rate limit is outside the retries, so a retried start isn't counted twice.
 func newSender(c client.Client, cfg config, logger *slog.Logger) (nexussend.Sender, error) {
-	nexus, err := nexussend.NewNexus(c, cfg.endpoint, cfg.service, cfg.operation, cfg.operationTimeout)
+	nexus, err := nexussend.NewNexus(c, cfg.endpoint, cfg.service, cfg.operation, cfg.operationTimeout, cfg.ordered)
 	if err != nil {
 		return nil, err
 	}

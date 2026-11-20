@@ -37,6 +37,25 @@ To find these problems before starting either program, use the
 [setup page](setup.md#work-out-your-settings-in-a-browser) (`make configui`): its **Test** makes
 the same checks, and connects to Kafka and reads the topic's last message.
 
+## After startup: reading the log
+
+Once running, the log shows what the Kafka client and the consumer group are doing, so a stream
+that stops moving says why:
+
+- `Kafka client: ...` lines (`component=kafka-client`) come from the Kafka client library itself,
+  at `KAFKA_CLIENT_LOG_LEVEL` (`warn` by default): brokers it can't reach, failed logins, consumer
+  group errors. During a Kafka outage these repeat until Kafka is back. Set
+  `KAFKA_CLIENT_LOG_LEVEL=debug` to see every request when chasing a problem.
+- `The consumer group gave this Inbound Connector partitions` and `... took partitions` (INFO)
+  show each rebalance. `This Inbound Connector lost partitions` (WARN) means its group session
+  ended, such as when Kafka was unreachable; it rejoins by itself, and the next `gave ...
+  partitions` line shows it has.
+- `Waiting for messages` (INFO), every `INBOUND_STATUS_INTERVAL` (5 minutes by default) with
+  nothing delivered, lists the partitions it has and when it last delivered. Partitions and no
+  errors means the topic is quiet. `no partitions` means the group gave it none: other Inbound
+  Connectors in the group have them all, or the group hasn't finished joining; look for the group's
+  lines above it.
+
 ## Errors from `write`
 
 Failures that retrying can't fix are `ApplicationError`s:
@@ -100,6 +119,19 @@ Connector sends at the limit and the rest wait in Kafka: the consumer group's la
 log shows batches delivered steadily with no errors. That is the limit working. Raise it, or run
 more Inbound Connectors in the same group (up to one per partition; the limit is per process). The
 startup report's `INBOUND_MAX_MESSAGES_PER_MINUTE` line shows the limit in use.
+
+## A partition stopped moving with `INBOUND_ORDERING=partition`
+
+In ordered mode, a partition waits for its operation to complete. The status line says `Still
+delivering a batch` with how long. Then look in the log for `The operation didn't start or didn't
+succeed; retrying` warnings: an operation that keeps failing with a retryable error is started
+again until it succeeds, and the partition waits behind it. Fix the receiver, or, to skip that batch,
+cancel or terminate its operation (its ID is in the warning): its messages then go to the
+dead-letter topic and the partition moves on.
+
+```bash
+temporal nexus operation terminate --namespace connectors --operation-id <operation ID> --reason "skip batch"
+```
 
 ## Known limitations
 
