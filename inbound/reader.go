@@ -14,7 +14,7 @@ import (
 
 	"github.com/temporalio/nexus-connector-kafka/generated/kafkaapi"
 	"github.com/temporalio/nexus-connector-kafka/kafka"
-	"github.com/temporalio/nexus-connector-kafka/nexussend"
+	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/nexussend"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 

@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	"github.com/temporalio/nexus-connector-kafka/kafka"
+	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/deadline"
 	"go.temporal.io/sdk/temporal"
 )
 
@@ -23,7 +24,7 @@ const (
 func applicationError(err error) error {
 	errType := ""
 	switch {
-	case errors.Is(err, errInvalidTimeout):
+	case errors.Is(err, deadline.ErrTooShort):
 		errType = ErrorTypeInvalidRequest
 	case errors.Is(err, kafka.ErrRejected):
 		errType = ErrorTypeRejected

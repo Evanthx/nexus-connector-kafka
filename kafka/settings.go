@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/temporalio/nexus-connector-kafka/settings"
+	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/settings"
 )
 
 // This file lists the Kafka variables both programs read, as one section that setup.Inbound and

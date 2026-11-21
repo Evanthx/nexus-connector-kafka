@@ -5,10 +5,12 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/temporalio/nexus-connector-kafka/codec"
 	"github.com/temporalio/nexus-connector-kafka/kafka"
-	"github.com/temporalio/nexus-connector-kafka/settings"
+	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/report"
+	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/settings"
+	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/temporalclient"
 	"github.com/temporalio/nexus-connector-kafka/setup"
+	"go.temporal.io/sdk/client"
 )
 
 // config is the Inbound Connector's settings, read from the environment by configFrom.
@@ -55,35 +57,31 @@ func configFrom(env settings.Env) (config, error) {
 }
 
 // report is the configuration and what the Inbound Connector will do with it, for the log when it
-// starts. env is what c was read from; namespace and address are where it connects to Temporal.
-func (c config) report(env settings.Env, namespace, address string) string {
-	deadLetters := kafka.Setting{Name: "KAFKA_DEAD_LETTER_TOPIC", Value: c.deadLetterTopic}
+// starts. env is what c was read from; temporal is the client options it connects to Temporal with.
+func (c config) report(env settings.Env, temporal client.Options) string {
+	deadLetters := report.Setting{Name: "KAFKA_DEAD_LETTER_TOPIC", Value: c.deadLetterTopic}
 	if c.deadLetterTopic == "" {
 		deadLetters.Value = "(not set)"
 	}
-	sections := []kafka.Section{
+	sections := []report.Section{
 		c.kafka.Settings(env),
-		{Title: "Inbound Connector", Settings: []kafka.Setting{
+		{Title: "Inbound Connector", Settings: []report.Setting{
 			{Name: "KAFKA_GROUP", Value: c.group},
-			kafka.EnvSetting(env, "KAFKA_START_FROM", c.kafka.StartFrom),
+			report.Env(env, "KAFKA_START_FROM", c.kafka.StartFrom),
 			deadLetters,
-			kafka.EnvSetting(env, "DELETE_DEAD_LETTERS", c.deleteDeadLetters),
-			kafka.EnvSetting(env, "KAFKA_BATCH_SIZE", c.batchSize),
-			kafka.EnvSetting(env, "KAFKA_BATCH_TIME_LIMIT", c.timeLimit),
+			report.Env(env, "DELETE_DEAD_LETTERS", c.deleteDeadLetters),
+			report.Env(env, "KAFKA_BATCH_SIZE", c.batchSize),
+			report.Env(env, "KAFKA_BATCH_TIME_LIMIT", c.timeLimit),
 			{Name: "INBOUND_ENDPOINT", Value: c.endpoint},
-			kafka.EnvSetting(env, "INBOUND_SERVICE", c.service),
-			kafka.EnvSetting(env, "INBOUND_OPERATION", c.operation),
-			kafka.EnvSetting(env, "INBOUND_OPERATION_TIMEOUT", c.operationTimeout),
-			kafka.EnvSetting(env, "INBOUND_MAX_INPUT_BYTES", c.maxInputBytes),
-			kafka.EnvSetting(env, "INBOUND_MAX_MESSAGES_PER_MINUTE", c.rateMeaning()),
-			kafka.EnvSetting(env, "INBOUND_ORDERING", c.orderingMeaning()),
-			kafka.EnvSetting(env, "INBOUND_STATUS_INTERVAL", c.statusInterval),
+			report.Env(env, "INBOUND_SERVICE", c.service),
+			report.Env(env, "INBOUND_OPERATION", c.operation),
+			report.Env(env, "INBOUND_OPERATION_TIMEOUT", c.operationTimeout),
+			report.Env(env, "INBOUND_MAX_INPUT_BYTES", c.maxInputBytes),
+			report.Env(env, "INBOUND_MAX_MESSAGES_PER_MINUTE", c.rateMeaning()),
+			report.Env(env, "INBOUND_ORDERING", c.orderingMeaning()),
+			report.Env(env, "INBOUND_STATUS_INTERVAL", c.statusInterval),
 		}},
-		{Title: "Temporal", Settings: []kafka.Setting{
-			{Name: "namespace", Value: namespace},
-			{Name: "address", Value: address},
-			{Name: "payload codec", Value: codec.Describe(env)},
-		}},
+		temporalclient.Section(env, temporal),
 	}
 
 	batching := "delivering as soon as Kafka has any"
@@ -110,7 +108,7 @@ func (c config) report(env settings.Env, namespace, address string) string {
 		duplicates,
 		undeliverable,
 	}
-	return kafka.Report("Inbound Connector", sections, behavior)
+	return report.Format("Inbound Connector", sections, behavior)
 }
 
 // rateMeaning is INBOUND_MAX_MESSAGES_PER_MINUTE for the report.

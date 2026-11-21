@@ -129,7 +129,7 @@ callers) must use the same codec and keys. Each program checks the codec at star
 it. Errors are encrypted too (details, message, stack trace; the type stays readable), so the user's
 workers need the same failure converter (`EncodeCommonAttributes: true`) to read them. Kafka
 messages are not encrypted by it. `docs/encryption.md` has the setup, what is and isn't
-encrypted, and the demo (`DEMO_ENCRYPTION_KEY`, `go run ./test/encryption/codecserver`).
+encrypted, and the demo (`DEMO_ENCRYPTION_KEY`, `go run ./nexus-connector-shared/test/encryption/codecserver`).
 
 ## Rules that break things when ignored
 
@@ -261,13 +261,17 @@ Needs Go SDK v1.50 or later (`temporalnexus.StartActivity`, the standalone Nexus
   `outbound/main.go`), or `kafka.ConfigFrom`. Then run `make docs`; a test fails while
   docs/setup.md is stale. A rule between variables, such as "`KAFKA_DEAD_LETTER_TOPIC` or
   `DELETE_DEAD_LETTERS=true`, not both", goes in the `Program`'s `Rules`. Never read the environment directly
-  (`os.Getenv`, `os.LookupEnv`, `os.Environ`, ...): only `settings/env.go` may, and
-  `settings/nobypass_test.go` fails otherwise.
+  (`os.Getenv`, `os.LookupEnv`, `os.Environ`, ...): only `nexus-connector-shared/settings/env.go`
+  may, and its `nobypass_test.go` fails otherwise.
 - Add a new setting to the program's startup report too (`config.report` in `inbound/config.go`,
-  `config.report` in `outbound/main.go`, built with `kafka.Report` and `kafka.EnvSetting`). The
+  `config.report` in `outbound/main.go`, built with `report.Format` and `report.Env`). The
   report never shows the password.
 - For a test that guards a fix, revert the fix and confirm the test fails before calling it done.
   Existing guard tests were checked this way.
+- **`nexus-connector-shared/` is the same in every Go connector repo** (apart from the module path).
+  Change it only for something every connector needs, then copy it to the other repos with the
+  create-nexus-connector skill's `scripts/sync-shared.sh` and run `make ci` in each. Code about
+  Kafka never goes there. Its [README](nexus-connector-shared/README.md) lists the packages.
 
 ### How the code works
 
@@ -321,8 +325,37 @@ Needs Go SDK v1.50 or later (`temporalnexus.StartActivity`, the standalone Nexus
   fetched for every batch. A redelivered batch can end at another offset and get a new ID, so
   batches can duplicate messages; `KAFKA_BATCH_SIZE=1` rules that out.
 
-**`nexussend/`** (no Kafka code; meant to move to a shared module once a second Inbound Connector
-exists)
+**`outbound/`**
+- One process serves one topic (`KAFKA_TOPIC`) behind one endpoint.
+- `write`'s `Start` starts `activities.Write` as a standalone activity. One worker on
+  `NEXUS_TASK_QUEUE` runs the Nexus operation and the activity.
+- `Write` adds the header `dedupe-id: <activityID>-<i>`.
+
+**`setup/`**
+- `setup/settings.go` declares `Inbound` and `Outbound`, the `settings.Program` of each: every
+  variable it reads, in sections, with its check, plus the Inbound Connector's dead-letter rule. The
+  Kafka section is `kafka.SettingsSection` (`kafka/settings.go`), shared by both; the Temporal section
+  lists the variables envconfig reads, unchecked. They live in a package of their own because
+  `inbound` and `outbound` are main packages, which configui can't import, and `kafka/` has no
+  Temporal imports.
+- Each program's `configFrom(env)` calls `Load`, which reports every problem at once (rules only
+  once every variable is valid), then reads each value with `.From(vals)`; `main` passes
+  `settings.OS()`.
+
+**`nexus-connector-shared/`** (the same in every Go connector repo; see its README)
+- `startup`: each `main` is `startup.New`, `Config(err)` for its settings, `Temporal()` (client
+  options from `temporalclient.Options`, then the dial), `Problems()` (every problem in one error,
+  exit), the startup report, then `Ready(ctx, waits...)`: the payload codec first, then
+  `kafka.ConnectAtStartup`. `ErrStopped` means interrupted while waiting: stop quietly.
+- `temporalclient.Options(env)`: envconfig from env (TEMPORAL_* and the profile file), namespace
+  defaulting to `connectors`, then `codec.Apply`. `Section` is the report's Temporal section.
+- `report`: `Format`, `Section`, `Setting`, `Env` (marks defaults) for the startup reports.
+- `deadline.ScheduleToClose`: a write's limit, ending `CallbackMargin` before the caller's operation
+  times out; `ErrTooShort` becomes `InvalidRequest`.
+- `settings`: `Program`, `Load(env)`, `Define`/`Typed`, `Env` (`OS()` or `Map`), and `Markdown` for
+  the docs tables.
+
+**`nexus-connector-shared/nexussend`** (no Kafka code)
 - `Nexus` starts operations with `USE_EXISTING` and `ALLOW_DUPLICATE_FAILED_ONLY`;
   `NexusOperationExecutionAlreadyStarted` counts as sent; `refusedAsTooLarge` maps the server's size
   refusal to `ErrTooLarge`.
@@ -337,14 +370,8 @@ exists)
   It reserves and waits itself, so a wait ends only when ctx does, and cancels the reservation if
   it does, so unsent messages aren't counted.
 
-**`outbound/`**
-- One process serves one topic (`KAFKA_TOPIC`) behind one endpoint.
-- `write`'s `Start` starts `activities.Write` as a standalone activity. One worker on
-  `NEXUS_TASK_QUEUE` runs the Nexus operation and the activity.
-- `Write` adds the header `dedupe-id: <activityID>-<i>`.
-
-**`codec/`** (the same in every Go connector repo)
-- `Apply(env, &opts)`, called by `setup.ClientOptions` after the namespace is final, wraps the data
+**`nexus-connector-shared/codec`**
+- `Apply(env, &opts)`, called by `temporalclient.Options` after the namespace is final, wraps the data
   converter in `PayloadCodecs` (compiled in) and a remote codec for `TEMPORAL_CODEC_ENDPOINT` or
   the profile's codec section, with `X-Namespace` and `TEMPORAL_CODEC_AUTH`, and sets a failure
   converter on it with `EncodeCommonAttributes` (the SDK's default ignores the data converter). Not envconfig's
@@ -352,24 +379,10 @@ exists)
 - `WaitAtStartup` round-trips a test payload (`Check`) until it works, after the startup report;
   `Describe` is the report's `payload codec` line. `ErrUnchanged`: a codec that encodes nothing.
 
-**`setup/`, `settings/`**
-- `setup/settings.go` declares `Inbound` and `Outbound`, the `settings.Program` of each: every
-  variable it reads, in sections, with its check, plus the Inbound Connector's dead-letter rule. The
-  Kafka section is `kafka.SettingsSection` (`kafka/settings.go`), shared by both; the Temporal section
-  lists the variables envconfig reads, unchecked. They live in a package of their own because
-  `inbound` and `outbound` are main packages, which configui can't import, and `kafka/` has no
-  Temporal imports. `ClientOptions(env)` loads the Temporal client options with envconfig from the
-  same env, namespace defaulting to `connectors`.
-- Each program's `configFrom(env)` calls `Load`, which reports every problem at once (rules only
-  once every variable is valid), then reads each value with `.From(vals)`; `main` passes
-  `settings.OS()`.
-- `settings/` is the same in every Go connector repo: `Program`, `Load(env)`, `Define`/`Typed`,
-  `Env` (`OS()` or `Map`), and `Markdown` for the docs tables.
-
 **`configui/`**
-- The setup page, never imported by either program. `main.go`, `temporal.go` and `index.html` are
-  the same in every Go connector repo (the page renders only from `/api/settings`);
-  `connector.go` lists the two programs and their Kafka checks (`checkKafka`, `inboundChecks`,
+- The setup page, never imported by either program. The page is `nexus-connector-shared/configui`
+  (it renders only from `/api/settings`; its own tests use made-up programs); this repo's
+  `main.go` runs it and `connector.go` lists the two programs and their Kafka checks (`checkKafka`, `inboundChecks`,
   `outboundChecks`). A test runs against a `settings.Map` built from the process's environment
   with the page's values in place of every variable the program owns; nothing calls `os.Setenv`.
 - `GET /api/settings`: the programs and the environment's values. Secrets are sent only as set or
@@ -387,7 +400,7 @@ exists)
 - `nexuscaller`: `WriterWorkflow` writes messages through an Outbound Connector's endpoint; the
   starter's `write` command starts it.
 - `inboundreceiver`: the example receiver.
-- `encryption`: the demo AES-GCM codec (`DEMO_ENCRYPTION_KEY`) and `codecserver`. The caller and the
+- `nexus-connector-shared/test/encryption`: the demo AES-GCM codec (`DEMO_ENCRYPTION_KEY`) and `codecserver`. The caller and the
   receiver use it in blocks marked `BEGIN ENCRYPTION (optional)` / `END ENCRYPTION (optional)`, plus
   an import marked `ENCRYPTION (optional)`; deleting them leaves working code.
 - `kafka/`: docker-compose plus seed, produce, consume, and configui scripts. Seed writes 10 messages to

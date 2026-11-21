@@ -15,11 +15,12 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/temporalio/nexus-connector-kafka/generated/kafkaapi"
 	"github.com/temporalio/nexus-connector-kafka/kafka"
-	"github.com/temporalio/nexus-connector-kafka/nexussend"
-	"github.com/temporalio/nexus-connector-kafka/settings"
+	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/nexussend"
+	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/settings"
 	"github.com/temporalio/nexus-connector-kafka/setup"
 	"github.com/temporalio/nexus-connector-kafka/test/testenv"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"go.temporal.io/sdk/client"
 )
 
 // fakeStarter records each start. fail, if set, decides an attempt's error.
@@ -590,7 +591,7 @@ func TestReport(t *testing.T) {
 	env := inboundEnv(settings.Map{"KAFKA_USERNAME": "connector", "KAFKA_PASSWORD": "secret-password"})
 	cfg, err := configFrom(env)
 	require.NoError(t, err)
-	report := cfg.report(env, "connectors", "localhost:7233")
+	report := cfg.report(env, client.Options{Namespace: "connectors", HostPort: "localhost:7233"})
 	require.NotContains(t, report, "secret-password")
 	require.Contains(t, report, "KAFKA_PASSWORD is set")
 	require.Regexp(t, `KAFKA_BATCH_SIZE +100 \(default\)`, report)
@@ -602,7 +603,7 @@ func TestReport(t *testing.T) {
 	env = inboundEnv(settings.Map{"KAFKA_DEAD_LETTER_TOPIC": "", "DELETE_DEAD_LETTERS": "true", "KAFKA_BATCH_SIZE": "100"})
 	cfg, err = configFrom(env)
 	require.NoError(t, err)
-	report = cfg.report(env, "connectors", "localhost:7233")
+	report = cfg.report(env, client.Options{Namespace: "connectors", HostPort: "localhost:7233"})
 	require.Contains(t, report, "Delete messages that can't be delivered")
 	require.Regexp(t, `KAFKA_DEAD_LETTER_TOPIC +\(not set\)`, report)
 	require.Regexp(t, `KAFKA_BATCH_SIZE +100\n`, report, "set to the default value: not marked as the default")

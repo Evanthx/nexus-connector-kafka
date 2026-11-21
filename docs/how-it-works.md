@@ -8,14 +8,12 @@ The Kafka connector ships as two programs: the Inbound Connector and the Outboun
 |---|---|
 | `kafka/` | Kafka code both programs share: connecting, reading in batches, writing, dead letters. No Temporal code. `settings.go` declares the Kafka variables both programs read. |
 | `inbound/` | Method 1: the Inbound Connector, which streams each message into Temporal. |
-| `nexussend/` | How the Inbound Connector sends each batch to Temporal: starting the standalone Nexus operation, retrying until it starts, and the rate limit (`INBOUND_MAX_MESSAGES_PER_MINUTE`). No Kafka code, so a future Inbound Connector for another system can use it too. |
 | `outbound/` | Method 2: the Outbound Connector, which serves `write` as a Nexus operation. |
-| `setup/` | Every environment variable each program reads (`setup.Inbound`, `setup.Outbound`), with its help, default and check, and the Temporal client options. The programs load their configuration through it. |
-| `codec/` | Encrypting payloads: adds the user's payload codec (`TEMPORAL_CODEC_ENDPOINT`, or codecs compiled in) to both programs' Temporal client, and checks it at startup. The same in every Go connector repo. See [Encryption](encryption.md). |
-| `settings/` | Declaring and reading environment variables: `Program`, `Variable`, `Env` (the process's or a map). The only code that reads the process's environment; a test fails if any other does. Also generates the tables in `docs/setup.md`. The same in every Go connector repo. |
-| `configui/` | The setup page (`make configui`): shows `setup.Inbound` and `setup.Outbound`, tests values without changing any environment, and lists the `export` lines; see [Setup](setup.md#work-out-your-settings-in-a-browser). Not part of either program. `configui/gendocs` writes `docs/setup.md`'s tables (`make docs`). |
+| `setup/` | Every environment variable each program reads (`setup.Inbound`, `setup.Outbound`), with its help, default and check. The programs load their configuration through it. |
+| `configui/` | The setup page (`make configui`): `connector.go` lists the two programs and their Kafka checks; the page itself is in `nexus-connector-shared/configui`. It shows `setup.Inbound` and `setup.Outbound`, tests values without changing any environment, and lists the `export` lines; see [Setup](setup.md#work-out-your-settings-in-a-browser). Not part of either program. `configui/gendocs` writes `docs/setup.md`'s tables (`make docs`). |
 | `generated/kafkaapi/` | Go types for the contract, generated from `kafka.nexusrpc.yaml`. |
-| `test/` | Testing only: a receiver for the Inbound Connector, a caller for the Outbound Connector, shared end-to-end test setup, a local Kafka, and a demo codec and codec server (`test/encryption`). |
+| `test/` | Testing only: a receiver for the Inbound Connector, a caller for the Outbound Connector, shared end-to-end test setup, and a local Kafka. |
+| `nexus-connector-shared/` | Code every Go connector shares, the same in every Go connector repo; see its [README](../nexus-connector-shared/README.md). `settings` (declaring and reading environment variables; the only code that reads the environment), `temporalclient` (the Temporal client options), `codec` ([encryption](encryption.md)), `startup` (how each program starts), `report` (the startup report), `deadline` (the Outbound Connector's time limit), `nexussend` (how the Inbound Connector sends each batch: starting the operation, retrying, the rate limit, ordered mode), `configui` (the setup page), and test helpers with the demo codec (`test/encryption`). |
 
 At the top level, `kafka.nexusrpc.yaml` is the contract and `endpoint-description.md` is the
 description for the Outbound Connector's Nexus endpoint.

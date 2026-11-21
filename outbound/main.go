@@ -12,48 +12,35 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
-	"log/slog"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
-	"github.com/temporalio/nexus-connector-kafka/codec"
 	"github.com/temporalio/nexus-connector-kafka/kafka"
-	"github.com/temporalio/nexus-connector-kafka/settings"
+	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/report"
+	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/settings"
+	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/startup"
+	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/temporalclient"
 	"github.com/temporalio/nexus-connector-kafka/setup"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 )
 
 func main() {
-	// Check the Outbound Connector's configuration and the connection to Temporal before stopping
-	// on either, so one run reports every problem rather than only the first.
-	var problems []string
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	env := settings.OS()
-	cfg, s, err := configFrom(env)
-	if err != nil {
-		problems = append(problems, "Invalid Outbound Connector configuration:\n"+indent(err.Error()))
-	}
-	opts, err := setup.ClientOptions(env)
-	if err != nil {
-		problems = append(problems, "Failed to load Temporal client configuration:\n"+indent(err.Error()))
-	}
-	var c client.Client
-	if err == nil {
-		c, err = client.Dial(opts)
-		if err != nil {
-			problems = append(problems, "Failed to connect to Temporal:\n"+indent(err.Error()))
-		}
-	}
-	if len(problems) > 0 {
-		if c != nil {
-			c.Close()
-		}
-		log.Fatalf("The Outbound Connector can't start:\n%s", strings.Join(problems, "\n"))
+	s := startup.New("Outbound Connector", env)
+	cfg, own, err := configFrom(env)
+	s.Config(err)
+	opts, c := s.Temporal()
+	if err := s.Problems(); err != nil {
+		log.Fatal(err)
 	}
 	defer c.Close()
 
@@ -63,40 +50,22 @@ func main() {
 	}
 	defer writer.Close()
 
-	address := opts.HostPort
-	if address == "" {
-		address = client.DefaultHostPort
-	}
-	// Logged before connecting to Kafka, so it shows even if Kafka is slow to answer.
-	log.Print(s.report(env, cfg, opts.Namespace, address))
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	if err := codec.WaitAtStartup(ctx, env, opts.DataConverter, slog.Default()); err != nil {
-		if ctx.Err() != nil {
-			log.Print("Stopped while waiting for the payload codec")
-			return
-		}
-		log.Fatal(err)
-	}
-	if err := kafka.ConnectAtStartup(ctx, cfg); err != nil {
-		if ctx.Err() != nil {
-			log.Print("Stopped while waiting for Kafka")
+	// Logged before waiting for Kafka, so it shows even if Kafka is slow to answer.
+	log.Print(own.report(env, cfg, opts))
+	if err := s.Ready(ctx, func(ctx context.Context) error { return kafka.ConnectAtStartup(ctx, cfg) }); err != nil {
+		if errors.Is(err, startup.ErrStopped) {
+			log.Print("Stopped while starting")
 			return
 		}
 		log.Fatal(err)
 	}
 
-	a := &activities{writer: writer, topic: cfg.Topic, maxDuration: s.maxDuration}
-	w := newWorker(c, s.taskQueue, a)
-	log.Printf("Serving topic %q on task queue %q", cfg.Topic, s.taskQueue)
+	a := &activities{writer: writer, topic: cfg.Topic, maxDuration: own.maxDuration}
+	w := newWorker(c, own.taskQueue, a)
+	log.Printf("Serving topic %q on task queue %q", cfg.Topic, own.taskQueue)
 	if err := w.Run(worker.InterruptCh()); err != nil {
 		log.Fatalf("Worker stopped: %v", err)
 	}
-}
-
-// indent prefixes each line of s with "  - ", one line per problem errors.Join reported.
-func indent(s string) string {
-	return "  - " + strings.ReplaceAll(s, "\n", "\n  - ")
 }
 
 // config is the Outbound Connector's settings besides the topic's.
@@ -119,29 +88,25 @@ func configFrom(env settings.Env) (kafka.Config, config, error) {
 }
 
 // report is the configuration and what the Outbound Connector will do with it, for the log when it
-// starts. env is what s and cfg, the topic's settings, were read from; namespace and address are
-// where it connects to Temporal.
-func (s config) report(env settings.Env, cfg kafka.Config, namespace, address string) string {
-	maxDuration := kafka.Setting{Name: setup.MaxDuration.Name, Value: "10m (default)"}
+// starts. env is what s and cfg, the topic's settings, were read from; temporal is the
+// client options it connects to Temporal with.
+func (s config) report(env settings.Env, cfg kafka.Config, temporal client.Options) string {
+	maxDuration := report.Setting{Name: setup.MaxDuration.Name, Value: "10m (default)"}
 	if s.maxDuration > 0 {
 		maxDuration.Value = s.maxDuration.String()
 	}
-	sections := []kafka.Section{
+	sections := []report.Section{
 		cfg.Settings(env),
-		{Title: "Outbound Connector", Settings: []kafka.Setting{
-			kafka.EnvSetting(env, "NEXUS_TASK_QUEUE", s.taskQueue),
+		{Title: "Outbound Connector", Settings: []report.Setting{
+			report.Env(env, "NEXUS_TASK_QUEUE", s.taskQueue),
 			maxDuration,
 		}},
-		{Title: "Temporal", Settings: []kafka.Setting{
-			{Name: "namespace", Value: namespace},
-			{Name: "address", Value: address},
-			{Name: "payload codec", Value: codec.Describe(env)},
-		}},
+		temporalclient.Section(env, temporal),
 	}
 	behavior := []string{
 		fmt.Sprintf("Serve the topic %q as the KafkaService Nexus service, with the operation write.", cfg.Topic),
 		fmt.Sprintf("Take Nexus requests and run writes on the task queue %q: point this Outbound Connector's Nexus endpoint at it.", s.taskQueue),
 		fmt.Sprintf("Write messages to the topic %q, each with a dedupe-id header.", cfg.Topic),
 	}
-	return kafka.Report("Outbound Connector", sections, behavior)
+	return report.Format("Outbound Connector", sections, behavior)
 }

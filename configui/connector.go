@@ -2,7 +2,7 @@ package main
 
 // This file is what the setup page knows about this repo's programs, the Inbound Connector and the
 // Outbound Connector, and the checks particular to them. The variables themselves come from
-// setup.Inbound and setup.Outbound. The rest of configui is the same in every Go connector repo.
+// setup.Inbound and setup.Outbound. The rest of the page is the configui package in nexus-connector-shared.
 
 import (
 	"context"
@@ -15,32 +15,34 @@ import (
 
 	"github.com/temporalio/nexus-connector-kafka/generated/kafkaapi"
 	"github.com/temporalio/nexus-connector-kafka/kafka"
-	"github.com/temporalio/nexus-connector-kafka/settings"
+	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/configui"
+	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/settings"
+	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/temporalclient"
 	"github.com/temporalio/nexus-connector-kafka/setup"
 )
 
 const pageTitle = "Kafka connector setup"
 
-var programs = []program{
+var programs = []configui.Program{
 	{
 		Settings:      setup.Inbound,
-		ClientOptions: setup.ClientOptions,
+		ClientOptions: temporalclient.Options,
 		// No endpoint targets the Inbound Connector: it calls one, INBOUND_ENDPOINT.
 		CallsEndpoint: func(env settings.Env) string { return settings.Get(env, setup.InboundEndpoint.Name) },
-		Check: func(ctx context.Context, env settings.Env, _ map[string]string) check {
+		Check: func(ctx context.Context, env settings.Env, _ map[string]string) configui.Check {
 			return checkKafka(ctx, env, inboundChecks)
 		},
 	},
 	{
 		Settings:      setup.Outbound,
-		ClientOptions: setup.ClientOptions,
+		ClientOptions: temporalclient.Options,
 		TaskQueue: func(env settings.Env) string {
 			q, _ := setup.TaskQueue.Get(env) // any value is valid
 			return q
 		},
 		EndpointName:            "kafka-endpoint",
 		EndpointDescriptionFile: "./endpoint-description.md",
-		Check: func(ctx context.Context, env settings.Env, _ map[string]string) check {
+		Check: func(ctx context.Context, env settings.Env, _ map[string]string) configui.Check {
 			return checkKafka(ctx, env, nil)
 		},
 	},
@@ -56,8 +58,8 @@ var (
 // code, finds the topic, and reads its last message, without a consumer group and committing
 // nothing. Then it runs more, the program's own checks, if any. It stops at the first step that fails,
 // with its whole error.
-func checkKafka(ctx context.Context, env settings.Env, more func(ctx context.Context, env settings.Env, cfg kafka.Config, c *check)) check {
-	c := check{Title: "Kafka"}
+func checkKafka(ctx context.Context, env settings.Env, more func(ctx context.Context, env settings.Env, cfg kafka.Config, c *configui.Check)) configui.Check {
+	c := configui.Check{Title: "Kafka"}
 	cfg, err := kafka.LoadConfig(env)
 	if err != nil {
 		c.Skipped = "Fix the Kafka settings first."
@@ -92,7 +94,7 @@ func checkKafka(ctx context.Context, env settings.Env, more func(ctx context.Con
 }
 
 // inboundChecks checks that the dead-letter topic exists, if one is set.
-func inboundChecks(ctx context.Context, env settings.Env, cfg kafka.Config, c *check) {
+func inboundChecks(ctx context.Context, env settings.Env, cfg kafka.Config, c *configui.Check) {
 	topic := settings.Get(env, setup.DeadLetterTopic.Name)
 	if topic == "" {
 		return

@@ -8,9 +8,10 @@ import (
 
 	"github.com/nexus-rpc/sdk-go/nexus"
 	"github.com/stretchr/testify/require"
-	"github.com/temporalio/nexus-connector-kafka/codec"
 	"github.com/temporalio/nexus-connector-kafka/generated/kafkaapi"
 	"github.com/temporalio/nexus-connector-kafka/kafka"
+	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/temporalclient"
+	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/test/codectest"
 	"github.com/temporalio/nexus-connector-kafka/test/nexuscaller"
 	"github.com/temporalio/nexus-connector-kafka/test/testenv"
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -174,7 +175,7 @@ func TestEndToEnd_TwoEndpointsTwoTopics(t *testing.T) {
 }
 
 // With encryption, the caller's write input reaches Temporal only encrypted. The Outbound
-// Connector, pointed at the codec server with TEMPORAL_CODEC_ENDPOINT as setup.ClientOptions does,
+// Connector, pointed at the codec server with TEMPORAL_CODEC_ENDPOINT as temporalclient.Options does,
 // decrypts it, and the messages reach Kafka as the caller wrote them.
 func TestEndToEnd_EncryptedWrite(t *testing.T) {
 	kafkaCfg := testenv.Kafka(t)
@@ -182,8 +183,9 @@ func TestEndToEnd_EncryptedWrite(t *testing.T) {
 	const endpoint, taskQueue, callerQueue = "kafka-encrypted-endpoint", "kafka-encrypted", "kafka-encrypted-caller"
 
 	// The Outbound Connector, with the codec server set as it would be in its environment.
-	opts := client.Options{Namespace: testenv.ConnectorNamespace}
-	_, err := codec.Apply(testenv.CodecServer(t), &opts)
+	// Built as the program builds them (temporalclient.Options), so the test fails if that stops
+	// applying the codec. The namespace is the default, testenv.ConnectorNamespace.
+	opts, err := temporalclient.Options(codectest.Server(t))
 	require.NoError(t, err)
 	encryptedConnector, err := client.NewClientFromExisting(connector, opts)
 	require.NoError(t, err)
@@ -197,7 +199,7 @@ func TestEndToEnd_EncryptedWrite(t *testing.T) {
 	t.Cleanup(w.Stop)
 
 	// The caller, encrypting with the same key.
-	caller := testenv.WithDemoCodec(t, test, testenv.TestNamespace)
+	caller := codectest.WithDemoCodec(t, test, testenv.TestNamespace)
 	cw := worker.New(caller, callerQueue, worker.Options{})
 	cw.RegisterWorkflow(nexuscaller.WriterWorkflow)
 	require.NoError(t, cw.Start())
@@ -222,5 +224,5 @@ func TestEndToEnd_EncryptedWrite(t *testing.T) {
 		}
 	}
 	require.NotNil(t, scheduled, "no Nexus operation in the caller's history")
-	testenv.RequireEncrypted(t, scheduled.GetInput(), "secret-1")
+	codectest.RequireEncrypted(t, scheduled.GetInput(), "secret-1")
 }

@@ -5,21 +5,16 @@ package testenv
 
 import (
 	"context"
-	"net/http/httptest"
 	"os/exec"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/temporalio/nexus-connector-kafka/kafka"
-	"github.com/temporalio/nexus-connector-kafka/settings"
-	"github.com/temporalio/nexus-connector-kafka/test/encryption"
 	"github.com/twmb/franz-go/pkg/kfake"
-	commonpb "go.temporal.io/api/common/v1"
 	nexuspb "go.temporal.io/api/nexus/v1"
 	"go.temporal.io/api/operatorservice/v1"
 	"go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/testsuite"
 )
 
@@ -94,39 +89,4 @@ func Endpoint(t *testing.T, c client.Client, name, namespace, taskQueue string) 
 		},
 	})
 	require.NoError(t, err)
-}
-
-// CodecPassphrase is the demo codec's passphrase in the encryption tests.
-const CodecPassphrase = "end-to-end test passphrase"
-
-// CodecServer serves the demo codec (test/encryption) under CodecPassphrase as a remote codec
-// server, and returns the environment that points a program at it.
-func CodecServer(t *testing.T) settings.Map {
-	t.Helper()
-	c, err := encryption.NewCodec(CodecPassphrase)
-	require.NoError(t, err)
-	server := httptest.NewServer(converter.NewPayloadCodecHTTPHandler(c))
-	t.Cleanup(server.Close)
-	return settings.Map{"TEMPORAL_CODEC_ENDPOINT": server.URL, "TEMPORAL_CONFIG_FILE": t.TempDir() + "/none.toml"}
-}
-
-// WithDemoCodec is a client sharing c's connection whose payloads go through the demo codec under
-// CodecPassphrase, as a demo worker's with DEMO_ENCRYPTION_KEY set.
-func WithDemoCodec(t *testing.T, c client.Client, namespace string) client.Client {
-	t.Helper()
-	dc, err := encryption.DataConverter(CodecPassphrase)
-	require.NoError(t, err)
-	out, err := client.NewClientFromExisting(c, client.Options{Namespace: namespace, DataConverter: dc, FailureConverter: encryption.FailureConverter(dc)})
-	require.NoError(t, err)
-	t.Cleanup(out.Close)
-	return out
-}
-
-// RequireEncrypted fails the test unless payload is the demo codec's ciphertext, without
-// plaintext in it.
-func RequireEncrypted(t *testing.T, payload *commonpb.Payload, plaintext string) {
-	t.Helper()
-	require.NotNil(t, payload)
-	require.Equal(t, "binary/encrypted", string(payload.GetMetadata()["encoding"]), "the payload in Temporal is not encrypted")
-	require.NotContains(t, string(payload.GetData()), plaintext)
 }

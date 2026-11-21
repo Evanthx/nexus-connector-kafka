@@ -8,8 +8,9 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"github.com/temporalio/nexus-connector-kafka/nexussend"
-	"github.com/temporalio/nexus-connector-kafka/settings"
+	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/nexussend"
+	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/settings"
+	"go.temporal.io/sdk/client"
 )
 
 // configFrom collects all invalid values in one error rather than stopping at the first.
@@ -52,14 +53,14 @@ func TestReport_RateLimit(t *testing.T) {
 	env := inboundEnv(settings.Map{"KAFKA_BATCH_SIZE": "10", "INBOUND_MAX_MESSAGES_PER_MINUTE": "600"})
 	cfg, err := configFrom(env)
 	require.NoError(t, err)
-	report := cfg.report(env, "connectors", "localhost:7233")
+	report := cfg.report(env, client.Options{Namespace: "connectors", HostPort: "localhost:7233"})
 	require.Contains(t, report, "INBOUND_MAX_MESSAGES_PER_MINUTE")
 	require.Contains(t, report, "Send at most 600 messages a minute from this process")
 
 	env = inboundEnv(settings.Map{})
 	cfg, err = configFrom(env)
 	require.NoError(t, err)
-	require.Contains(t, cfg.report(env, "connectors", "localhost:7233"), "INBOUND_MAX_MESSAGES_PER_MINUTE isn't set")
+	require.Contains(t, cfg.report(env, client.Options{Namespace: "connectors", HostPort: "localhost:7233"}), "INBOUND_MAX_MESSAGES_PER_MINUTE isn't set")
 }
 
 // The rate limit is outside the retries: a start that takes several attempts counts its batch
@@ -93,7 +94,7 @@ func TestConfigFrom_StatusInterval(t *testing.T) {
 	env := inboundEnv(settings.Map{"INBOUND_STATUS_INTERVAL": "1h"})
 	cfg, err = configFrom(env)
 	require.NoError(t, err)
-	report := cfg.report(env, "connectors", "localhost:7233")
+	report := cfg.report(env, client.Options{Namespace: "connectors", HostPort: "localhost:7233"})
 	require.Contains(t, report, "INBOUND_STATUS_INTERVAL")
 	require.Contains(t, report, "KAFKA_CLIENT_LOG_LEVEL")
 }
@@ -107,7 +108,7 @@ func TestConfigFrom_Ordering(t *testing.T) {
 	cfg, err = configFrom(env)
 	require.NoError(t, err)
 	require.True(t, cfg.ordered)
-	require.Contains(t, cfg.report(env, "connectors", "localhost:7233"), "Process each partition in order")
+	require.Contains(t, cfg.report(env, client.Options{Namespace: "connectors", HostPort: "localhost:7233"}), "Process each partition in order")
 
 	_, err = configFrom(inboundEnv(settings.Map{"INBOUND_ORDERING": "strict"}))
 	require.EqualError(t, err, `INBOUND_ORDERING must be none or partition, not "strict"`)

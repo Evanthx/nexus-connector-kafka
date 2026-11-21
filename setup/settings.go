@@ -13,12 +13,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/temporalio/nexus-connector-kafka/codec"
 	"github.com/temporalio/nexus-connector-kafka/generated/kafkaapi"
 	"github.com/temporalio/nexus-connector-kafka/kafka"
-	"github.com/temporalio/nexus-connector-kafka/settings"
-	"go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/contrib/envconfig"
+	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/settings"
+	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/temporalclient"
 )
 
 // Inbound is the Inbound Connector's process and every environment variable it reads.
@@ -57,10 +55,10 @@ var Outbound = &settings.Program{
 // temporalSection is the Temporal variables both programs show. The Temporal SDK's envconfig reads
 // them, so they have no check here.
 var temporalSection = settings.Temporal{
-	Namespace: defaultNamespace,
+	Namespace: temporalclient.DefaultNamespace,
 	NamespaceHelp: "The namespace the program runs in. The Inbound Connector needs standalone Nexus operations enabled in it; the " +
 		"Outbound Connector, standalone activities with completion callbacks. All connectors default to `" +
-		defaultNamespace + "` and are kept apart by task queue.",
+		temporalclient.DefaultNamespace + "` and are kept apart by task queue.",
 	Docs: "See [Connecting to Temporal Cloud](#connecting-to-temporal-cloud).",
 }.Section()
 
@@ -277,29 +275,6 @@ var (
 
 // DefaultTaskQueue is the Outbound Connector's task queue unless NEXUS_TASK_QUEUE says otherwise.
 const DefaultTaskQueue = "nexus-connector-kafka"
-
-// defaultNamespace is both programs' namespace when neither TEMPORAL_NAMESPACE nor the profile
-// file sets one.
-const defaultNamespace = "connectors"
-
-// ClientOptions loads the Temporal client options from env with the SDK's envconfig, as the
-// temporal CLI does (TEMPORAL_* variables and the CLI's profile file), with the namespace
-// defaulting to connectors.
-func ClientOptions(env settings.Env) (client.Options, error) {
-	opts, err := envconfig.LoadClientOptions(envconfig.LoadClientOptionsRequest{EnvLookup: env})
-	if err != nil {
-		return client.Options{}, err
-	}
-	if opts.Namespace == "" {
-		opts.Namespace = defaultNamespace
-	}
-	// Encode every payload with the user's codec, if any (TEMPORAL_CODEC_ENDPOINT, or codecs
-	// compiled in). After the namespace is final: the codec server is told it.
-	if _, err := codec.Apply(env, &opts); err != nil {
-		return client.Options{}, err
-	}
-	return opts, nil
-}
 
 // text is the parse function of a variable that takes any value.
 func text(v string) (string, error) { return v, nil }

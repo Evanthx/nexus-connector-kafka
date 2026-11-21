@@ -73,7 +73,7 @@ Connector, a few per `write`. Run the codec server close to the programs.
 ### With a codec compiled in
 
 If you would rather not run a codec server, build the programs with your codec. Add a file to the
-`codec` package, such as `codec/mycodec.go`:
+`codec` package, such as `nexus-connector-shared/codec/mycodec.go`:
 
 ```go
 package codec
@@ -109,9 +109,9 @@ failure converter encrypts them, as the demo receiver's does.
 ## Try it in the demo
 
 The demo ([Testing](testing.md#demo)) can run encrypted end to end. It uses a demo codec,
-AES-256-GCM with a key derived from a passphrase (`test/encryption`), and a demo codec server that
-serves it (`test/encryption/codecserver`). They are for the demo only: a real codec gets its keys
-from a key management service.
+AES-256-GCM with a key derived from a passphrase (`nexus-connector-shared/test/encryption`), and a
+demo codec server that serves it (`nexus-connector-shared/test/encryption/codecserver`). They are
+for the demo only: a real codec gets its keys from a key management service.
 
 1. Pick a passphrase and use it in every terminal below:
 
@@ -122,7 +122,7 @@ from a key management service.
 2. Start the demo codec server (its own terminal):
 
    ```bash
-   go run ./test/encryption/codecserver     # serves http://localhost:8089
+   go run ./nexus-connector-shared/test/encryption/codecserver     # serves http://localhost:8089
    ```
 
 3. Start Temporal with the UI using it (terminal 1 of the demo, instead of the command there):

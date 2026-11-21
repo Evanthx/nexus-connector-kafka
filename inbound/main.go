@@ -10,20 +10,19 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
-	"github.com/temporalio/nexus-connector-kafka/codec"
 	"github.com/temporalio/nexus-connector-kafka/kafka"
-	"github.com/temporalio/nexus-connector-kafka/nexussend"
-	"github.com/temporalio/nexus-connector-kafka/settings"
-	"github.com/temporalio/nexus-connector-kafka/setup"
+	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/nexussend"
+	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/settings"
+	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/startup"
 	"go.temporal.io/sdk/client"
 )
 
@@ -41,48 +40,21 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Check the Inbound Connector's configuration and the connection to Temporal before stopping on
-	// either, so one run reports every problem rather than only the first.
-	var problems []string
 	env := settings.OS()
+	s := startup.New("Inbound Connector", env)
 	cfg, err := configFrom(env)
-	if err != nil {
-		problems = append(problems, "Invalid Inbound Connector configuration:\n"+indent(err.Error()))
-	}
-	opts, err := setup.ClientOptions(env)
-	if err != nil {
-		problems = append(problems, "Failed to load Temporal client configuration:\n"+indent(err.Error()))
-	}
-	var c client.Client
-	if err == nil {
-		c, err = client.Dial(opts)
-		if err != nil {
-			problems = append(problems, "Failed to connect to Temporal:\n"+indent(err.Error()))
-		}
-	}
-	if len(problems) > 0 {
-		if c != nil {
-			c.Close()
-		}
-		return fmt.Errorf("the Inbound Connector can't start:\n%s", strings.Join(problems, "\n"))
+	s.Config(err)
+	opts, c := s.Temporal()
+	if err := s.Problems(); err != nil {
+		return err
 	}
 	defer c.Close()
 
-	address := opts.HostPort
-	if address == "" {
-		address = client.DefaultHostPort
-	}
-	// Logged before connecting to Kafka, so it shows even if Kafka is slow to answer.
-	log.Print(cfg.report(env, opts.Namespace, address))
-	if err := codec.WaitAtStartup(ctx, env, opts.DataConverter, slog.Default()); err != nil {
-		if ctx.Err() != nil {
-			return nil // stopped while waiting for the codec
-		}
-		return err
-	}
-	if err := kafka.ConnectAtStartup(ctx, cfg.kafka); err != nil {
-		if ctx.Err() != nil {
-			return nil // stopped while waiting for Kafka
+	// Logged before waiting for Kafka, so it shows even if Kafka is slow to answer.
+	log.Print(cfg.report(env, opts))
+	if err := s.Ready(ctx, func(ctx context.Context) error { return kafka.ConnectAtStartup(ctx, cfg.kafka) }); err != nil {
+		if errors.Is(err, startup.ErrStopped) {
+			return nil
 		}
 		return err
 	}
@@ -148,9 +120,4 @@ func layers(base nexussend.Sender, cfg config, retryDelay func(attempt int) time
 	}
 	// The startup rule keeps batchSize <= maxPerMinute, and every operation holds at most one batch.
 	return nexussend.NewRateLimited(sender, cfg.maxPerMinute, cfg.batchSize)
-}
-
-// indent prefixes each line of s with "  - ", one line per problem errors.Join reported.
-func indent(s string) string {
-	return "  - " + strings.ReplaceAll(s, "\n", "\n  - ")
 }

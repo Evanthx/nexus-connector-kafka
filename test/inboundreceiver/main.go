@@ -13,7 +13,7 @@ import (
 
 	"github.com/nexus-rpc/sdk-go/nexus"
 	"github.com/temporalio/nexus-connector-kafka/generated/kafkaapi"
-	"github.com/temporalio/nexus-connector-kafka/test/encryption" // ENCRYPTION (optional): delete with the block in main
+	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/test/encryption" // ENCRYPTION (optional): delete with the block in main
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/contrib/envconfig"
 	"go.temporal.io/sdk/temporalnexus"

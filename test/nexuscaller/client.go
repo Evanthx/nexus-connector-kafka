@@ -1,7 +1,7 @@
 package nexuscaller
 
 import (
-	"github.com/temporalio/nexus-connector-kafka/test/encryption" // ENCRYPTION (optional): delete with the block below
+	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/test/encryption" // ENCRYPTION (optional): delete with the block below
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/contrib/envconfig"
 )

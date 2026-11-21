@@ -1,4 +1,4 @@
-package main
+package configui
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/temporalio/nexus-connector-kafka/settings"
+	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/settings"
 	"go.temporal.io/api/operatorservice/v1"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/api/workflowservice/v1"
@@ -19,26 +19,26 @@ import (
 	"go.temporal.io/sdk/log"
 )
 
-// temporalTimeout bounds the Temporal check: connecting, finding the namespace and the endpoints.
-var temporalTimeout = 10 * time.Second
+// TemporalTimeout bounds the Temporal check: connecting, finding the namespace and the endpoints.
+var TemporalTimeout = 10 * time.Second
 
 // checkTemporal connects to Temporal with the client options p loads from env, as the program
 // would, checks that the namespace exists, that the endpoint p calls exists if it calls one, and,
 // if p has a task queue, that a Nexus endpoint targets the namespace and task queue.
-func checkTemporal(ctx context.Context, p program, env settings.Env) check {
-	c := check{Title: "Temporal"}
+func checkTemporal(ctx context.Context, p Program, env settings.Env) Check {
+	c := Check{Title: "Temporal"}
 	opts, err := p.ClientOptions(env)
 	if err != nil {
 		c.Problems = append(c.Problems, "Failed to load Temporal client configuration: "+err.Error())
 		return c
 	}
-	c.Passed = append(c.Passed, describeProfile(env, []program{p}).summary())
+	c.Passed = append(c.Passed, describeProfile(env, []Program{p}).summary())
 	opts.Logger = log.NewStructuredLogger(slog.New(slog.DiscardHandler))
 	address := opts.HostPort
 	if address == "" {
 		address = client.DefaultHostPort
 	}
-	ctx, cancel := context.WithTimeout(ctx, temporalTimeout)
+	ctx, cancel := context.WithTimeout(ctx, TemporalTimeout)
 	defer cancel()
 	cl, err := client.DialContext(ctx, opts)
 	if err != nil {
@@ -94,7 +94,7 @@ func checkTemporal(ctx context.Context, p program, env settings.Env) check {
 }
 
 // checkCalledEndpoint adds to c whether the Nexus endpoint name exists, and where it leads.
-func checkCalledEndpoint(ctx context.Context, cl client.Client, name string, c *check) {
+func checkCalledEndpoint(ctx context.Context, cl client.Client, name string, c *Check) {
 	resp, err := cl.OperatorService().ListNexusEndpoints(ctx, &operatorservice.ListNexusEndpointsRequest{PageSize: 1, Name: name})
 	switch {
 	case err != nil:
@@ -137,9 +137,9 @@ func endpointsTargeting(ctx context.Context, cl client.Client, namespace, taskQu
 	}
 }
 
-// profileJSON is the Temporal profile file and profile an environment selects, as envconfig
+// PageProfile is the Temporal profile file and profile an environment selects, as envconfig
 // reads them, and the variables they stand in for: a variable that is set overrides the file.
-type profileJSON struct {
+type PageProfile struct {
 	File    string `json:"file"`    // the file's path; "" if there is none to read
 	Profile string `json:"profile"` // the profile's name
 	// Variable is the variable under which the page shows where the profile comes from.
@@ -155,7 +155,7 @@ type profileJSON struct {
 
 // describeProfile is the Temporal profile env selects for programs, with what it sets, or nil if
 // none of programs connects to Temporal. Secrets are those of the first program that connects.
-func describeProfile(env settings.Env, programs []program) *profileJSON {
+func describeProfile(env settings.Env, programs []Program) *PageProfile {
 	var p *settings.Program
 	for _, pr := range programs {
 		if pr.ClientOptions != nil {
@@ -166,7 +166,7 @@ func describeProfile(env settings.Env, programs []program) *profileJSON {
 	if p == nil {
 		return nil
 	}
-	out := &profileJSON{
+	out := &PageProfile{
 		File: settings.Get(env, settings.TemporalConfigFileEnvVar), Profile: settings.Get(env, settings.TemporalProfileEnvVar),
 		Variable: settings.TemporalConfigFileEnvVar, Values: map[string]string{}, SecretsSet: map[string]bool{},
 	}
@@ -205,7 +205,7 @@ func describeProfile(env settings.Env, programs []program) *profileJSON {
 }
 
 // summary says, for the Temporal check, which profile was read and what it set.
-func (pj *profileJSON) summary() string {
+func (pj *PageProfile) summary() string {
 	switch {
 	case pj.File == "":
 		return "No Temporal profile file (no user config directory): only the TEMPORAL_* variables apply."

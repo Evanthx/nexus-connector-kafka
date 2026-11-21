@@ -1,4 +1,4 @@
-package main
+package configuitest
 
 import (
 	"go/ast"
@@ -22,15 +22,17 @@ var clientMakers = []string{
 	"net/http.Get", "net/http.Head", "net/http.Post", "net/http.PostForm",
 }
 
-// TestNoOwnClient fails if a non-test Go file of configui names one of clientMakers, or one of
-// connectorClientMakers, which each repo's main_test.go lists for the client library its programs
-// use (empty for a repo that uses net/http alone).
-func TestNoOwnClient(t *testing.T) {
+// RequireNoOwnClient fails the test if a non-test Go file in dir names one of clientMakers, or one
+// of libraryMakers: the client constructors of the library the repo's programs call their system
+// with, as "import path.Name", such as "github.com/twmb/franz-go/pkg/kgo.NewClient" (none for a
+// repo that uses net/http alone).
+func RequireNoOwnClient(t *testing.T, dir string, libraryMakers ...string) {
+	t.Helper()
 	forbidden := map[string]bool{}
-	for _, m := range append(clientMakers, connectorClientMakers...) {
+	for _, m := range append(clientMakers, libraryMakers...) {
 		forbidden[m] = true
 	}
-	files, err := filepath.Glob("*.go")
+	files, err := filepath.Glob(filepath.Join(dir, "*.go"))
 	require.NoError(t, err)
 	var found []string
 	for _, path := range files {

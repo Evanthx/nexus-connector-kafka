@@ -11,10 +11,11 @@ import (
 
 	"github.com/nexus-rpc/sdk-go/nexus"
 	"github.com/stretchr/testify/require"
-	"github.com/temporalio/nexus-connector-kafka/codec"
 	"github.com/temporalio/nexus-connector-kafka/generated/kafkaapi"
 	"github.com/temporalio/nexus-connector-kafka/kafka"
-	"github.com/temporalio/nexus-connector-kafka/nexussend"
+	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/nexussend"
+	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/temporalclient"
+	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/test/codectest"
 	"github.com/temporalio/nexus-connector-kafka/test/testenv"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
@@ -228,14 +229,15 @@ func TestEndToEnd_EncryptedDelivery(t *testing.T) {
 	const endpoint, taskQueue = "kafka-encrypted-receiver-endpoint", "kafka-encrypted-receiver"
 	testenv.Endpoint(t, connector, endpoint, testenv.TestNamespace, taskQueue)
 	rcv := &receiver{failed: map[string]bool{}}
-	w := worker.New(testenv.WithDemoCodec(t, test, testenv.TestNamespace), taskQueue, worker.Options{})
+	w := worker.New(codectest.WithDemoCodec(t, test, testenv.TestNamespace), taskQueue, worker.Options{})
 	w.RegisterNexusService(rcv.service())
 	require.NoError(t, w.Start())
 	t.Cleanup(w.Stop)
 
 	// The Inbound Connector's client, with the codec server set as it would be in its environment.
-	opts := client.Options{Namespace: testenv.ConnectorNamespace}
-	_, err := codec.Apply(testenv.CodecServer(t), &opts)
+	// Built as the program builds them (temporalclient.Options), so the test fails if that stops
+	// applying the codec. The namespace is the default, testenv.ConnectorNamespace.
+	opts, err := temporalclient.Options(codectest.Server(t))
 	require.NoError(t, err)
 	encrypted, err := client.NewClientFromExisting(connector, opts)
 	require.NoError(t, err)
@@ -252,6 +254,6 @@ func TestEndToEnd_EncryptedDelivery(t *testing.T) {
 	resp, err := connector.WorkflowService().DescribeNexusOperationExecution(context.Background(),
 		&workflowservice.DescribeNexusOperationExecutionRequest{Namespace: testenv.ConnectorNamespace, OperationId: id, IncludeInput: true})
 	require.NoError(t, err)
-	testenv.RequireEncrypted(t, resp.GetInput(), "secret-2")
-	testenv.RequireEncrypted(t, resp.GetInfo().GetUserMetadata().GetSummary(), "events")
+	codectest.RequireEncrypted(t, resp.GetInput(), "secret-2")
+	codectest.RequireEncrypted(t, resp.GetInfo().GetUserMetadata().GetSummary(), "events")
 }

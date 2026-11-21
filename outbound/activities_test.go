@@ -6,7 +6,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"github.com/temporalio/nexus-connector-kafka/settings"
+	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/settings"
+	"go.temporal.io/sdk/client"
 )
 
 // kafkaEnv is the Kafka variables the Outbound Connector needs, with vars added.
@@ -53,7 +54,7 @@ func TestReport(t *testing.T) {
 	})
 	cfg, s, err := configFrom(env)
 	require.NoError(t, err)
-	report := s.report(env, cfg, "connectors", "localhost:7233")
+	report := s.report(env, cfg, client.Options{Namespace: "connectors", HostPort: "localhost:7233"})
 	require.NotContains(t, report, "secret-password")
 	require.Contains(t, report, "with the operation write")
 	require.Contains(t, report, `point this Outbound Connector's Nexus endpoint at it`)
@@ -64,6 +65,6 @@ func TestReport(t *testing.T) {
 	env = kafkaEnv(nil)
 	cfg, s, err = configFrom(env)
 	require.NoError(t, err)
-	report = s.report(env, cfg, "connectors", "localhost:7233")
+	report = s.report(env, cfg, client.Options{Namespace: "connectors", HostPort: "localhost:7233"})
 	require.Regexp(t, `NEXUS_TASK_QUEUE +nexus-connector-kafka \(default\)`, report)
 }

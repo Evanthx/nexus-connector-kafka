@@ -9,7 +9,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/temporalio/nexus-connector-kafka/settings"
+	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/settings"
 	"github.com/temporalio/nexus-connector-kafka/setup"
 )
 
