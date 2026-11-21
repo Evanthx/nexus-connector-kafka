@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/temporalio/nexus-connector-kafka/codec"
 	"github.com/temporalio/nexus-connector-kafka/generated/kafkaapi"
 	"github.com/temporalio/nexus-connector-kafka/kafka"
 	"github.com/temporalio/nexus-connector-kafka/settings"
@@ -291,6 +292,11 @@ func ClientOptions(env settings.Env) (client.Options, error) {
 	}
 	if opts.Namespace == "" {
 		opts.Namespace = defaultNamespace
+	}
+	// Encode every payload with the user's codec, if any (TEMPORAL_CODEC_ENDPOINT, or codecs
+	// compiled in). After the namespace is final: the codec server is told it.
+	if _, err := codec.Apply(env, &opts); err != nil {
+		return client.Options{}, err
 	}
 	return opts, nil
 }

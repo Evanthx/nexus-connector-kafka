@@ -2,7 +2,8 @@
 //
 // It serves the KafkaMessageReceiver Nexus service. Each receive starts ReceiveWorkflow, which
 // logs the batch's messages. It connects with the standard TEMPORAL_* variables and the temporal CLI's
-// profile file; the namespace defaults to kafka-test.
+// profile file; the namespace defaults to kafka-test. With DEMO_ENCRYPTION_KEY set, it decrypts what
+// the Inbound Connector sent through the demo codec server (the block marked ENCRYPTION in main).
 package main
 
 import (
@@ -12,6 +13,7 @@ import (
 
 	"github.com/nexus-rpc/sdk-go/nexus"
 	"github.com/temporalio/nexus-connector-kafka/generated/kafkaapi"
+	"github.com/temporalio/nexus-connector-kafka/test/encryption" // ENCRYPTION (optional): delete with the block in main
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/contrib/envconfig"
 	"go.temporal.io/sdk/temporalnexus"
@@ -65,6 +67,20 @@ func main() {
 	if opts.Namespace == "" {
 		opts.Namespace = defaultNamespace
 	}
+	// ======================= BEGIN ENCRYPTION (optional) =======================
+	// Keep this block to encrypt every payload this program sends to Temporal, with the demo codec
+	// under the passphrase in DEMO_ENCRYPTION_KEY; unset, it does nothing. Delete it, and the
+	// import marked ENCRYPTION, to leave payloads unencrypted: nothing else depends on it.
+	// The connector programs encrypt through a codec server instead: see docs/encryption.md.
+	if key := encryption.Key(); key != "" {
+		dc, err := encryption.DataConverter(key)
+		if err != nil {
+			log.Fatalf("Encryption: %v", err)
+		}
+		opts.DataConverter = dc
+		opts.FailureConverter = encryption.FailureConverter(dc) // so errors can be read too, and are encrypted
+	}
+	// ======================== END ENCRYPTION (optional) ========================
 	c, err := client.Dial(opts)
 	if err != nil {
 		log.Fatalf("Failed to create Temporal client: %v", err)

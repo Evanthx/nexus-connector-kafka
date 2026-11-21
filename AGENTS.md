@@ -9,6 +9,7 @@ full user-facing documentation; this file has what you need to act, and the mist
 | [`docs/testing.md`](docs/testing.md) | Demo walkthrough with a local dev server and Docker Kafka, unit tests. |
 | [`docs/clients.md`](docs/clients.md) | The contract, and generating typed clients for Go, Python, TypeScript, and Java. |
 | [`docs/how-it-works.md`](docs/how-it-works.md) | Folders, the contract, the Outbound Connector and the Inbound Connector in depth, cost, possible future changes. |
+| [`docs/encryption.md`](docs/encryption.md) | Encrypting every payload with the user's codec (codec server or compiled in), what is and isn't encrypted, the encrypted demo. |
 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | Startup diagnostics, error types, consumer group rules, known limitations. |
 
 ## What this is
@@ -118,6 +119,17 @@ selected Temporal profile file sets beside each `TEMPORAL_*` field.
    `test/nexuscaller/workflows.go` (`WriterWorkflow`) is a working Go example to copy. `write`
    takes `messages: [{key?, value, headers?}]` and returns `written`. Each message gets a
    `dedupe-id` header that stays the same when the write is retried.
+
+## Encryption
+
+To keep data from reaching Temporal unencrypted, set `TEMPORAL_CODEC_ENDPOINT` (and
+`TEMPORAL_CODEC_AUTH` if needed) on both programs to the user's payload codec server, or build them
+with a codec appended to `codec.PayloadCodecs` in an `init`. The user's own workers (receiver,
+callers) must use the same codec and keys. Each program checks the codec at startup and waits for
+it. Errors are encrypted too (details, message, stack trace; the type stays readable), so the user's
+workers need the same failure converter (`EncodeCommonAttributes: true`) to read them. Kafka
+messages are not encrypted by it. `docs/encryption.md` has the setup, what is and isn't
+encrypted, and the demo (`DEMO_ENCRYPTION_KEY`, `go run ./test/encryption/codecserver`).
 
 ## Rules that break things when ignored
 
@@ -331,6 +343,15 @@ exists)
   `NEXUS_TASK_QUEUE` runs the Nexus operation and the activity.
 - `Write` adds the header `dedupe-id: <activityID>-<i>`.
 
+**`codec/`** (the same in every Go connector repo)
+- `Apply(env, &opts)`, called by `setup.ClientOptions` after the namespace is final, wraps the data
+  converter in `PayloadCodecs` (compiled in) and a remote codec for `TEMPORAL_CODEC_ENDPOINT` or
+  the profile's codec section, with `X-Namespace` and `TEMPORAL_CODEC_AUTH`, and sets a failure
+  converter on it with `EncodeCommonAttributes` (the SDK's default ignores the data converter). Not envconfig's
+  `IncludeRemoteCodec`, which sends the namespace before the `connectors` default applies.
+- `WaitAtStartup` round-trips a test payload (`Check`) until it works, after the startup report;
+  `Describe` is the report's `payload codec` line. `ErrUnchanged`: a codec that encodes nothing.
+
 **`setup/`, `settings/`**
 - `setup/settings.go` declares `Inbound` and `Outbound`, the `settings.Program` of each: every
   variable it reads, in sections, with its check, plus the Inbound Connector's dead-letter rule. The
@@ -366,6 +387,9 @@ exists)
 - `nexuscaller`: `WriterWorkflow` writes messages through an Outbound Connector's endpoint; the
   starter's `write` command starts it.
 - `inboundreceiver`: the example receiver.
+- `encryption`: the demo AES-GCM codec (`DEMO_ENCRYPTION_KEY`) and `codecserver`. The caller and the
+  receiver use it in blocks marked `BEGIN ENCRYPTION (optional)` / `END ENCRYPTION (optional)`, plus
+  an import marked `ENCRYPTION (optional)`; deleting them leaves working code.
 - `kafka/`: docker-compose plus seed, produce, consume, and configui scripts. Seed writes 10 messages to
   `customers` and 3 to `orders`.
 

@@ -154,6 +154,11 @@ message always has the same operation ID and can't be delivered twice with diffe
 Outbound Connector's `write` adds a `dedupe-id` header that is stable across retries; use it to
 deduplicate on the consumer side.
 
+**Can my data reach Temporal only encrypted?**
+Yes. Set `TEMPORAL_CODEC_ENDPOINT` to your payload codec server on both programs, or build them
+with your codec, and every payload they send is encrypted before it leaves the process. Your own
+workers use the same codec. Messages in Kafka are not changed. See [Encryption](docs/encryption.md).
+
 **Where does reading start — from the beginning of the topic or from now?**
 From `KAFKA_START_FROM`: `oldest` (the default) starts at the oldest message still in the topic;
 `newest` reads only messages written after the Inbound Connector starts. This applies only when the
@@ -181,6 +186,8 @@ See [How it works](docs/how-it-works.md) for more detail.
   TypeScript, and Java.
 - [How it works](docs/how-it-works.md): folders, the contract, reading in batches, the Inbound
   Connector and the Outbound Connector in depth, cost, and possible future changes.
+- [Encryption](docs/encryption.md): encrypting every payload so data reaches Temporal only
+  encrypted, with your codec server or a codec compiled in, and trying it in the demo.
 - [Troubleshooting](docs/troubleshooting.md): startup diagnostics, error types, consumer group
   rules, and known limitations.
 

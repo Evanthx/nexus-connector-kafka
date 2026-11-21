@@ -170,6 +170,11 @@ seeded orders is `first order`, with a `dedupe-id` header the Outbound Connector
 print interleaved, so it isn't necessarily the last line. Pass another topic name, such as
 `customers`, to see that topic.
 
+## Run it encrypted
+
+To run the same demo with every payload encrypted, see
+[Encryption: try it in the demo](encryption.md#try-it-in-the-demo).
+
 ## Tear down
 
 When you are done, stop the programs with Ctrl-C, then:

@@ -14,12 +14,14 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/temporalio/nexus-connector-kafka/codec"
 	"github.com/temporalio/nexus-connector-kafka/kafka"
 	"github.com/temporalio/nexus-connector-kafka/settings"
 	"github.com/temporalio/nexus-connector-kafka/setup"
@@ -69,6 +71,13 @@ func main() {
 	log.Print(s.report(env, cfg, opts.Namespace, address))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if err := codec.WaitAtStartup(ctx, env, opts.DataConverter, slog.Default()); err != nil {
+		if ctx.Err() != nil {
+			log.Print("Stopped while waiting for the payload codec")
+			return
+		}
+		log.Fatal(err)
+	}
 	if err := kafka.ConnectAtStartup(ctx, cfg); err != nil {
 		if ctx.Err() != nil {
 			log.Print("Stopped while waiting for Kafka")
@@ -126,6 +135,7 @@ func (s config) report(env settings.Env, cfg kafka.Config, namespace, address st
 		{Title: "Temporal", Settings: []kafka.Setting{
 			{Name: "namespace", Value: namespace},
 			{Name: "address", Value: address},
+			{Name: "payload codec", Value: codec.Describe(env)},
 		}},
 	}
 	behavior := []string{

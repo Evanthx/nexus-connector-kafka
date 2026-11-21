@@ -8,11 +8,13 @@ import (
 
 	"github.com/nexus-rpc/sdk-go/nexus"
 	"github.com/stretchr/testify/require"
+	"github.com/temporalio/nexus-connector-kafka/codec"
 	"github.com/temporalio/nexus-connector-kafka/generated/kafkaapi"
 	"github.com/temporalio/nexus-connector-kafka/kafka"
 	"github.com/temporalio/nexus-connector-kafka/test/nexuscaller"
 	"github.com/temporalio/nexus-connector-kafka/test/testenv"
 	"github.com/twmb/franz-go/pkg/kgo"
+	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/worker"
@@ -169,4 +171,56 @@ func TestEndToEnd_TwoEndpointsTwoTopics(t *testing.T) {
 
 	require.ElementsMatch(t, []string{"event0", "event1"}, values(consume(t, h.kafkaCfg, 2)))
 	require.Equal(t, []string{"order0"}, values(consume(t, ordersCfg, 1)))
+}
+
+// With encryption, the caller's write input reaches Temporal only encrypted. The Outbound
+// Connector, pointed at the codec server with TEMPORAL_CODEC_ENDPOINT as setup.ClientOptions does,
+// decrypts it, and the messages reach Kafka as the caller wrote them.
+func TestEndToEnd_EncryptedWrite(t *testing.T) {
+	kafkaCfg := testenv.Kafka(t)
+	connector, test := testenv.Temporal(t)
+	const endpoint, taskQueue, callerQueue = "kafka-encrypted-endpoint", "kafka-encrypted", "kafka-encrypted-caller"
+
+	// The Outbound Connector, with the codec server set as it would be in its environment.
+	opts := client.Options{Namespace: testenv.ConnectorNamespace}
+	_, err := codec.Apply(testenv.CodecServer(t), &opts)
+	require.NoError(t, err)
+	encryptedConnector, err := client.NewClientFromExisting(connector, opts)
+	require.NoError(t, err)
+	t.Cleanup(encryptedConnector.Close)
+	testenv.Endpoint(t, connector, endpoint, testenv.ConnectorNamespace, taskQueue)
+	writer, err := kafka.NewWriter(kafkaCfg)
+	require.NoError(t, err)
+	t.Cleanup(writer.Close)
+	w := newWorker(encryptedConnector, taskQueue, &activities{writer: writer, topic: kafkaCfg.Topic})
+	require.NoError(t, w.Start())
+	t.Cleanup(w.Stop)
+
+	// The caller, encrypting with the same key.
+	caller := testenv.WithDemoCodec(t, test, testenv.TestNamespace)
+	cw := worker.New(caller, callerQueue, worker.Options{})
+	cw.RegisterWorkflow(nexuscaller.WriterWorkflow)
+	require.NoError(t, cw.Start())
+	t.Cleanup(cw.Stop)
+
+	run, err := caller.ExecuteWorkflow(context.Background(), client.StartWorkflowOptions{TaskQueue: callerQueue},
+		nexuscaller.WriterWorkflow, nexuscaller.WriterInput{Endpoint: endpoint, Messages: []string{"secret-1"}})
+	require.NoError(t, err)
+	var written int64
+	require.NoError(t, run.Get(context.Background(), &written))
+	require.Equal(t, int64(1), written)
+	require.Equal(t, []string{"secret-1"}, values(consume(t, kafkaCfg, 1)))
+
+	// In Temporal, the Nexus operation's input is ciphertext.
+	history := test.GetWorkflowHistory(context.Background(), run.GetID(), run.GetRunID(), false, 0)
+	var scheduled *historypb.NexusOperationScheduledEventAttributes
+	for history.HasNext() {
+		event, err := history.Next()
+		require.NoError(t, err)
+		if a := event.GetNexusOperationScheduledEventAttributes(); a != nil {
+			scheduled = a
+		}
+	}
+	require.NotNil(t, scheduled, "no Nexus operation in the caller's history")
+	testenv.RequireEncrypted(t, scheduled.GetInput(), "secret-1")
 }

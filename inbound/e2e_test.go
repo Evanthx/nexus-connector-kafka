@@ -11,10 +11,12 @@ import (
 
 	"github.com/nexus-rpc/sdk-go/nexus"
 	"github.com/stretchr/testify/require"
+	"github.com/temporalio/nexus-connector-kafka/codec"
 	"github.com/temporalio/nexus-connector-kafka/generated/kafkaapi"
 	"github.com/temporalio/nexus-connector-kafka/kafka"
 	"github.com/temporalio/nexus-connector-kafka/nexussend"
 	"github.com/temporalio/nexus-connector-kafka/test/testenv"
+	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/temporalnexus"
@@ -217,4 +219,39 @@ func TestEndToEnd_OrderedRetriesOnlyRetryableFailures(t *testing.T) {
 	require.ErrorIs(t, err, nexussend.ErrFailed)
 	n, _ = attempts.Load("bad")
 	require.Equal(t, int32(1), n.(*atomic.Int32).Load(), "a non-retryable failure isn't run again")
+}
+
+// With encryption, what the Inbound Connector sends is stored in Temporal only encrypted, and a
+// receiver with the same key reads the messages.
+func TestEndToEnd_EncryptedDelivery(t *testing.T) {
+	connector, test := testenv.Temporal(t)
+	const endpoint, taskQueue = "kafka-encrypted-receiver-endpoint", "kafka-encrypted-receiver"
+	testenv.Endpoint(t, connector, endpoint, testenv.TestNamespace, taskQueue)
+	rcv := &receiver{failed: map[string]bool{}}
+	w := worker.New(testenv.WithDemoCodec(t, test, testenv.TestNamespace), taskQueue, worker.Options{})
+	w.RegisterNexusService(rcv.service())
+	require.NoError(t, w.Start())
+	t.Cleanup(w.Stop)
+
+	// The Inbound Connector's client, with the codec server set as it would be in its environment.
+	opts := client.Options{Namespace: testenv.ConnectorNamespace}
+	_, err := codec.Apply(testenv.CodecServer(t), &opts)
+	require.NoError(t, err)
+	encrypted, err := client.NewClientFromExisting(connector, opts)
+	require.NoError(t, err)
+	t.Cleanup(encrypted.Close)
+	sender, err := nexussend.NewNexus(encrypted, endpoint, kafkaapi.KafkaMessageReceiver.ServiceName,
+		kafkaapi.KafkaMessageReceiver.Receive.Name(), time.Hour, true)
+	require.NoError(t, err)
+
+	input := kafkaapi.ReceiveInput{Records: []kafkaapi.Record{{Topic: "events", Timestamp: "2026-10-22T00:00:00Z", Value: []byte("secret-2")}}}
+	id := operationID("encrypted", input.Records)
+	require.NoError(t, sender.Send(context.Background(), nexussend.Operation{ID: id, Input: input, Messages: 1, Summary: "Kafka events/0/0-0"}))
+	require.Equal(t, []string{"secret-2"}, rcv.values())
+
+	resp, err := connector.WorkflowService().DescribeNexusOperationExecution(context.Background(),
+		&workflowservice.DescribeNexusOperationExecutionRequest{Namespace: testenv.ConnectorNamespace, OperationId: id, IncludeInput: true})
+	require.NoError(t, err)
+	testenv.RequireEncrypted(t, resp.GetInput(), "secret-2")
+	testenv.RequireEncrypted(t, resp.GetInfo().GetUserMetadata().GetSummary(), "events")
 }

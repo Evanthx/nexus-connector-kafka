@@ -154,7 +154,7 @@ func TestSettings_JSON(t *testing.T) {
 		"TEMPORAL_CONFIG_FILE": filepath.Join(filepath.Dir(page.TemporalProfile.File), "none.toml"),
 	}, page.Values)
 	require.Equal(t, map[string]bool{
-		"KAFKA_PASSWORD": true, "TEMPORAL_API_KEY": true, "TEMPORAL_TLS_CLIENT_KEY_DATA": false,
+		"KAFKA_PASSWORD": true, "TEMPORAL_API_KEY": true, "TEMPORAL_CODEC_AUTH": false, "TEMPORAL_TLS_CLIENT_KEY_DATA": false,
 	}, page.SecretsSet)
 	// External variables: read-only, as gRPC reads them, masked, and never among the values sent.
 	require.Equal(t, map[string]externalJSON{

@@ -237,6 +237,8 @@ gRPC headers sent with every call to Temporal: `TEMPORAL_GRPC_META_<NAME>` sends
 | `TEMPORAL_TLS_SERVER_NAME` |  | the address's host | The name to expect on the server's certificate, and to send as SNI. |
 | `TEMPORAL_TLS_DISABLE_HOST_VERIFICATION` |  | false | `true` or `1` to accept a server certificate that doesn't name the host. For testing only. |
 | `TEMPORAL_CLIENT_AUTHORITY` |  | the address | The `:authority` header to send, for a proxy or load balancer that routes on it. |
+| `TEMPORAL_CODEC_ENDPOINT` |  | none: payloads are not encoded | A payload codec server, such as `https://codec.example.com`, to encrypt every payload the program sends to Temporal and decrypt every payload it reads, so data reaches Temporal only encrypted. The same codec server the Temporal UI uses works. The program checks it at startup and waits for it. See [Encryption](encryption.md). |
+| `TEMPORAL_CODEC_AUTH` (secret) |  | none | The `Authorization` header value to send to `TEMPORAL_CODEC_ENDPOINT`, such as `Bearer <token>`. |
 | `TEMPORAL_GRPC_META_<NAME>` (secret) |  |  | The header's value. |
 
 ### Network
@@ -286,6 +288,8 @@ gRPC headers sent with every call to Temporal: `TEMPORAL_GRPC_META_<NAME>` sends
 | `TEMPORAL_TLS_SERVER_NAME` |  | the address's host | The name to expect on the server's certificate, and to send as SNI. |
 | `TEMPORAL_TLS_DISABLE_HOST_VERIFICATION` |  | false | `true` or `1` to accept a server certificate that doesn't name the host. For testing only. |
 | `TEMPORAL_CLIENT_AUTHORITY` |  | the address | The `:authority` header to send, for a proxy or load balancer that routes on it. |
+| `TEMPORAL_CODEC_ENDPOINT` |  | none: payloads are not encoded | A payload codec server, such as `https://codec.example.com`, to encrypt every payload the program sends to Temporal and decrypt every payload it reads, so data reaches Temporal only encrypted. The same codec server the Temporal UI uses works. The program checks it at startup and waits for it. See [Encryption](encryption.md). |
+| `TEMPORAL_CODEC_AUTH` (secret) |  | none | The `Authorization` header value to send to `TEMPORAL_CODEC_ENDPOINT`, such as `Bearer <token>`. |
 | `TEMPORAL_GRPC_META_<NAME>` (secret) |  |  | The header's value. |
 
 ### Network

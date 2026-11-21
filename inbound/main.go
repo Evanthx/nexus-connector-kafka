@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/temporalio/nexus-connector-kafka/codec"
 	"github.com/temporalio/nexus-connector-kafka/kafka"
 	"github.com/temporalio/nexus-connector-kafka/nexussend"
 	"github.com/temporalio/nexus-connector-kafka/settings"
@@ -73,6 +74,12 @@ func run() error {
 	}
 	// Logged before connecting to Kafka, so it shows even if Kafka is slow to answer.
 	log.Print(cfg.report(env, opts.Namespace, address))
+	if err := codec.WaitAtStartup(ctx, env, opts.DataConverter, slog.Default()); err != nil {
+		if ctx.Err() != nil {
+			return nil // stopped while waiting for the codec
+		}
+		return err
+	}
 	if err := kafka.ConnectAtStartup(ctx, cfg.kafka); err != nil {
 		if ctx.Err() != nil {
 			return nil // stopped while waiting for Kafka

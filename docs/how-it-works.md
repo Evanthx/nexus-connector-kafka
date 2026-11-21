@@ -11,10 +11,11 @@ The Kafka connector ships as two programs: the Inbound Connector and the Outboun
 | `nexussend/` | How the Inbound Connector sends each batch to Temporal: starting the standalone Nexus operation, retrying until it starts, and the rate limit (`INBOUND_MAX_MESSAGES_PER_MINUTE`). No Kafka code, so a future Inbound Connector for another system can use it too. |
 | `outbound/` | Method 2: the Outbound Connector, which serves `write` as a Nexus operation. |
 | `setup/` | Every environment variable each program reads (`setup.Inbound`, `setup.Outbound`), with its help, default and check, and the Temporal client options. The programs load their configuration through it. |
+| `codec/` | Encrypting payloads: adds the user's payload codec (`TEMPORAL_CODEC_ENDPOINT`, or codecs compiled in) to both programs' Temporal client, and checks it at startup. The same in every Go connector repo. See [Encryption](encryption.md). |
 | `settings/` | Declaring and reading environment variables: `Program`, `Variable`, `Env` (the process's or a map). The only code that reads the process's environment; a test fails if any other does. Also generates the tables in `docs/setup.md`. The same in every Go connector repo. |
 | `configui/` | The setup page (`make configui`): shows `setup.Inbound` and `setup.Outbound`, tests values without changing any environment, and lists the `export` lines; see [Setup](setup.md#work-out-your-settings-in-a-browser). Not part of either program. `configui/gendocs` writes `docs/setup.md`'s tables (`make docs`). |
 | `generated/kafkaapi/` | Go types for the contract, generated from `kafka.nexusrpc.yaml`. |
-| `test/` | Testing only: a receiver for the Inbound Connector, a caller for the Outbound Connector, shared end-to-end test setup, and a local Kafka. |
+| `test/` | Testing only: a receiver for the Inbound Connector, a caller for the Outbound Connector, shared end-to-end test setup, a local Kafka, and a demo codec and codec server (`test/encryption`). |
 
 At the top level, `kafka.nexusrpc.yaml` is the contract and `endpoint-description.md` is the
 description for the Outbound Connector's Nexus endpoint.

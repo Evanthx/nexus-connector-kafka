@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/temporalio/nexus-connector-kafka/codec"
 	"github.com/temporalio/nexus-connector-kafka/kafka"
 	"github.com/temporalio/nexus-connector-kafka/settings"
 	"github.com/temporalio/nexus-connector-kafka/setup"
@@ -81,6 +82,7 @@ func (c config) report(env settings.Env, namespace, address string) string {
 		{Title: "Temporal", Settings: []kafka.Setting{
 			{Name: "namespace", Value: namespace},
 			{Name: "address", Value: address},
+			{Name: "payload codec", Value: codec.Describe(env)},
 		}},
 	}
 

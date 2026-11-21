@@ -3,10 +3,10 @@ package settings
 // Temporal describes how a program connects to Temporal: with the Temporal SDK's envconfig, as the
 // temporal CLI does, from the TEMPORAL_* variables and the CLI's profile file, a variable that is
 // set overriding the file. Its Section lists every variable envconfig reads, in
-// go.temporal.io/sdk/contrib/envconfig's ClientConfigProfile.ApplyEnvVars and LoadClientConfig,
-// except TEMPORAL_CODEC_ENDPOINT and TEMPORAL_CODEC_AUTH, which have no effect without
-// LoadClientOptionsRequest.IncludeRemoteCodec. They have no check: envconfig reads them, through
-// the Env the program hands it, and reports what is wrong when the program connects.
+// go.temporal.io/sdk/contrib/envconfig's ClientConfigProfile.ApplyEnvVars and LoadClientConfig.
+// TEMPORAL_CODEC_ENDPOINT and TEMPORAL_CODEC_AUTH are read by the codec package, which encodes
+// every payload with them. They have no check here: envconfig and codec read them, through the Env
+// the program hands them, and report what is wrong when the program connects.
 type Temporal struct {
 	// Namespace is the program's namespace when neither TEMPORAL_NAMESPACE nor the profile sets
 	// one, and NamespaceHelp explains TEMPORAL_NAMESPACE for the program.
@@ -94,6 +94,17 @@ func (t Temporal) Section() *Section {
 			{
 				Name: "TEMPORAL_CLIENT_AUTHORITY", Default: "the address",
 				Help: "The `:authority` header to send, for a proxy or load balancer that routes on it.",
+			},
+			{
+				Name: "TEMPORAL_CODEC_ENDPOINT", Default: "none: payloads are not encoded",
+				Help: "A payload codec server, such as `https://codec.example.com`, to encrypt every payload the program " +
+					"sends to Temporal and decrypt every payload it reads, so data reaches Temporal only encrypted. The " +
+					"same codec server the Temporal UI uses works. The program checks it at startup and waits for it.",
+				Docs: "See [Encryption](encryption.md).",
+			},
+			{
+				Name: "TEMPORAL_CODEC_AUTH", Default: "none", Secret: true,
+				Help: "The `Authorization` header value to send to `TEMPORAL_CODEC_ENDPOINT`, such as `Bearer <token>`.",
 			},
 		},
 		Families: []*Family{{
