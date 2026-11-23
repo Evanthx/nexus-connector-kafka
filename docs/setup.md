@@ -181,8 +181,8 @@ Confirm with Temporal that both are enabled for your namespace before running.
 
 Set these where each program runs. The [setup page](#work-out-your-settings-in-a-browser) shows
 the same lists and tests your values. The tables below are generated from `setup/settings.go` and,
-for the Kafka variables both programs share, `kafka/settings.go`, with `make docs`: change a
-variable there, not here.
+for the Kafka variables both programs share, `setup/kafka.go`, with `make docs`: change a variable
+there, not here.
 
 <!-- settings:start -->
 **Inbound Connector** (`go run ./inbound`):

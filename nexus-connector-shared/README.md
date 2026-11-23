@@ -12,14 +12,14 @@ repo has a copy. Moving to the module is then only a change of import path.
 
 | Package | What it does | Used by |
 |---|---|---|
-| `settings` | Declaring and reading environment variables: `Program`, `Variable`, `Env`. The only code that reads the process's environment. Generates the tables in `docs/setup.md`. | Every program |
+| `settings` | Declaring and reading environment variables: `Program`, `Variable`, `Env`, and the parse functions most variables need (`Text`, `RequiredText`, `PositiveInt`, `Bool`, `Duration`, `Minutes`, ...), each returning its default when unset. The only code that reads the process's environment. Generates the tables in `docs/setup.md`. | Every program |
 | `temporalclient` | The Temporal client options every program connects with: `TEMPORAL_*` variables and the profile file, namespace default `connectors`, and the payload codec. The startup report's Temporal section. | Every program |
 | `codec` | Encryption: adds the user's payload codec (`TEMPORAL_CODEC_ENDPOINT`, or compiled in) to the client, encrypting payloads and errors, and checks it works at startup. | `temporalclient`, `startup` |
 | `startup` | How a program starts: collect every problem before exiting, connect to Temporal, then wait for the payload codec and the program's own system. | Every program's `main` |
-| `report` | The startup report's format: settings in sections, defaults marked, then what the program will do. | Every program |
+| `report` | The startup report's format: settings in sections, defaults marked, durations as people write them, then what the program will do. | Every program |
 | `deadline` | How long an Outbound Connector's call may take: its limit, ending `CallbackMargin` before the caller's Nexus operation times out. | Outbound Connectors |
 | `nexussend` | How an Inbound Connector sends each batch: starts the standalone Nexus operation, retries until it starts, the rate limit, and ordered mode's wait. | Inbound Connectors |
-| `configui` | The setup page. Each repo's `configui` command lists its programs and their own checks in `connector.go`. | Each repo's `configui` |
+| `configui` | The setup page: `configui.go` serves it, `page.go` is what it shows, `check.go` is its Test, `redact.go` keeps secrets out of the Test's messages, `temporal.go` is the Temporal check. Each repo's `configui` command lists its programs and their own checks in `connector.go`. | Each repo's `configui` |
 | `test/encryption` | The demo payload codec (AES-256-GCM, `DEMO_ENCRYPTION_KEY`) and its codec server (`go run ./nexus-connector-shared/test/encryption/codecserver`). For demos and tests only. | Demo workers, tests |
 | `test/codectest` | Test helpers: a codec server for the demo codec, a client using it, and a check that a payload is encrypted. | End-to-end tests |
 | `test/configuitest` | Test helpers for a repo's setup page. | Each repo's `configui` tests |

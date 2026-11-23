@@ -27,12 +27,15 @@ func BaseEnv(t *testing.T, vars settings.Map) settings.Map {
 	return env
 }
 
-// SetTemporalTimeout sets configui.TemporalTimeout for the test.
-func SetTemporalTimeout(t *testing.T, d time.Duration) {
-	t.Helper()
-	old := configui.TemporalTimeout
-	configui.TemporalTimeout = d
-	t.Cleanup(func() { configui.TemporalTimeout = old })
+// WithTemporalTimeout is a copy of programs whose Temporal checks give up after d, for a test that
+// connects to an address nothing answers on.
+func WithTemporalTimeout(programs []configui.Program, d time.Duration) []configui.Program {
+	out := make([]configui.Program, len(programs))
+	for i, p := range programs {
+		p.TemporalTimeout = d
+		out[i] = p
+	}
+	return out
 }
 
 // Get sends a GET for path to h, as from localhost.

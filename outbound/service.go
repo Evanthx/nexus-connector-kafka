@@ -6,6 +6,7 @@ import (
 
 	"github.com/nexus-rpc/sdk-go/nexus"
 	"github.com/temporalio/nexus-connector-kafka/generated/kafkaapi"
+	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/deadline"
 	"github.com/temporalio/nexus-connector-kafka/setup"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/temporalnexus"
@@ -16,7 +17,7 @@ import (
 const defaultTaskQueue = setup.DefaultTaskQueue
 
 // writeOptions are the options for the activity behind one write, which may take total in all
-// (from writeScheduleToClose). Its ID is also the prefix of each message's dedupe-id.
+// (from deadline.ScheduleToClose). Its ID is also the prefix of each message's dedupe-id.
 func writeOptions(requestID string, total time.Duration) client.StartActivityOptions {
 	return client.StartActivityOptions{
 		ID:                     "kafka-write-" + requestID,
@@ -34,7 +35,7 @@ func newService(a *activities) *nexus.Service {
 	write := temporalnexus.MustNewTemporalOperation(temporalnexus.TemporalOperationOptions[kafkaapi.WriteInput, kafkaapi.WriteOutput]{
 		Name: kafkaapi.KafkaService.Write.Name(),
 		Start: func(ctx context.Context, nc temporalnexus.NexusClient, in kafkaapi.WriteInput, opts temporalnexus.StartTemporalOperationOptions) (temporalnexus.TemporalOperationResult[kafkaapi.WriteOutput], error) {
-			total, err := writeScheduleToClose(a.maxDuration, opts.Header.Get(nexus.HeaderOperationTimeout))
+			total, err := deadline.ScheduleToClose(opts.Header.Get(nexus.HeaderOperationTimeout), a.maxDuration, 0)
 			if err != nil {
 				return temporalnexus.TemporalOperationResult[kafkaapi.WriteOutput]{}, &nexus.HandlerError{
 					Type:  nexus.HandlerErrorTypeBadRequest,

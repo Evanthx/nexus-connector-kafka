@@ -110,7 +110,7 @@ func TestSettings_JSON(t *testing.T) {
 // The Settings check reports exactly what the Inbound Connector would at startup, every problem at
 // once, and the Kafka check waits for valid Kafka settings.
 func TestTest_ReportsEverySettingsProblemAsStartupDoes(t *testing.T) {
-	ct.SetTemporalTimeout(t, time.Second)
+	programs := ct.WithTemporalTimeout(programs, time.Second)
 	values := map[string]string{
 		"KAFKA_TOPIC":               "orders",
 		"KAFKA_START_FROM":          "yesterday",
@@ -140,7 +140,7 @@ func TestTest_ReportsEverySettingsProblemAsStartupDoes(t *testing.T) {
 // The Test reads the topic's last message with the programs' Kafka code, the same one each time,
 // using the page's values in place of those where configui runs.
 func TestTest_ReadsTheLastMessage(t *testing.T) {
-	ct.SetTemporalTimeout(t, time.Second)
+	programs := ct.WithTemporalTimeout(programs, time.Second)
 	brokers := newCluster(t, []string{"orders"}, "first", "last order")
 	h := configui.NewServer(pageTitle, ct.BaseEnv(t, settings.Map{"KAFKA_TOPIC": "replaced-by-the-page"}), programs)
 	req := configui.TestRequest{Program: "outbound", Values: map[string]string{
@@ -159,7 +159,7 @@ func TestTest_ReadsTheLastMessage(t *testing.T) {
 
 // An empty topic is fine: there is just nothing to show.
 func TestTest_EmptyTopic(t *testing.T) {
-	ct.SetTemporalTimeout(t, time.Second)
+	programs := ct.WithTemporalTimeout(programs, time.Second)
 	brokers := newCluster(t, []string{"orders"})
 	_, resp := ct.PostTest(t, configui.NewServer(pageTitle, ct.BaseEnv(t, nil), programs), configui.TestRequest{Program: "outbound", Values: map[string]string{
 		"KAFKA_BROKERS": brokers, "KAFKA_TOPIC": "orders", "TEMPORAL_ADDRESS": "127.0.0.1:1",
@@ -171,7 +171,7 @@ func TestTest_EmptyTopic(t *testing.T) {
 
 // A Kafka failure shows its whole error.
 func TestTest_ShowsTheWholeError(t *testing.T) {
-	ct.SetTemporalTimeout(t, time.Second)
+	programs := ct.WithTemporalTimeout(programs, time.Second)
 	brokers := newCluster(t, []string{"orders"})
 	_, resp := ct.PostTest(t, configui.NewServer(pageTitle, ct.BaseEnv(t, nil), programs), configui.TestRequest{Program: "outbound", Values: map[string]string{
 		"KAFKA_BROKERS": brokers, "KAFKA_TOPIC": "missing", "TEMPORAL_ADDRESS": "127.0.0.1:1",
@@ -183,7 +183,7 @@ func TestTest_ShowsTheWholeError(t *testing.T) {
 
 // The Inbound Connector's Kafka check finds its dead-letter topic, or says it is missing.
 func TestTest_InboundDeadLetterTopic(t *testing.T) {
-	ct.SetTemporalTimeout(t, time.Second)
+	programs := ct.WithTemporalTimeout(programs, time.Second)
 	brokers := newCluster(t, []string{"orders", "orders-dlq"}, "m")
 	h := configui.NewServer(pageTitle, ct.BaseEnv(t, nil), programs)
 	req := configui.TestRequest{Program: "inbound", Values: map[string]string{
@@ -213,7 +213,7 @@ func TestTest_Temporal(t *testing.T) {
 	if err != nil {
 		t.Skip("the temporal CLI is not on the PATH")
 	}
-	ct.SetTemporalTimeout(t, 10*time.Second)
+	programs := ct.WithTemporalTimeout(programs, 10*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	server, err := testsuite.StartDevServer(ctx, testsuite.DevServerOptions{

@@ -106,3 +106,10 @@ func TestReady_StoppedBeforeStart(t *testing.T) {
 	err := New("Outbound Connector", env(t, nil)).Ready(ctx, func(ctx context.Context) error { return ctx.Err() })
 	require.ErrorIs(t, err, ErrStopped)
 }
+
+// An empty program name still gives a readable message.
+func TestProblems_EmptyProgram(t *testing.T) {
+	s := New("", env(t, nil))
+	s.Config(errors.New("bad"))
+	require.EqualError(t, s.Problems(), "The program can't start:\nInvalid program configuration:\n  - bad")
+}

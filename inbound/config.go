@@ -39,7 +39,7 @@ func configFrom(env settings.Env) (config, error) {
 		return config{}, err
 	}
 	return config{
-		kafka:             kafka.ConfigFrom(vals),
+		kafka:             setup.Kafka(vals),
 		group:             setup.InboundGroup.From(vals),
 		deadLetterTopic:   setup.DeadLetterTopic.From(vals),
 		deleteDeadLetters: setup.DeleteDeadLetters.From(vals),

@@ -9,7 +9,7 @@
 //	}
 //	defer c.Close()
 //	log.Print(cfg.report(env, opts))  // the startup report
-//	err = s.Ready(ctx, connectToKafka) // waits for the payload codec, then the program's own system
+//	err = s.Ready(ctx, connectToSystem) // waits for the payload codec, then the program's own system
 //
 // The payload codec (encryption) is handled here and in temporalclient: a program's own code never
 // mentions it.
@@ -45,8 +45,12 @@ type Startup struct {
 	Logger *slog.Logger
 }
 
-// New starts checking program (such as "Outbound Connector"), configured by env.
+// New starts checking program (such as "Outbound Connector"), configured by env. An empty program
+// is called "program".
 func New(program string, env settings.Env) *Startup {
+	if program == "" {
+		program = "program"
+	}
 	return &Startup{program: program, env: env, Dial: client.Dial, Logger: slog.Default()}
 }
 

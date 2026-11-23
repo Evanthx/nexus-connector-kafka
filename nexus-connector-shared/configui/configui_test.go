@@ -52,8 +52,9 @@ var (
 	}}
 
 	programs = []configui.Program{
-		{Settings: inbound, ClientOptions: temporalclient.Options},
-		{Settings: outbound, ClientOptions: temporalclient.Options, TaskQueue: func(settings.Env) string { return "q" }},
+		// Nothing answers at the addresses the tests use: give up quickly.
+		{Settings: inbound, ClientOptions: temporalclient.Options, TemporalTimeout: time.Second},
+		{Settings: outbound, ClientOptions: temporalclient.Options, TaskQueue: func(settings.Env) string { return "q" }, TemporalTimeout: time.Second},
 	}
 )
 
@@ -213,7 +214,6 @@ func TestTemporalSection_ListsWhatEnvconfigReads(t *testing.T) {
 // A value from the Temporal profile file is shown with the file and profile, a secret only as set;
 // a gRPC header it sets is an instance; and the Test says which profile it read.
 func TestSettings_TemporalProfile(t *testing.T) {
-	ct.SetTemporalTimeout(t, time.Second)
 	file := filepath.Join(t.TempDir(), "temporal.toml")
 	require.NoError(t, os.WriteFile(file, []byte(`
 [profile.default]
@@ -272,7 +272,6 @@ server_name = "staging.example"
 
 // The Settings check reports exactly what the program's Load does at startup, every problem at once.
 func TestTest_SettingsAsStartupDoes(t *testing.T) {
-	ct.SetTemporalTimeout(t, time.Second)
 	values := map[string]string{"SIZE": "many", "TEMPORAL_ADDRESS": "127.0.0.1:1"}
 	_, resp := ct.PostTest(t, newServer(t, nil), configui.TestRequest{Program: "outbound", Values: values})
 	require.False(t, resp.OK)
@@ -285,7 +284,6 @@ func TestTest_SettingsAsStartupDoes(t *testing.T) {
 // External variables come from where configui runs: the page can't send them, and a proxy's
 // password never appears in the Test's output, though a library's error quotes the URL.
 func TestTest_ExternalVariables(t *testing.T) {
-	ct.SetTemporalTimeout(t, time.Second)
 	h := newServer(t, nil)
 	for _, name := range []string{"HTTPS_PROXY", "https_proxy", "NO_PROXY"} {
 		rec := ct.Post(t, h, `{"program":"outbound","values":{"`+name+`":"http://x"}}`)

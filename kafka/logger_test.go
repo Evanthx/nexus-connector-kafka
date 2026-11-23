@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/settings"
 )
 
 // syncBuffer is a bytes.Buffer safe to write from franz-go's goroutines.
@@ -68,22 +67,6 @@ func TestClientLogger_Level(t *testing.T) {
 	l.Log(l.Level(), "an error")
 	require.NotContains(t, buf.String(), "a warning")
 	require.Contains(t, buf.String(), "Kafka client: an error")
-}
-
-func TestConfigFrom_ClientLogLevel(t *testing.T) {
-	env := settings.Map{"KAFKA_BROKERS": "b:9092", "KAFKA_TOPIC": "t"}
-	cfg, err := LoadConfig(env)
-	require.NoError(t, err)
-	require.Equal(t, slog.LevelWarn, cfg.clientLogLevel())
-
-	env["KAFKA_CLIENT_LOG_LEVEL"] = "debug"
-	cfg, err = LoadConfig(env)
-	require.NoError(t, err)
-	require.Equal(t, slog.LevelDebug, cfg.clientLogLevel())
-
-	env["KAFKA_CLIENT_LOG_LEVEL"] = "loud"
-	_, err = LoadConfig(env)
-	require.EqualError(t, err, `KAFKA_CLIENT_LOG_LEVEL must be error, warn, info or debug, not "loud"`)
 }
 
 // The member logs partitions it is given, and keeps them for the Inbound Connector's status line.

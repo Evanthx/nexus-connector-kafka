@@ -6,10 +6,10 @@ The Kafka connector ships as two programs: the Inbound Connector and the Outboun
 
 | Folder | What is in it |
 |---|---|
-| `kafka/` | Kafka code both programs share: connecting, reading in batches, writing, dead letters. No Temporal code. `settings.go` declares the Kafka variables both programs read. |
+| `kafka/` | Kafka code both programs share: connecting, reading in batches, writing, dead letters. No Temporal code. |
 | `inbound/` | Method 1: the Inbound Connector, which streams each message into Temporal. |
 | `outbound/` | Method 2: the Outbound Connector, which serves `write` as a Nexus operation. |
-| `setup/` | Every environment variable each program reads (`setup.Inbound`, `setup.Outbound`), with its help, default and check. The programs load their configuration through it. |
+| `setup/` | Every environment variable each program reads (`setup.Inbound`, `setup.Outbound`), with its help, default and check; `kafka.go` has the Kafka variables both programs read. The programs load their configuration through it. |
 | `configui/` | The setup page (`make configui`): `connector.go` lists the two programs and their Kafka checks; the page itself is in `nexus-connector-shared/configui`. It shows `setup.Inbound` and `setup.Outbound`, tests values without changing any environment, and lists the `export` lines; see [Setup](setup.md#work-out-your-settings-in-a-browser). Not part of either program. `configui/gendocs` writes `docs/setup.md`'s tables (`make docs`). |
 | `generated/kafkaapi/` | Go types for the contract, generated from `kafka.nexusrpc.yaml`. |
 | `test/` | Testing only: a receiver for the Inbound Connector, a caller for the Outbound Connector, shared end-to-end test setup, and a local Kafka. |

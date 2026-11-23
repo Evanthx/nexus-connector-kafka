@@ -2,9 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -121,23 +118,6 @@ func (r *reader) deliverBeforeRebalance(ctx context.Context, records []kafkaapi.
 		return err
 	}
 	return r.deliver(ctx, source, records)
-}
-
-// source is the source key for this batch's operation IDs (see sourceKey). It asks Kafka for the
-// topic's identity for every batch, retrying until it answers or ctx ends, so a topic deleted and
-// created again while the Inbound Connector runs gets new IDs: the new topic's offsets mean
-// different messages.
-func (r *reader) source(ctx context.Context) (string, error) {
-	for attempt := 1; ; attempt++ {
-		id, err := r.identify(ctx)
-		if err == nil {
-			return sourceKey(id, r.topic, r.group), nil
-		}
-		r.logger.Warn("Could not get the topic's identity; retrying", "attempt", attempt, "error", err)
-		if err := r.sleep(ctx, attempt); err != nil {
-			return "", err
-		}
-	}
 }
 
 // deliver delivers a batch. Partitions are delivered in parallel; within a partition, operations
@@ -270,57 +250,4 @@ func (r *reader) sleep(ctx context.Context, attempt int) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-}
-
-// reportStatus logs a status line every statusInterval in which nothing was delivered, until ctx
-// ends. With partitions, a quiet topic looks like this; with none, the group gave this Inbound
-// Connector nothing to read, which the log lines from the group explain.
-func (r *reader) reportStatus(ctx context.Context) {
-	ticker := time.NewTicker(r.statusInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-		since := time.Since(time.Unix(0, r.lastDelivered.Load())).Round(time.Second)
-		if since < r.statusInterval {
-			continue
-		}
-		if started := r.batchStarted.Load(); started != 0 {
-			// Most often ordered mode waiting for a long operation; otherwise retries, which log
-			// their own warnings, or the rate limit.
-			r.logger.Info("Still delivering a batch: waiting for its operations to start, or with INBOUND_ORDERING=partition "+
-				"to complete", "topic", r.topic, "for", time.Since(time.Unix(0, started)).Round(time.Second).String())
-			continue
-		}
-		parts := r.partitions()
-		if len(parts) == 0 {
-			r.logger.Info("Waiting for messages, but the consumer group has given this Inbound Connector no partitions: "+
-				"other Inbound Connectors in the group have them all, or the group hasn't finished joining",
-				"topic", r.topic, "group", r.group, "lastDelivered", since.String()+" ago")
-			continue
-		}
-		r.logger.Info("Waiting for messages", "topic", r.topic, "partitions", parts, "lastDelivered", since.String()+" ago")
-	}
-}
-
-// sourceKey names where messages come from: the Kafka cluster, the topic (its ID changes if it
-// is deleted and created again), and the consumer group. It is a hash, so names that contain the
-// ID's separator can't run together: topic "a-b" with group "c" and topic "a" with group "b-c"
-// get different keys.
-func sourceKey(id kafka.TopicIdentity, topic, group string) string {
-	b, _ := json.Marshal([]string{id.Cluster, id.TopicID, topic, group}) // strings always marshal
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:16])
-}
-
-// operationID identifies the operation for consecutive records of one partition: their source
-// (see sourceKey), partition, and first and last offsets. Records delivered again in the same
-// batch get the same ID, so they match the operation already started. A batch delivered again can
-// end at a different offset, though, and then gets a new ID: see "Duplicates are possible" in docs/how-it-works.md.
-func operationID(source string, recs []kafkaapi.Record) string {
-	first, last := recs[0], recs[len(recs)-1]
-	return fmt.Sprintf("kafka-%s-%d-%d-%d", source, first.Partition, first.Offset, last.Offset)
 }

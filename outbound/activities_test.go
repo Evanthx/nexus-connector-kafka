@@ -21,7 +21,7 @@ func TestConfigFrom(t *testing.T) {
 	cfg, s, err := configFrom(kafkaEnv(nil))
 	require.NoError(t, err)
 	require.Equal(t, "orders", cfg.Topic)
-	require.Equal(t, config{taskQueue: defaultTaskQueue}, s)
+	require.Equal(t, config{taskQueue: defaultTaskQueue, maxDuration: 10 * time.Minute}, s, "the defaults")
 
 	_, s, err = configFrom(kafkaEnv(settings.Map{"NEXUS_TASK_QUEUE": "nexus-connector-kafka-orders"}))
 	require.NoError(t, err)

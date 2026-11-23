@@ -256,15 +256,16 @@ Needs Go SDK v1.50 or later (`temporalnexus.StartActivity`, the standalone Nexus
   (`ErrRejected`) that the Outbound Connector maps to an `ApplicationError`. Both programs share it.
 - **A new environment variable goes in the settings file only**: a `settings.Define` with its
   help, default, required and check, in a section of `setup.Inbound` and/or `setup.Outbound` in
-  `setup/settings.go`, or, for a Kafka variable both programs read, in `kafka.SettingsSection` in
-  `kafka/settings.go`. Read it with `.From(vals)` in `configFrom` (`inbound/config.go`,
-  `outbound/main.go`), or `kafka.ConfigFrom`. Then run `make docs`; a test fails while
+  `setup/settings.go`, or, for a Kafka variable both programs read, in `setup.KafkaSection` in
+  `setup/kafka.go`. Read it with `.From(vals)` in `configFrom` (`inbound/config.go`,
+  `outbound/config.go`), or `setup.Kafka`. Use the shared parse functions (`settings.Text`,
+  `settings.PositiveInt`, `settings.Minutes`, ...) where one fits. Then run `make docs`; a test fails while
   docs/setup.md is stale. A rule between variables, such as "`KAFKA_DEAD_LETTER_TOPIC` or
   `DELETE_DEAD_LETTERS=true`, not both", goes in the `Program`'s `Rules`. Never read the environment directly
   (`os.Getenv`, `os.LookupEnv`, `os.Environ`, ...): only `nexus-connector-shared/settings/env.go`
   may, and its `nobypass_test.go` fails otherwise.
 - Add a new setting to the program's startup report too (`config.report` in `inbound/config.go`,
-  `config.report` in `outbound/main.go`, built with `report.Format` and `report.Env`). The
+  `config.report` in `outbound/config.go`, built with `report.Format` and `report.Env`). The
   report never shows the password.
 - For a test that guards a fix, revert the fix and confirm the test fails before calling it done.
   Existing guard tests were checked this way.
@@ -318,9 +319,9 @@ Needs Go SDK v1.50 or later (`temporalnexus.StartActivity`, the standalone Nexus
   too-large error is an internal SDK type. Every other error retries forever, so an outage stalls
   the stream instead of draining it into dead letters. `DELETE_DEAD_LETTERS=true` makes
   `deadLetter` log and skip instead.
-- `reportStatus` logs `Waiting for messages` with the member's partitions every
+- `reportStatus` (`status.go`) logs `Waiting for messages` with the member's partitions every
   `INBOUND_STATUS_INTERVAL` (5m; 0 off) in which nothing was delivered.
-- The operation ID is `kafka-<source>-<partition>-<first>-<last>`. `sourceKey` hashes cluster ID,
+- The operation ID (`operationid.go`) is `kafka-<source>-<partition>-<first>-<last>`. `sourceKey` hashes cluster ID,
   topic ID, topic, and group as a JSON array, which can't be ambiguous, and the identity is
   fetched for every batch. A redelivered batch can end at another offset and get a new ID, so
   batches can duplicate messages; `KAFKA_BATCH_SIZE=1` rules that out.
@@ -334,7 +335,7 @@ Needs Go SDK v1.50 or later (`temporalnexus.StartActivity`, the standalone Nexus
 **`setup/`**
 - `setup/settings.go` declares `Inbound` and `Outbound`, the `settings.Program` of each: every
   variable it reads, in sections, with its check, plus the Inbound Connector's dead-letter rule. The
-  Kafka section is `kafka.SettingsSection` (`kafka/settings.go`), shared by both; the Temporal section
+  Kafka section is `KafkaSection` (`setup/kafka.go`), shared by both; the Temporal section
   lists the variables envconfig reads, unchecked. They live in a package of their own because
   `inbound` and `outbound` are main packages, which configui can't import, and `kafka/` has no
   Temporal imports.
@@ -382,8 +383,7 @@ Needs Go SDK v1.50 or later (`temporalnexus.StartActivity`, the standalone Nexus
 **`configui/`**
 - The setup page, never imported by either program. The page is `nexus-connector-shared/configui`
   (it renders only from `/api/settings`; its own tests use made-up programs); this repo's
-  `main.go` runs it and `connector.go` lists the two programs and their Kafka checks (`checkKafka`, `inboundChecks`,
-  `outboundChecks`). A test runs against a `settings.Map` built from the process's environment
+  `main.go` runs it and `connector.go` lists the two programs and their Kafka checks (`checkKafka`, `inboundChecks`). A test runs against a `settings.Map` built from the process's environment
   with the page's values in place of every variable the program owns; nothing calls `os.Setenv`.
 - `GET /api/settings`: the programs and the environment's values. Secrets are sent only as set or
   not set. `POST /api/test`: the Settings, Temporal and Kafka checks; secret values are redacted

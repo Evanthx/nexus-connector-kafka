@@ -19,7 +19,7 @@ const DedupeHeader = "dedupe-id"
 type activities struct {
 	writer      *kafka.Writer
 	topic       string
-	maxDuration time.Duration // the longest a write may take (KAFKA_MAX_DURATION_MINUTES); 0 for the default
+	maxDuration time.Duration // the longest a write may take, retries included (KAFKA_MAX_DURATION_MINUTES)
 }
 
 // Write writes in.Messages in order. Each gets a dedupe-id header built from the activity's ID,

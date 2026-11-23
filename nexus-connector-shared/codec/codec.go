@@ -49,6 +49,9 @@ const (
 //
 // On the way to Temporal, a remote codec (if set) runs first, then these, last to first; on the
 // way back, the reverse.
+//
+// Add to it only in an init function: it is read whenever a client's options are loaded, and is
+// never locked.
 var PayloadCodecs []converter.PayloadCodec
 
 // requestTimeout bounds each call to the remote codec server.

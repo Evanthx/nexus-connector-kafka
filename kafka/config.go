@@ -29,8 +29,8 @@ const (
 	StartFromNewest StartFrom = "newest"
 )
 
-// Config is how to reach the topic. ConfigFrom and LoadConfig read it from the environment
-// variables in settings.go.
+// Config is how to reach the topic. setup.Kafka and setup.LoadKafka read it from the environment
+// variables in setup/kafka.go.
 type Config struct {
 	Brokers   []string
 	Topic     string

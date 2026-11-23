@@ -9,7 +9,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/temporalio/nexus-connector-kafka/generated/kafkaapi"
-	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/settings"
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kfake"
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -334,14 +333,4 @@ func TestToKafkaRecord(t *testing.T) {
 	require.Equal(t, "k", string(r.Key))
 	require.Equal(t, "v", string(r.Value))
 	require.Equal(t, []kgo.RecordHeader{{Key: "a", Value: []byte("1")}, {Key: "dedupe-id", Value: []byte("x-0")}}, r.Headers)
-}
-
-func TestLoadConfig(t *testing.T) {
-	cfg, err := LoadConfig(settings.Map{"KAFKA_BROKERS": "a:9092,b:9092", "KAFKA_TOPIC": "t"})
-	require.NoError(t, err)
-	require.Equal(t, []string{"a:9092", "b:9092"}, cfg.Brokers)
-
-	_, err = LoadConfig(settings.Map{})
-	require.EqualError(t, err, "set KAFKA_BROKERS: the Kafka brokers, as comma-separated host:port"+
-		"\nset KAFKA_TOPIC: the topic to serve", "every invalid value is reported")
 }

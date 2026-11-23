@@ -60,7 +60,7 @@ var (
 // with its whole error.
 func checkKafka(ctx context.Context, env settings.Env, more func(ctx context.Context, env settings.Env, cfg kafka.Config, c *configui.Check)) configui.Check {
 	c := configui.Check{Title: "Kafka"}
-	cfg, err := kafka.LoadConfig(env)
+	cfg, err := setup.LoadKafka(env)
 	if err != nil {
 		c.Skipped = "Fix the Kafka settings first."
 		return c

@@ -1,6 +1,7 @@
 package configui
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -19,8 +20,9 @@ import (
 	"go.temporal.io/sdk/log"
 )
 
-// TemporalTimeout bounds the Temporal check: connecting, finding the namespace and the endpoints.
-var TemporalTimeout = 10 * time.Second
+// defaultTemporalTimeout bounds the Temporal check, connecting, finding the namespace and the
+// endpoints, for a Program with no TemporalTimeout.
+const defaultTemporalTimeout = 10 * time.Second
 
 // checkTemporal connects to Temporal with the client options p loads from env, as the program
 // would, checks that the namespace exists, that the endpoint p calls exists if it calls one, and,
@@ -38,7 +40,7 @@ func checkTemporal(ctx context.Context, p Program, env settings.Env) Check {
 	if address == "" {
 		address = client.DefaultHostPort
 	}
-	ctx, cancel := context.WithTimeout(ctx, TemporalTimeout)
+	ctx, cancel := context.WithTimeout(ctx, cmp.Or(p.TemporalTimeout, defaultTemporalTimeout))
 	defer cancel()
 	cl, err := client.DialContext(ctx, opts)
 	if err != nil {
