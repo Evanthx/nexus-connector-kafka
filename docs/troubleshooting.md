@@ -16,7 +16,12 @@ Common reasons:
 | Reason | Cause | Fix |
 |---|---|---|
 | `connection refused` or dial error | Brokers wrong or unreachable. | Check `KAFKA_BROKERS`. |
-| `SASL_AUTHENTICATION_FAILED` | Username or password wrong. | Check `KAFKA_USERNAME` and `KAFKA_PASSWORD`. |
+| `SASL_AUTHENTICATION_FAILED` | Username or password wrong, or the wrong `KAFKA_SASL_MECHANISM`. | Check `KAFKA_USERNAME`, `KAFKA_PASSWORD` and `KAFKA_SASL_MECHANISM`. |
+| `UNSUPPORTED_SASL_MECHANISM` | Kafka doesn't accept that login method. | Set `KAFKA_SASL_MECHANISM` to one it accepts. |
+| `is TLS missing?`, `plaintext connection speaking to a tls endpoint`, or `EOF` | Kafka needs TLS and the program isn't using it. | Set `KAFKA_TLS=true`. |
+| `i/o timeout` with TLS on | The broker's port doesn't use TLS. | Unset `KAFKA_TLS`, or use the broker's TLS port. |
+| `certificate is not trusted` or `certificate signed by unknown authority` | The brokers' certificate isn't from a CA the program trusts. | Set `KAFKA_TLS_SERVER_CA_CERT_PATH` to the CA's certificate. |
+| `certificate required` or `bad certificate` | Kafka needs a client certificate (mTLS), or refused the one given. | Set or check `KAFKA_TLS_CLIENT_CERT_PATH` and `KAFKA_TLS_CLIENT_KEY_PATH`. |
 | `UNKNOWN_TOPIC_OR_PARTITION` | Topic doesn't exist. | Create the topic or check `KAFKA_TOPIC`. |
 
 Once Kafka answers, it logs `Connected to Kafka brokers=... topic=... cluster=...`.
@@ -136,7 +141,9 @@ temporal nexus operation terminate --namespace connectors --operation-id <operat
 ## Known limitations
 
 - **One topic** per Outbound Connector or Inbound Connector process, set by `KAFKA_TOPIC`.
-- **SASL/SCRAM-SHA-256 or no authentication.** TLS and other SASL mechanisms aren't supported yet.
+- **No AWS IAM, OAuth, or Kerberos login yet.** TLS, a username and password (SCRAM-SHA-256,
+  SCRAM-SHA-512, PLAIN), and client certificates (mTLS) are supported. See [Connecting to
+  Kafka](setup.md#connecting-to-kafka).
 - **The dead-letter topic is only for messages Temporal refuses.** The Inbound Connector doesn't see
   failures inside the operations it starts.
 - **`write` can't write a tombstone.** A message's `value` is always bytes, so `write` has no way

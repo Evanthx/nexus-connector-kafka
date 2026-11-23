@@ -1,32 +1,63 @@
-# A single-node Kafka (KRaft) for trying the Kafka connector. Clients log in with SASL/SCRAM-SHA-256
-# using the credentials in .env.
+# A single-node Kafka (KRaft) for trying the Kafka connector. Clients log in with the username and
+# password in .env, or a client certificate.
 #
-# Listeners:
-#   SASL_PLAINTEXT on 9092  - the only port published to the host; requires username and password.
+# Listeners published to the host:
+#   SASL_PLAINTEXT on 9092  - no TLS; username and password, SCRAM-SHA-256 or SCRAM-SHA-512.
+#   TLS on 9094             - TLS (SASL_SSL); username and password, SCRAM-SHA-256, SCRAM-SHA-512 or PLAIN.
+#   MTLS on 9095            - TLS (SSL) with a client certificate; no username or password.
+# Inside only:
 #   INTERNAL (PLAINTEXT)    - broker-to-broker and admin bootstrap; inside the compose network only.
 #   CONTROLLER (PLAINTEXT)  - KRaft controller quorum, inside the container only.
+#
+# kafka-certs makes a test CA and certificates in test/kafka/certs for the TLS listeners and for
+# clients: ca.pem (KAFKA_TLS_SERVER_CA_CERT_PATH), client.pem and client-key.pem (mTLS).
 #
 # A SCRAM user must exist before a client can log in, and creating one needs a running broker, so
 # kafka-init creates it over the INTERNAL listener once the broker is up.
 name: nexus-connector-kafka
 services:
+  kafka-certs:
+    image: apache/kafka:4.3.1
+    user: "0"
+    volumes:
+      - ./certs:/certs
+      - ./config/make-certs.sh:/make-certs.sh:ro
+    entrypoint: ["/bin/sh", "/make-certs.sh"]
+    restart: "no"
+
   kafka:
     image: apache/kafka:4.3.1
     container_name: nexus-connector-kafka
+    depends_on:
+      kafka-certs:
+        condition: service_completed_successfully
     ports:
       - "9092:9092"
+      - "9094:9094"
+      - "9095:9095"
     volumes:
       - ./config/kafka_server_jaas.conf:/etc/kafka/kafka_server_jaas.conf:ro
+      - ./certs:/certs:ro
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_LISTENERS: SASL_PLAINTEXT://0.0.0.0:9092,CONTROLLER://localhost:9093,INTERNAL://0.0.0.0:19092
-      KAFKA_ADVERTISED_LISTENERS: SASL_PLAINTEXT://localhost:9092,INTERNAL://kafka:19092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: SASL_PLAINTEXT:SASL_PLAINTEXT,CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT
+      KAFKA_LISTENERS: SASL_PLAINTEXT://0.0.0.0:9092,CONTROLLER://localhost:9093,INTERNAL://0.0.0.0:19092,TLS://0.0.0.0:9094,MTLS://0.0.0.0:9095
+      KAFKA_ADVERTISED_LISTENERS: SASL_PLAINTEXT://localhost:9092,INTERNAL://kafka:19092,TLS://localhost:9094,MTLS://localhost:9095
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: SASL_PLAINTEXT:SASL_PLAINTEXT,CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,TLS:SASL_SSL,MTLS:SSL
       KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
-      KAFKA_SASL_ENABLED_MECHANISMS: SCRAM-SHA-256
+      KAFKA_SASL_ENABLED_MECHANISMS: SCRAM-SHA-256,SCRAM-SHA-512
+      # PLAIN only over TLS. Its users are listed here, since PLAIN doesn't use the cluster's SCRAM users.
+      KAFKA_LISTENER_NAME_TLS_SASL_ENABLED_MECHANISMS: SCRAM-SHA-256,SCRAM-SHA-512,PLAIN
+      KAFKA_LISTENER_NAME_TLS_PLAIN_SASL_JAAS_CONFIG: >-
+        org.apache.kafka.common.security.plain.PlainLoginModule required user_${KAFKA_USERNAME}="${KAFKA_PASSWORD}";
+      # The listener names avoid "SSL://", which makes the image expect JKS keystores and passwords.
+      KAFKA_SSL_KEYSTORE_TYPE: PEM
+      KAFKA_SSL_KEYSTORE_LOCATION: /certs/server-keystore.pem
+      KAFKA_SSL_TRUSTSTORE_TYPE: PEM
+      KAFKA_SSL_TRUSTSTORE_LOCATION: /certs/ca.pem
+      KAFKA_LISTENER_NAME_MTLS_SSL_CLIENT_AUTH: required
       KAFKA_OPTS: -Djava.security.auth.login.config=/etc/kafka/kafka_server_jaas.conf
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
@@ -49,8 +80,10 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - >
+        for m in SCRAM-SHA-256 SCRAM-SHA-512; do
         /opt/kafka/bin/kafka-configs.sh --bootstrap-server kafka:19092 --alter
         --entity-type users --entity-name "$$KAFKA_USERNAME"
-        --add-config "SCRAM-SHA-256=[password=$$KAFKA_PASSWORD]"
-        && echo "Created SCRAM-SHA-256 user $$KAFKA_USERNAME"
+        --add-config "$$m=[password=$$KAFKA_PASSWORD]" || exit 1;
+        done
+        && echo "Created SCRAM-SHA-256 and SCRAM-SHA-512 user $$KAFKA_USERNAME"
     restart: "no"

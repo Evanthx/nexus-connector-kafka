@@ -60,8 +60,9 @@ docker compose -f test/kafka/docker-compose.yml up -d --wait
 test/kafka/scripts/seed.sh
 ```
 
-This starts a single-node Kafka on `localhost:9092` that requires a SASL/SCRAM login, and returns
-when it is up. The seed script creates two topics with 3 partitions each, `customers` and `orders`,
+This starts a single-node Kafka on `localhost:9092` that requires a username and password, and
+returns when it is up. It also listens with TLS on `9094` and with mTLS on `9095`; see [Try TLS and
+mTLS](#try-tls-and-mtls). The seed script creates two topics with 3 partitions each, `customers` and `orders`,
 plus `customers-dead-letters` for the Inbound Connector. It writes 10 messages to `customers` and 3
 to `orders`. The settings are in [`test/kafka/.env`](../test/kafka/.env).
 
@@ -174,6 +175,28 @@ print interleaved, so it isn't necessarily the last line. Pass another topic nam
 
 To run the same demo with every payload encrypted, see
 [Encryption: try it in the demo](encryption.md#try-it-in-the-demo).
+
+## Try TLS and mTLS
+
+The local Kafka also has TLS listeners, with certificates from a test CA that it makes in
+`test/kafka/certs/` the first time it starts. To run any step above over TLS, set these in its
+terminal after loading `test/kafka/.env`:
+
+```bash
+# TLS, with a username and password (SCRAM-SHA-256, SCRAM-SHA-512 or PLAIN)
+export KAFKA_BROKERS=localhost:9094
+export KAFKA_TLS_SERVER_CA_CERT_PATH=test/kafka/certs/ca.pem
+export KAFKA_SASL_MECHANISM=PLAIN
+
+# or mTLS: a client certificate instead of a username and password
+export KAFKA_BROKERS=localhost:9095
+export KAFKA_TLS_SERVER_CA_CERT_PATH=test/kafka/certs/ca.pem
+export KAFKA_TLS_CLIENT_CERT_PATH=test/kafka/certs/client.pem
+export KAFKA_TLS_CLIENT_KEY_PATH=test/kafka/certs/client-key.pem
+unset KAFKA_USERNAME KAFKA_PASSWORD
+```
+
+The startup report's `KAFKA_TLS` line shows what the program uses.
 
 ## Tear down
 

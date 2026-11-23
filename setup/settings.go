@@ -33,7 +33,7 @@ var Inbound = &settings.Program{
 		temporalSection,
 		networkSection,
 	},
-	Rules: []func(settings.Env) error{deadLetterRule, rateLimitRule},
+	Rules: append([]func(settings.Env) error{deadLetterRule, rateLimitRule}, KafkaRules...),
 }
 
 // Outbound is the Outbound Connector's process and every environment variable it reads.
@@ -49,6 +49,7 @@ var Outbound = &settings.Program{
 		temporalSection,
 		networkSection,
 	},
+	Rules: KafkaRules,
 }
 
 // temporalSection is the Temporal variables both programs show. The Temporal SDK's envconfig reads

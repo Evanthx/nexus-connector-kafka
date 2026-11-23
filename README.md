@@ -66,7 +66,7 @@ Every team that connects Kafka to Temporal tends to build the same things:
   Temporal, so a burst on the topic can't overwhelm your service; the rest wait in Kafka.
 - **Identifying retried writes.** The Outbound Connector adds a `dedupe-id` header to each written
   message, the same on every retry, so consumers can drop a message a retried write sent twice.
-- **Keeping credentials in one place.** The Outbound Connector holds the SASL credentials. Callers
+- **Keeping credentials in one place.** The Outbound Connector holds the Kafka login. Callers
   reach the topic through a Nexus endpoint without needing Kafka access themselves.
 
 ## When to use it
@@ -77,15 +77,15 @@ Use it when:
 - Workflows write to Kafka and want retries, retry-safe `dedupe-id` headers, and credential isolation handled for
   them.
 - Multiple namespaces or languages write to the same topic through one Outbound Connector that
-  holds the SASL credentials.
+  holds the Kafka login.
 - You want to control who can write by granting access to a Nexus endpoint rather than
   distributing credentials.
 
 It is not a fit when:
 
-- Your Kafka cluster uses TLS or a SASL mechanism other than SCRAM-SHA-256 (not currently
-  supported; set `KAFKA_USERNAME` and `KAFKA_PASSWORD` for SCRAM-SHA-256, or leave both unset for
-  no authentication).
+- Your Kafka logs in with AWS IAM, OAuth, or Kerberos (not currently supported). TLS, a username
+  and password, and client certificates (mTLS) are supported; see [Connecting to
+  Kafka](docs/setup.md#connecting-to-kafka).
 - You need exactly-once delivery; the Inbound Connector delivers at least once.
 - You need to serve more than one topic from one process; run a separate Outbound Connector or
   Inbound Connector per topic.
@@ -132,7 +132,7 @@ You can, and for a single write that is often enough. To consume a topic, you al
 consumer group membership and offsets, commit them correctly, and restart cleanly after a failure.
 The Inbound Connector does all of that. Running the Outbound Connector behind a Nexus endpoint adds
 what an activity in your own worker can't: other teams, namespaces, and languages call the same
-Outbound Connector, the SASL credentials live only on it, and access is granted per endpoint.
+Outbound Connector, the Kafka login lives only on it, and access is granted per endpoint.
 The trade-off is a Nexus call in front of each operation.
 
 **Can I generate strongly typed clients for this Outbound Connector?**
@@ -140,10 +140,11 @@ Yes. The Outbound Connector's operations are defined in `kafka.nexusrpc.yaml`, a
 nexgen generates typed input and output classes in Go, Python, TypeScript, and Java. See
 [Typed clients](docs/clients.md).
 
-**How do I configure SASL credentials?**
-Set `KAFKA_USERNAME` and `KAFKA_PASSWORD` on the Outbound Connector or Inbound Connector process.
-Only SASL/SCRAM-SHA-256 is supported; TLS and other SASL mechanisms are not currently supported. Leave
-both unset for no authentication. See [Environment variables](docs/setup.md#environment-variables)
+**How do I connect it to my Kafka's login and TLS?**
+Set `KAFKA_TLS=true` if your Kafka needs encrypted connections, and either `KAFKA_USERNAME` and
+`KAFKA_PASSWORD` (with `KAFKA_SASL_MECHANISM` if it isn't SCRAM-SHA-256) or a client certificate,
+on the Outbound Connector or Inbound Connector process. [Connecting to
+Kafka](docs/setup.md#connecting-to-kafka) explains which to use, with a Confluent Cloud example. See [Environment variables](docs/setup.md#environment-variables)
 for every variable, and [the setup page](docs/setup.md#work-out-your-settings-in-a-browser) to try
 your settings before running either program.
 

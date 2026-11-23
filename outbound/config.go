@@ -25,7 +25,11 @@ func configFrom(env settings.Env) (kafka.Config, config, error) {
 	if err != nil {
 		return kafka.Config{}, config{}, err
 	}
-	return setup.Kafka(vals), config{
+	kafkaCfg, err := setup.Kafka(vals)
+	if err != nil {
+		return kafka.Config{}, config{}, err
+	}
+	return kafkaCfg, config{
 		taskQueue:   setup.TaskQueue.From(vals),
 		maxDuration: setup.MaxDuration.From(vals),
 	}, nil

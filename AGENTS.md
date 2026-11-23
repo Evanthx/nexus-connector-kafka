@@ -38,8 +38,11 @@ Each process serves one topic. For several topics, run one process per topic.
     `--dynamic-config-value activity.enableCallbacks=true`.
   - On Temporal Cloud, ask the user to confirm with Temporal that both are enabled for the
     namespace. Don't assume.
-- Kafka reachable from the process, with no authentication or SASL/SCRAM-SHA-256. TLS and other
-  SASL mechanisms are not supported: tell the user instead of working around it.
+- Kafka reachable from the process. Supported: plaintext or TLS (`KAFKA_TLS`, optionally
+  `KAFKA_TLS_SERVER_CA_CERT_PATH`), and no login, a username and password (`KAFKA_SASL_MECHANISM`:
+  `SCRAM-SHA-256` default, `SCRAM-SHA-512`, `PLAIN`), or mTLS (`KAFKA_TLS_CLIENT_CERT_PATH`,
+  `KAFKA_TLS_CLIENT_KEY_PATH`). AWS IAM, OAuth and Kerberos are not supported: tell the user
+  instead of working around it. `docs/setup.md#connecting-to-kafka` maps hosted services to settings.
 
 Both programs connect to Temporal like the `temporal` CLI: `TEMPORAL_ADDRESS`,
 `TEMPORAL_NAMESPACE` (default `connectors`), `TEMPORAL_API_KEY`, `TEMPORAL_TLS_*`, and the
@@ -80,7 +83,7 @@ selected Temporal profile file sets beside each `TEMPORAL_*` field.
    |---|---|
    | `KAFKA_BROKERS` | Comma-separated `host:port`. |
    | `KAFKA_TOPIC` | The topic to stream. |
-   | `KAFKA_USERNAME`, `KAFKA_PASSWORD` | SASL/SCRAM-SHA-256 login, if needed. |
+   | `KAFKA_USERNAME`, `KAFKA_PASSWORD`, `KAFKA_SASL_MECHANISM`, `KAFKA_TLS*` | Kafka login and TLS, if needed (see Requirements). |
    | `KAFKA_GROUP` | The Inbound Connector's consumer group. Inbound Connectors with the same consumer group share the partitions. |
    | `KAFKA_DEAD_LETTER_TOPIC` | An existing topic, different from `KAFKA_TOPIC`. Or `DELETE_DEAD_LETTERS=true` instead. |
    | `INBOUND_ENDPOINT` | The endpoint from step 3. |
@@ -102,7 +105,7 @@ selected Temporal profile file sets beside each `TEMPORAL_*` field.
    | Variable | Value |
    |---|---|
    | `KAFKA_BROKERS`, `KAFKA_TOPIC` | As for the Inbound Connector. Callers can't choose another topic. |
-   | `KAFKA_USERNAME`, `KAFKA_PASSWORD` | If needed. |
+   | `KAFKA_USERNAME`, `KAFKA_PASSWORD`, `KAFKA_SASL_MECHANISM`, `KAFKA_TLS*` | If needed. |
    | `NEXUS_TASK_QUEUE` | Default `nexus-connector-kafka`. Give each Outbound Connector for a different topic its own. |
    | `KAFKA_MAX_DURATION_MINUTES` | Optional. Longest a write retries, in whole minutes. Default 10. |
 
@@ -177,7 +180,11 @@ If configuration and Temporal are OK, both programs log:
 2. `Connected to Kafka brokers=... topic=... cluster=...`. Until then, a `WARN Can't reach Kafka or
    see the topic yet; retrying` every 5 seconds with the reason:
    - `connection refused` or a dial error means the brokers are wrong or unreachable.
-   - `SASL_AUTHENTICATION_FAILED` means the username or password is wrong.
+   - `SASL_AUTHENTICATION_FAILED` means the username, password or `KAFKA_SASL_MECHANISM` is wrong.
+   - `is TLS missing?` or `plaintext connection speaking to a tls endpoint` means Kafka needs
+     `KAFKA_TLS=true`; `certificate is not trusted` means it
+     needs `KAFKA_TLS_SERVER_CA_CERT_PATH`; `certificate required` means it needs a client
+     certificate.
    - `UNKNOWN_TOPIC_OR_PARTITION` means the topic doesn't exist.
 
    Fix the cause; the program carries on by itself once Kafka answers.
@@ -288,6 +295,12 @@ Needs Go SDK v1.50 or later (`temporalnexus.StartActivity`, the standalone Nexus
     `AllowRebalance`.
 - `Identify` reads the cluster ID and topic ID with a plain client, since a new group client would
   join the group. `GroupMember.Identity` does the same through the member.
+- `auth.go`: `Config.authOpts` adds `kgo.DialTLSConfig` when `Config.TLS` is set and the SASL
+  mechanism (`Mechanism`, "" = SCRAM-SHA-256) when `Username` is. `TLSFiles.Load` builds the
+  `tls.Config` from the CA, client certificate and key paths. `setup/kafka.go` reads the variables;
+  `KafkaRules` (in both programs' `Rules`) checks them together and that the files load, and
+  `setup.Kafka` returns an error since it reads the files. Tests use kfake's `EnableSASL`,
+  `Superuser` and `TLS` with certificates from `test/testcerts`.
 - `clientOpts` gives every kgo client `kgo.WithLogger(clientLogger)` (`kafka/logger.go`): franz-go
   logs nothing without one, so connection, login and group errors after startup were invisible.
   Its level is `KAFKA_CLIENT_LOG_LEVEL`, warn by default (`Config.ClientLogLevel`, nil = warn).

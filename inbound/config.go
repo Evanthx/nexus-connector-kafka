@@ -38,8 +38,12 @@ func configFrom(env settings.Env) (config, error) {
 	if err != nil {
 		return config{}, err
 	}
+	kafkaCfg, err := setup.Kafka(vals)
+	if err != nil {
+		return config{}, err
+	}
 	return config{
-		kafka:             setup.Kafka(vals),
+		kafka:             kafkaCfg,
 		group:             setup.InboundGroup.From(vals),
 		deadLetterTopic:   setup.DeadLetterTopic.From(vals),
 		deleteDeadLetters: setup.DeleteDeadLetters.From(vals),

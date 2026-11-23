@@ -1,3 +1,4 @@
 .build/
 # Overrides a global ignore of CLAUDE.md: this one only imports AGENTS.md, for Claude Code.
 !CLAUDE.md
+test/kafka/certs/

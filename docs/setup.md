@@ -50,7 +50,8 @@ namespace to call it.
 |---|---|
 | `KAFKA_BROKERS` | Your Kafka brokers, comma-separated `host:port`. |
 | `KAFKA_TOPIC` | The topic to stream. |
-| `KAFKA_USERNAME`, `KAFKA_PASSWORD` | A SASL/SCRAM-SHA-256 login, if your Kafka needs one. |
+| `KAFKA_USERNAME`, `KAFKA_PASSWORD` | Your Kafka username and password, if your Kafka needs a login. See [Connecting to Kafka](#connecting-to-kafka). |
+| `KAFKA_TLS` | `true` if your Kafka needs encrypted connections, as hosted Kafka services do. |
 | `KAFKA_GROUP` | The consumer group the Inbound Connector joins. Inbound Connectors with the same consumer group share the topic's partitions. |
 | `KAFKA_DEAD_LETTER_TOPIC` | An existing topic for messages that can't be delivered. Or leave it unset and set `DELETE_DEAD_LETTERS=true` to delete them instead. |
 | `INBOUND_ENDPOINT` | The Nexus endpoint to deliver to. It routes to the service that receives the messages, `KafkaMessageReceiver.receive`. |
@@ -80,7 +81,8 @@ topic, use the Inbound Connector.
 |---|---|
 | `KAFKA_BROKERS` | Your Kafka brokers, comma-separated `host:port`. |
 | `KAFKA_TOPIC` | The topic this Outbound Connector writes to. Callers can't choose another. |
-| `KAFKA_USERNAME`, `KAFKA_PASSWORD` | A SASL/SCRAM-SHA-256 login, if your Kafka needs one. |
+| `KAFKA_USERNAME`, `KAFKA_PASSWORD` | Your Kafka username and password, if your Kafka needs a login. See [Connecting to Kafka](#connecting-to-kafka). |
+| `KAFKA_TLS` | `true` if your Kafka needs encrypted connections, as hosted Kafka services do. |
 | `NEXUS_TASK_QUEUE` | The task queue to serve (default `nexus-connector-kafka`). Give each Outbound Connector for a different topic its own. |
 | `TEMPORAL_ADDRESS`, `TEMPORAL_NAMESPACE` | Your Temporal server and namespace (default `connectors`), plus `TEMPORAL_API_KEY` for Temporal Cloud. The namespace needs standalone activities with completion callbacks. |
 
@@ -157,6 +159,43 @@ To try it against a local Kafka, run `test/kafka/scripts/configui.sh` from the r
 last, and runs the page with the local Kafka's settings filled in. See [Testing](testing.md) for the
 full demo.
 
+## Connecting to Kafka
+
+Kafka has two separate settings, and your Kafka may need both: whether the connection is
+encrypted (TLS), and how the program logs in. Whoever runs your Kafka can tell you which it uses,
+or look at the settings of a client that already connects (`security.protocol` and
+`sasl.mechanism` in a Java client's properties).
+
+**Encryption (TLS).** Set `KAFKA_TLS=true` if your Kafka needs it, as hosted Kafka services such as
+Confluent Cloud, AWS MSK, Aiven and Azure Event Hubs do. If your brokers' certificates come from
+your company's own certificate authority rather than a public one, set
+`KAFKA_TLS_SERVER_CA_CERT_PATH` to its certificate; this turns TLS on by itself.
+
+**Logging in.** Choose the one your Kafka uses:
+
+| Your Kafka logs in with | Set |
+|---|---|
+| Nothing | Nothing. |
+| A username and password | `KAFKA_USERNAME`, `KAFKA_PASSWORD`, and `KAFKA_SASL_MECHANISM` to how Kafka checks them: `SCRAM-SHA-256` (the default), `SCRAM-SHA-512` (AWS MSK, Strimzi), or `PLAIN` (Confluent Cloud API keys, Azure Event Hubs). |
+| A client certificate (mTLS) | `KAFKA_TLS_CLIENT_CERT_PATH` and `KAFKA_TLS_CLIENT_KEY_PATH`, the certificate and its private key, as PEM files. This turns TLS on by itself. |
+
+`PLAIN` sends the password as it is, so use it only with TLS.
+
+For example, Confluent Cloud:
+
+```bash
+export KAFKA_BROKERS=pkc-xxxxx.us-east-1.aws.confluent.cloud:9092
+export KAFKA_TLS=true
+export KAFKA_SASL_MECHANISM=PLAIN
+export KAFKA_USERNAME=<API key>
+export KAFKA_PASSWORD=<API secret>
+```
+
+The startup report shows the login method and whether TLS is on. If Kafka refuses the connection,
+see [Troubleshooting](troubleshooting.md#reading-startup-logs).
+
+Not supported yet: AWS IAM (MSK's own login), OAuth, and Kerberos.
+
 ## Connecting to Temporal Cloud
 
 Both programs connect to Temporal the way the `temporal` CLI does: set `TEMPORAL_ADDRESS` to your
@@ -193,8 +232,13 @@ there, not here.
 |---|---|---|---|
 | `KAFKA_BROKERS` | yes |  | The Kafka brokers to connect to, as a comma-separated list of `host:port`, such as `broker1:9092,broker2:9092`. One reachable broker is enough to find the rest. |
 | `KAFKA_TOPIC` | yes |  | The topic the program serves. One process serves one topic; run one per topic. |
-| `KAFKA_USERNAME` |  | none: no authentication | The SASL/SCRAM-SHA-256 username. Leave it and `KAFKA_PASSWORD` unset if Kafka needs no login. TLS and other SASL mechanisms are not supported. |
+| `KAFKA_USERNAME` |  | none: no login | Your Kafka username, if Kafka needs a login. Leave it and `KAFKA_PASSWORD` unset if it doesn't. See [Connecting to Kafka](#connecting-to-kafka). |
 | `KAFKA_PASSWORD` (secret) |  | none | The password for `KAFKA_USERNAME`. The startup report shows only whether it is set. |
+| `KAFKA_SASL_MECHANISM` |  | SCRAM-SHA-256 | How Kafka checks `KAFKA_USERNAME` and `KAFKA_PASSWORD`: `SCRAM-SHA-256`, `SCRAM-SHA-512` (AWS MSK), or `PLAIN` (Confluent Cloud, Azure Event Hubs). `PLAIN` sends the password as it is, so use it with TLS. |
+| `KAFKA_TLS` |  | on if any KAFKA_TLS_*_PATH is set, else off | `true` to connect to Kafka with TLS (encrypted), as most hosted Kafka services require. The system's certificate authorities check the brokers' certificates unless `KAFKA_TLS_SERVER_CA_CERT_PATH` is set. |
+| `KAFKA_TLS_SERVER_CA_CERT_PATH` |  | the system's | The path to the certificate (PEM) of the authority that signed the brokers' certificates, if it isn't a public one. Turns on TLS. |
+| `KAFKA_TLS_CLIENT_CERT_PATH` |  | none | For mTLS: the path to the client certificate (PEM) the program logs in with, with `KAFKA_TLS_CLIENT_KEY_PATH`. Turns on TLS. |
+| `KAFKA_TLS_CLIENT_KEY_PATH` |  | none | For mTLS: the path to the client certificate's private key (PEM), with `KAFKA_TLS_CLIENT_CERT_PATH`. |
 | `KAFKA_CLIENT_LOG_LEVEL` |  | warn | How much the Kafka client library (franz-go) logs, in the program's log; at `warn`, failed connections to brokers, failed logins and consumer group errors, which show why the program stopped making progress: `error`, `warn`, `info` or `debug`; `info` and `debug` log much more, for chasing a problem. |
 
 ### Inbound Connector
@@ -256,8 +300,13 @@ gRPC headers sent with every call to Temporal: `TEMPORAL_GRPC_META_<NAME>` sends
 |---|---|---|---|
 | `KAFKA_BROKERS` | yes |  | The Kafka brokers to connect to, as a comma-separated list of `host:port`, such as `broker1:9092,broker2:9092`. One reachable broker is enough to find the rest. |
 | `KAFKA_TOPIC` | yes |  | The topic the program serves. One process serves one topic; run one per topic. |
-| `KAFKA_USERNAME` |  | none: no authentication | The SASL/SCRAM-SHA-256 username. Leave it and `KAFKA_PASSWORD` unset if Kafka needs no login. TLS and other SASL mechanisms are not supported. |
+| `KAFKA_USERNAME` |  | none: no login | Your Kafka username, if Kafka needs a login. Leave it and `KAFKA_PASSWORD` unset if it doesn't. See [Connecting to Kafka](#connecting-to-kafka). |
 | `KAFKA_PASSWORD` (secret) |  | none | The password for `KAFKA_USERNAME`. The startup report shows only whether it is set. |
+| `KAFKA_SASL_MECHANISM` |  | SCRAM-SHA-256 | How Kafka checks `KAFKA_USERNAME` and `KAFKA_PASSWORD`: `SCRAM-SHA-256`, `SCRAM-SHA-512` (AWS MSK), or `PLAIN` (Confluent Cloud, Azure Event Hubs). `PLAIN` sends the password as it is, so use it with TLS. |
+| `KAFKA_TLS` |  | on if any KAFKA_TLS_*_PATH is set, else off | `true` to connect to Kafka with TLS (encrypted), as most hosted Kafka services require. The system's certificate authorities check the brokers' certificates unless `KAFKA_TLS_SERVER_CA_CERT_PATH` is set. |
+| `KAFKA_TLS_SERVER_CA_CERT_PATH` |  | the system's | The path to the certificate (PEM) of the authority that signed the brokers' certificates, if it isn't a public one. Turns on TLS. |
+| `KAFKA_TLS_CLIENT_CERT_PATH` |  | none | For mTLS: the path to the client certificate (PEM) the program logs in with, with `KAFKA_TLS_CLIENT_KEY_PATH`. Turns on TLS. |
+| `KAFKA_TLS_CLIENT_KEY_PATH` |  | none | For mTLS: the path to the client certificate's private key (PEM), with `KAFKA_TLS_CLIENT_CERT_PATH`. |
 | `KAFKA_CLIENT_LOG_LEVEL` |  | warn | How much the Kafka client library (franz-go) logs, in the program's log; at `warn`, failed connections to brokers, failed logins and consumer group errors, which show why the program stopped making progress: `error`, `warn`, `info` or `debug`; `info` and `debug` log much more, for chasing a problem. |
 
 ### Outbound Connector

@@ -7,6 +7,7 @@ package kafka
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -16,7 +17,6 @@ import (
 	"github.com/twmb/franz-go/pkg/kerr"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/twmb/franz-go/pkg/kmsg"
-	"github.com/twmb/franz-go/pkg/sasl/scram"
 )
 
 // StartFrom is where a group starts reading a partition it has no committed offset for.
@@ -34,8 +34,11 @@ const (
 type Config struct {
 	Brokers   []string
 	Topic     string
-	Username  string // SASL/SCRAM-SHA-256 username; empty for no authentication
+	Username  string // empty for no login
 	Password  string
+	Mechanism Mechanism // how Kafka checks the login; "" for ScramSHA256
+	// TLS is the configuration for encrypted connections to the brokers; nil for plaintext.
+	TLS       *tls.Config
 	StartFrom StartFrom
 	// ClientLogLevel is the least severe of franz-go's own log lines the program logs
 	// (KAFKA_CLIENT_LOG_LEVEL); nil for warn.
@@ -136,9 +139,7 @@ func identify(ctx context.Context, cl *kgo.Client, topic string) (TopicIdentity,
 // clientOpts are the options every client of the topic uses, plus extra.
 func (c Config) clientOpts(extra ...kgo.Opt) []kgo.Opt {
 	opts := []kgo.Opt{kgo.SeedBrokers(c.Brokers...), kgo.WithLogger(clientLogger{level: c.clientLogLevel()})}
-	if c.Username != "" {
-		opts = append(opts, kgo.SASL(scram.Auth{User: c.Username, Pass: c.Password}.AsSha256Mechanism()))
-	}
+	opts = append(opts, c.authOpts()...)
 	return append(opts, extra...)
 }
 
