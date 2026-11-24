@@ -205,15 +205,11 @@ func (r *reader) deliverPart(ctx context.Context, source string, recs []kafkaapi
 		r.logger.Error("The operation was refused", "operationID", id, "error", err)
 		return r.deadLetter(ctx, recs[0], err)
 	case errors.Is(err, nexussend.ErrFailed):
-		// Only in ordered mode, which waits for each operation: it failed in a way retrying can't
-		// fix, so its messages go to the dead-letter topic and the partition carries on.
-		r.logger.Error("The operation failed and retrying can't help; sending its messages to the dead-letter topic",
+		// Only in ordered mode, which waits for each operation. The messages were delivered, so the
+		// operation isn't started again and they don't go to the dead-letter topic: the failure is
+		// handled in Temporal, and the partition carries on.
+		r.logger.Error("The operation failed; its messages were delivered and won't be sent again, so handle the failure in Temporal",
 			"operationID", id, "records", len(recs), "error", err)
-		for _, rec := range recs {
-			if err := r.deadLetter(ctx, rec, err); err != nil {
-				return err
-			}
-		}
 		return nil
 	}
 	return err

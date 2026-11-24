@@ -94,21 +94,26 @@ temporal nexus operation list --namespace connectors \
 
 Each ID names the partition and offsets, so you know which messages it held.
 
-To replay them:
+The Inbound Connector never starts a failed operation again: its messages were delivered, and the
+failure is handled in Temporal, in the receiver's namespace. Moving the consumer group's offset back
+doesn't run them again either: a redelivered batch with the same ID counts as delivered.
 
-- **If the receiving service still has the work**, retry it there. For a workflow-backed `receive`,
-  the workflow's history holds the messages, so you can reset the workflow.
-- **To re-deliver the messages from Kafka**, stop every Inbound Connector in the group, move the
-  group's offset for that partition back to the operation's first offset, then restart the Inbound
-  Connectors:
+- **An activity in the receiver's workflow keeps failing** (the workflow is still running): fix and
+  deploy the receiver's worker. The activity's next retry runs the new code. Nothing else to do.
+- **The receiver's workflow failed**: fix and deploy the worker, then reset the workflow. In the
+  Temporal UI, open the receiver's namespace, filter the workflows by status Failed, open one, and
+  choose **Reset** at the first workflow task; it runs again from its input, the messages. For many
+  at once:
 
   ```bash
-  kafka-consumer-groups.sh --bootstrap-server <brokers> --command-config <client config> \
-    --group <group> --topic <topic>:<partition> --reset-offsets --to-offset <first offset> --execute
+  temporal workflow reset --namespace <receiver namespace> \
+    --query 'ExecutionStatus = "Failed" AND WorkflowType = "<type>"' \
+    --type FirstWorkflowTask --reason "fixed the receiver"
   ```
 
-  With `KAFKA_BATCH_SIZE=1`, each message's ID is the same as before, so messages whose operations
-  completed start nothing new, and only the failed ones run again.
+  The reset runs the work again, so the receiver must be idempotent.
+- **The receiver has no workflow** (a synchronous handler): nothing in Temporal holds the work to
+  run again, which is why the receiver should be backed by a workflow.
 
 ## The Inbound Connector won't dead-letter on outages
 
@@ -128,11 +133,12 @@ startup report's `INBOUND_MAX_MESSAGES_PER_MINUTE` line shows the limit in use.
 ## A partition stopped moving with `INBOUND_ORDERING=partition`
 
 In ordered mode, a partition waits for its operation to complete. The status line says `Still
-delivering a batch` with how long. Then look in the log for `The operation didn't start or didn't
-succeed; retrying` warnings: an operation that keeps failing with a retryable error is started
-again until it succeeds, and the partition waits behind it. Fix the receiver, or, to skip that batch,
-cancel or terminate its operation (its ID is in the warning): its messages then go to the
-dead-letter topic and the partition moves on.
+delivering a batch` with how long: the receiver's operation is still running, such as a workflow
+whose activity keeps retrying. A failed operation doesn't stop the partition: it is logged as an
+`ERROR` and the partition moves on. Fix the receiver, or, to skip that batch, cancel or terminate
+its operation (its ID is in the status line): the partition then moves on, and its messages are
+handled in Temporal like any failed operation. `The operation didn't start, or Temporal couldn't be
+reached while waiting for it; retrying` warnings mean the Inbound Connector can't reach Temporal.
 
 ```bash
 temporal nexus operation terminate --namespace connectors --operation-id <operation ID> --reason "skip batch"

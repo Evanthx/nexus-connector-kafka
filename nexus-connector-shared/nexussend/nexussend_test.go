@@ -9,11 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nexus-rpc/sdk-go/nexus"
 	"github.com/stretchr/testify/require"
-	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
-	"go.temporal.io/sdk/temporal"
 )
 
 // recorder is a Sender that records when each attempt arrived. fail, if set, decides an
@@ -138,30 +135,7 @@ func TestRateLimited_WaitEndsWithContext(t *testing.T) {
 	require.NoError(t, limited.Send(ctx, op(1)))
 }
 
-// Which failures of a completed operation are final (dead-letter) and which are retried.
-func TestFinal(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		err   error
-		final bool
-	}{
-		{"non-retryable application error", temporal.NewNonRetryableApplicationError("bad", "Bad", nil), true},
-		{"retryable application error", temporal.NewApplicationError("later", "Transient"), false},
-		{"cancelled", temporal.NewCanceledError(), true},
-		{"terminated", &temporal.TerminatedError{}, true},
-		{"timed out", temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_SCHEDULE_TO_CLOSE, nil), false},
-		{"non-retryable handler error", nexus.NewHandlerErrorf(nexus.HandlerErrorTypeBadRequest, "bad"), true},
-		{"retryable handler error", nexus.NewHandlerErrorf(nexus.HandlerErrorTypeInternal, "oops"), false},
-		{"can't reach Temporal", serviceerror.NewUnavailable("down"), false},
-		{"wrapped twice", fmt.Errorf("op %s: %w and %w", "x", errors.New("context"), temporal.NewNonRetryableApplicationError("bad", "Bad", nil)), true},
-		// The outermost decides: a retryable failure caused by a cancellation is retried.
-		{"retryable caused by a cancel", temporal.NewApplicationErrorWithCause("later", "Transient", temporal.NewCanceledError()), false},
-	} {
-		t.Run(tc.name, func(t *testing.T) { require.Equal(t, tc.final, Final(tc.err)) })
-	}
-}
-
-// A final failure stops the retries at once: the caller dead-letters the batch.
+// A failed operation stops the retries at once: it was delivered, and is never started again.
 func TestRetrying_FailedIsNotRetried(t *testing.T) {
 	next := &recorder{fail: func(int) error { return fmt.Errorf("%w: bad", ErrFailed) }}
 	err := NewRetrying(next, fastRetry, slog.Default()).Send(context.Background(), op(1))

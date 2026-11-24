@@ -17,6 +17,7 @@ import (
 	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/temporalclient"
 	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/test/codectest"
 	"github.com/temporalio/nexus-connector-kafka/test/testenv"
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/temporal"
@@ -123,19 +124,24 @@ func TestEndToEnd_RedeliveryStartsNothing(t *testing.T) {
 	require.Never(t, func() bool { return len(env.receiver.values()) > 1 }, time.Second, 50*time.Millisecond)
 }
 
-// A batch whose operation failed is delivered again when it is redelivered.
-func TestEndToEnd_FailedOperationRunsAgainOnRedelivery(t *testing.T) {
-	env := startE2E(t, &receiver{failFirst: func(v string) bool { return v == "retry-me" }})
-	input := kafkaapi.ReceiveInput{Records: []kafkaapi.Record{{Topic: "events", Partition: 0, Offset: 8, Timestamp: "2026-10-22T00:00:00Z", Value: []byte("retry-me")}}}
-	id := operationID("g", input.Records)
-	require.NoError(t, env.starter.Send(context.Background(), nexussend.Operation{ID: id, Input: input, Messages: len(input.Records)}))
+// A batch whose operation failed is never run again when it is redelivered: it was delivered.
+// Without waiting, the redelivery counts as sent; waiting (ordered mode), it reports the failure.
+func TestEndToEnd_FailedOperationIsNotRunAgain(t *testing.T) {
+	env := startE2E(t, &receiver{failFirst: func(v string) bool { return v == "fail-me" }})
+	input := kafkaapi.ReceiveInput{Records: []kafkaapi.Record{{Topic: "events", Partition: 0, Offset: 8, Timestamp: "2026-10-22T00:00:00Z", Value: []byte("fail-me")}}}
+	op := nexussend.Operation{ID: operationID("g", input.Records), Input: input, Messages: len(input.Records)}
+	require.NoError(t, env.starter.Send(context.Background(), op))
 	env.receiver.waitFor(t, 1)
-	// While the failed operation is still closing, a start attaches to it; once it has closed, a
-	// start runs it again.
+	handle := env.connector.GetNexusOperationHandle(client.GetNexusOperationHandleOptions{OperationID: op.ID})
 	require.Eventually(t, func() bool {
-		return env.starter.Send(context.Background(), nexussend.Operation{ID: id, Input: input, Messages: len(input.Records)}) == nil && len(env.receiver.values()) >= 2
-	}, 30*time.Second, 200*time.Millisecond)
-	require.Equal(t, []string{"retry-me", "retry-me"}, env.receiver.values())
+		desc, err := handle.Describe(context.Background(), client.DescribeNexusOperationOptions{})
+		return err == nil && desc.Status == enumspb.NEXUS_OPERATION_EXECUTION_STATUS_FAILED
+	}, 30*time.Second, 100*time.Millisecond, "the operation fails")
+
+	require.NoError(t, env.starter.Send(context.Background(), op), "a redelivered batch counts as sent")
+	require.ErrorIs(t, env.waiter.Send(context.Background(), op), nexussend.ErrFailed, "waiting, it reports the failure")
+	require.Never(t, func() bool { return len(env.receiver.values()) > 1 }, 2*time.Second, 50*time.Millisecond,
+		"the failed operation ran again")
 }
 
 // The server refuses an input over its size limit, and the sender reports it as too large,
@@ -163,7 +169,7 @@ func TestEndToEnd_OrderedWaitsForTheOperationToComplete(t *testing.T) {
 var attempts sync.Map
 
 // flakyReceiverWorkflow fails its first run with a retryable error, unless its message is
-// "bad", which always fails with a non-retryable one.
+// "bad", which always fails with a non-retryable one. A second run of "flaky" would succeed.
 func flakyReceiverWorkflow(_ workflow.Context, input kafkaapi.ReceiveInput) (kafkaapi.ReceiveOutput, error) {
 	v := string(input.Records[0].Value)
 	n, _ := attempts.LoadOrStore(v, new(atomic.Int32))
@@ -200,9 +206,9 @@ func startWorkflowReceiver(t *testing.T, env e2e) nexussend.Sender {
 	return nexussend.NewRetrying(waiter, func(int) time.Duration { return 100 * time.Millisecond }, slog.Default())
 }
 
-// In ordered mode, a receiver that fails with a retryable error is run again until it succeeds;
-// one that fails with a non-retryable error is final, so its batch goes to the dead-letter topic.
-func TestEndToEnd_OrderedRetriesOnlyRetryableFailures(t *testing.T) {
+// In ordered mode, a receiver workflow that fails is never run again, whether its error is
+// retryable or not: the batch was delivered, and the failure is handled in Temporal.
+func TestEndToEnd_OrderedFailureIsNotRunAgain(t *testing.T) {
 	env := startE2E(t, &receiver{})
 	sender := startWorkflowReceiver(t, env)
 	send := func(v string) error {
@@ -212,14 +218,11 @@ func TestEndToEnd_OrderedRetriesOnlyRetryableFailures(t *testing.T) {
 		return sender.Send(ctx, nexussend.Operation{ID: "ordered-" + v, Input: input, Messages: 1})
 	}
 
-	require.NoError(t, send("flaky"))
-	n, _ := attempts.Load("flaky")
-	require.Equal(t, int32(2), n.(*atomic.Int32).Load(), "the retryable failure ran again")
-
-	err := send("bad")
-	require.ErrorIs(t, err, nexussend.ErrFailed)
-	n, _ = attempts.Load("bad")
-	require.Equal(t, int32(1), n.(*atomic.Int32).Load(), "a non-retryable failure isn't run again")
+	for _, v := range []string{"flaky", "bad"} {
+		require.ErrorIs(t, send(v), nexussend.ErrFailed, v)
+		n, _ := attempts.Load(v)
+		require.Equal(t, int32(1), n.(*atomic.Int32).Load(), "%s ran again", v)
+	}
 }
 
 // With encryption, what the Inbound Connector sends is stored in Temporal only encrypted, and a

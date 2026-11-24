@@ -144,7 +144,7 @@ func (c config) orderingBehavior() string {
 	if c.ordered {
 		return "Process each partition in order (INBOUND_ORDERING=partition): wait for each operation to complete before " +
 			"starting the next for its partition, and commit only then. At most one operation per partition runs at once. " +
-			"A failed operation starts again if its error is retryable; otherwise its messages go to the dead-letter topic."
+			"A failed operation isn't started again or dead-lettered: it is logged, and the partition carries on."
 	}
 	return "Start each batch's operation without waiting for the one before (INBOUND_ORDERING=none): a later batch can " +
 		"be processed before an earlier one, even from the same partition."

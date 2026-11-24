@@ -58,8 +58,9 @@ Every team that connects Kafka to Temporal tends to build the same things:
   that.
 - **At-least-once delivery guarantees.** A batch is committed only after Temporal accepts its
   operations. If the Inbound Connector restarts before committing, a redelivered batch reuses its
-  operation ID, so a batch that already completed isn't started again. With batches of more than
-  one message, a message can still be delivered twice; `KAFKA_BATCH_SIZE=1` rules that out.
+  operation ID, so an operation is never started twice, even if it failed: a failure is handled in
+  Temporal. With batches of more than one message, a message can still be delivered twice;
+  `KAFKA_BATCH_SIZE=1` rules that out.
 - **Dead-letter handling.** Messages too large to deliver go to a dead-letter topic instead of
   stalling the stream indefinitely.
 - **Rate limiting.** `INBOUND_MAX_MESSAGES_PER_MINUTE` caps how many messages a minute go into
@@ -105,14 +106,12 @@ commits only then. Partitions still run in parallel; Kafka never orders messages
 - **It is slower.** At most one operation per partition runs at a time, so parallelism is the number
   of partitions: with 6 partitions, 6 operations at once, however many workers you have. Add
   partitions to go faster. A batch's partitions must all finish before the next batch is read.
-- **A failed operation is retried if its error is retryable.** A retryable application error, a
-  timeout, or Temporal being unreachable starts the operation again, with backoff, until it
-  succeeds; its partition waits, and each failure is logged as a warning.
-- **Otherwise its messages go to the dead-letter topic.** An operation that failed with a
-  non-retryable error (including a Nexus "operation failed"), or was cancelled or terminated,
-  can't succeed by running again. Its messages go to `KAFKA_DEAD_LETTER_TOPIC` (or are deleted with
-  `DELETE_DEAD_LETTERS=true`), logged as an error, and the partition moves on. This is the one place
-  ordered mode lets a later message go before an earlier one.
+- **A failed operation isn't started again, and the partition moves on.** Its messages were
+  delivered, so whatever the failure (retryable or not, a timeout, a cancel or a terminate), the
+  operation isn't run again and its messages don't go to the dead-letter topic. The failure is
+  logged as an error and handled in Temporal: fix the receiver and reset its workflow (see
+  [Troubleshooting](docs/troubleshooting.md#when-an-inbound-connector-operation-fails)). Messages
+  after it are processed meanwhile.
 - **Order covers only what the operation waits for.** Back the receiver's operation with a workflow
   that does the work before it completes. An operation that only starts the work and returns lets
   the next batch start while that work still runs.

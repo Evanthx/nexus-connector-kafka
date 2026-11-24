@@ -7,19 +7,22 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nexus-rpc/sdk-go/nexus"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/temporal"
 )
 
 // Nexus starts each operation as a standalone Nexus operation on an endpoint. Without wait, Send
 // returns once the operation has started, so the next can start while it runs. With wait, Send
 // also waits for the operation to complete, so operations sent one after another run one after
 // another: an Inbound Connector's ordered mode.
+//
+// An operation ID is delivered at most once: a start with an ID already used never runs the
+// operation again, even if it failed. A failed operation was delivered, and is handled in
+// Temporal, where its receiver's workflow can be fixed and reset.
 type Nexus struct {
-	client    client.NexusClient
+	client    client.Client
+	nexus     client.NexusClient
 	operation string
 	timeout   time.Duration
 	wait      bool
@@ -32,35 +35,39 @@ func NewNexus(c client.Client, endpoint, service, operation string, timeout time
 	if err != nil {
 		return nil, err
 	}
-	return &Nexus{client: nc, operation: operation, timeout: timeout, wait: wait}, nil
+	return &Nexus{client: c, nexus: nc, operation: operation, timeout: timeout, wait: wait}, nil
 }
 
 // Send starts the operation, and with wait, waits for it to complete. With these policies, a start
 // with an ID already used starts nothing new: if its operation is running, the start attaches to
-// it (and with wait, waits for it); if it completed, the server reports it already started, which
-// counts as sent. Only an operation that failed, was cancelled, was terminated, or timed out is
-// started again.
+// it (and with wait, waits for it); if it has closed, whether it succeeded or failed, the server
+// reports it already started, which counts as sent.
 //
-// With wait, an operation that completed unsuccessfully returns an error wrapping ErrFailed if
-// retrying can't help (see Final), and otherwise an error to retry, which starts it again.
+// With wait, an operation that completed unsuccessfully returns an error wrapping ErrFailed: it was
+// delivered, and isn't started again. An error reaching Temporal while waiting is returned to be
+// retried; the retry's start attaches to the operation or finds it closed.
 func (n *Nexus) Send(ctx context.Context, op Operation) error {
-	handle, err := n.client.ExecuteOperation(ctx, n.operation, op.Input, client.StartNexusOperationOptions{
+	handle, err := n.nexus.ExecuteOperation(ctx, n.operation, op.Input, client.StartNexusOperationOptions{
 		ID:                     op.ID,
 		ScheduleToCloseTimeout: n.timeout,
 		IDConflictPolicy:       enumspb.NEXUS_OPERATION_ID_CONFLICT_POLICY_USE_EXISTING,
-		IDReusePolicy:          enumspb.NEXUS_OPERATION_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY,
+		IDReusePolicy:          enumspb.NEXUS_OPERATION_ID_REUSE_POLICY_REJECT_DUPLICATE,
 		Summary:                op.Summary,
 	})
 	var started *serviceerror.NexusOperationExecutionAlreadyStarted
 	switch {
+	case errors.As(err, &started) && !n.wait:
+		return nil // delivered before
 	case errors.As(err, &started):
-		return nil // it completed successfully: a failed one would have started again
+		// Delivered before and closed: wait reports how it ended.
+		handle = n.client.GetNexusOperationHandle(client.GetNexusOperationHandleOptions{OperationID: op.ID})
 	case refusedAsTooLarge(err):
 		return fmt.Errorf("%w: %w", ErrTooLarge, err)
 	case err != nil:
 		return err
 	case !n.wait:
 		return nil
+	default: // started: wait for it
 	}
 	err = handle.Get(ctx, nil)
 	switch {
@@ -68,46 +75,25 @@ func (n *Nexus) Send(ctx context.Context, op Operation) error {
 		return nil
 	case ctx.Err() != nil:
 		return ctx.Err()
-	case Final(err):
+	case closed(ctx, handle):
 		return fmt.Errorf("%w: operation %s: %w", ErrFailed, op.ID, err)
 	default:
 		return fmt.Errorf("operation %s: %w", op.ID, err)
 	}
 }
 
-// Final reports whether an operation that completed unsuccessfully with err should not be
-// started again: it failed with a non-retryable application error or handler error, or someone
-// cancelled or terminated it. Anything else, such as a retryable failure, a timeout, or an error
-// reaching Temporal while waiting, is retried. The outermost of those errors in err's chain
-// decides, so a retryable failure caused by a cancelled activity is still retried.
-func Final(err error) bool {
-	final, _ := decide(err)
-	return final
-}
-
-// decide walks err's chain, outermost first, including errors that wrap several, and reports
-// whether the first error that decides is final, and whether one decided at all.
-func decide(err error) (final, decided bool) {
-	switch e := err.(type) {
-	case nil:
-		return false, false
-	case *temporal.CanceledError, *temporal.TerminatedError:
-		return true, true
-	case *temporal.TimeoutError:
-		return false, true
-	case *temporal.ApplicationError:
-		return e.NonRetryable(), true
-	case *nexus.HandlerError:
-		return !e.Retryable(), true
-	case interface{ Unwrap() []error }:
-		for _, inner := range e.Unwrap() {
-			if final, decided := decide(inner); decided {
-				return final, true
-			}
-		}
-		return false, false
+// closed reports whether handle's operation has closed, rather than Get having failed to reach
+// Temporal. It is false if Temporal can't be asked either, so the caller retries.
+func closed(ctx context.Context, handle client.NexusOperationHandle) bool {
+	desc, err := handle.Describe(ctx, client.DescribeNexusOperationOptions{})
+	if err != nil {
+		return false
+	}
+	switch desc.Status {
+	case enumspb.NEXUS_OPERATION_EXECUTION_STATUS_UNSPECIFIED, enumspb.NEXUS_OPERATION_EXECUTION_STATUS_RUNNING:
+		return false
 	default:
-		return decide(errors.Unwrap(err))
+		return true
 	}
 }
 

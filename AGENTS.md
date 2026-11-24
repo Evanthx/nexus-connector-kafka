@@ -146,19 +146,21 @@ encrypted, and the demo (`DEMO_ENCRYPTION_KEY`, `go run ./nexus-connector-shared
   Connector's log, not the dead-letter topic, to diagnose a stalled stream.
 - **Batches can be processed out of order** unless `INBOUND_ORDERING=partition`. With it, each
   partition's operations run one at a time, in order, at the cost of parallelism (one operation
-  per partition at a time); a retryable failure is started again and its partition waits, and a
-  non-retryable, cancelled or terminated one sends its messages to the dead-letter topic. Order
+  per partition at a time); a failed operation is logged and the partition moves on. Order
   covers only what the receiver's operation waits for: back it with a workflow. Either way, make the
   receiver idempotent per message (a workflow or activity ID from topic, partition and offset).
-- **With the default `INBOUND_ORDERING=none`, the Inbound Connector doesn't see failures in the receiver.** A batch is committed once Temporal
-  accepts its operation. Find failed ones with:
+- **An operation is never started twice, even after it fails.** Its messages were delivered; the
+  failure is handled in Temporal, never by the Inbound Connector running it again or
+  dead-lettering it. Don't add a retry or a dead letter for a failed operation. With the default
+  `INBOUND_ORDERING=none`, the Inbound Connector doesn't even see failures in the receiver: a batch
+  is committed once Temporal accepts its operation. Find failed ones with:
 
   ```bash
   temporal nexus operation list --namespace <Inbound Connector's namespace> \
     --query 'ExecutionStatus IN ("Failed", "TimedOut", "Canceled", "Terminated")'
   ```
 
-  `docs/troubleshooting.md` has the replay steps.
+  `docs/troubleshooting.md` has the recovery steps: fix the receiver, then reset its workflow.
 
 ## Check it is working
 
@@ -370,16 +372,16 @@ Needs Go SDK v1.50 or later (`temporalnexus.StartActivity`, the standalone Nexus
   the docs tables.
 
 **`nexus-connector-shared/nexussend`** (no Kafka code)
-- `Nexus` starts operations with `USE_EXISTING` and `ALLOW_DUPLICATE_FAILED_ONLY`;
-  `NexusOperationExecutionAlreadyStarted` counts as sent; `refusedAsTooLarge` maps the server's size
-  refusal to `ErrTooLarge`.
-- With `wait` (`INBOUND_ORDERING=partition`), `Nexus.Send` also waits on the handle's `Get`.
-  `Final` decides a completed failure: the outermost of a CanceledError/TerminatedError (final),
-  TimeoutError (retry), ApplicationError (final if NonRetryable) or nexus.HandlerError (final if not
-  Retryable) in the chain; anything else is retried. Final ones wrap `ErrFailed`, and `reader`
-  dead-letters every record of that operation.
+- `Nexus` starts operations with `USE_EXISTING` and `REJECT_DUPLICATE`: an ID is never run twice,
+  even if its operation failed. `NexusOperationExecutionAlreadyStarted` counts as sent;
+  `refusedAsTooLarge` maps the server's size refusal to `ErrTooLarge`.
+- With `wait` (`INBOUND_ORDERING=partition`), `Nexus.Send` also waits on the handle's `Get` (for an
+  already-started ID, a handle from `GetNexusOperationHandle`). If `Get` fails and `Describe` says
+  the operation has closed, it returns `ErrFailed`, whatever the failure; `reader` logs an ERROR and
+  commits past it, with no dead letter. Otherwise (Temporal unreachable while waiting) it returns
+  the error to be retried, and the retry's start attaches to the operation or finds it closed.
 - `Retrying` retries every error but `ErrTooLarge` and `ErrFailed` forever, with `Backoff`, until ctx
-  ends; retrying a failed operation starts it again (`ALLOW_DUPLICATE_FAILED_ONLY`).
+  ends. A retry never runs a closed operation again.
 - `RateLimited` is a token bucket (`golang.org/x/time/rate`): `perMinute`, burst = the batch size.
   It reserves and waits itself, so a wait ends only when ctx does, and cancels the reservation if
   it does, so unsent messages aren't counted.

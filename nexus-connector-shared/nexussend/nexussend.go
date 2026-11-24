@@ -25,8 +25,8 @@ type Sender interface {
 
 // Operation is one batch to send.
 type Operation struct {
-	// ID is the operation ID. Sending the same ID again starts nothing new unless the earlier
-	// operation failed, so a batch delivered again after a crash isn't started twice.
+	// ID is the operation ID. Sending the same ID again never starts the operation again, even if
+	// it failed, so a batch delivered again after a crash isn't processed twice.
 	ID string
 	// Input is the operation's input, such as the batch's messages.
 	Input any
@@ -37,10 +37,9 @@ type Operation struct {
 	Summary string
 }
 
-// ErrFailed means the operation completed unsuccessfully and starting it again can't help (see
-// Final), such as a receiver that failed it with a non-retryable error. Only a Nexus that waits
-// returns it. The batch goes to the dead-letter destination.
-var ErrFailed = errors.New("the operation failed and retrying can't help")
+// ErrFailed means the operation completed unsuccessfully. It was delivered, so it is never started
+// again: it is handled in Temporal, and the batch is committed. Only a Nexus that waits returns it.
+var ErrFailed = errors.New("the operation failed")
 
 // ErrTooLarge means the server refused the operation's input as larger than it allows. No retry
 // can deliver it: split the batch, or send a single message that is too large to the dead-letter

@@ -18,7 +18,7 @@ repo has a copy. Moving to the module is then only a change of import path.
 | `startup` | How a program starts: collect every problem before exiting, connect to Temporal, then wait for the payload codec and the program's own system. | Every program's `main` |
 | `report` | The startup report's format: settings in sections, defaults marked, durations as people write them, then what the program will do. | Every program |
 | `deadline` | How long an Outbound Connector's call may take: its limit, ending `CallbackMargin` before the caller's Nexus operation times out. | Outbound Connectors |
-| `nexussend` | How an Inbound Connector sends each batch: starts the standalone Nexus operation, retries until it starts, the rate limit, and ordered mode's wait. | Inbound Connectors |
+| `nexussend` | How an Inbound Connector sends each batch: starts the standalone Nexus operation (never twice for one ID, even after a failure), retries until it starts, the rate limit, and ordered mode's wait. | Inbound Connectors |
 | `configui` | The setup page: `configui.go` serves it, `page.go` is what it shows, `check.go` is its Test, `redact.go` keeps secrets out of the Test's messages, `temporal.go` is the Temporal check. Each repo's `configui` command lists its programs and their own checks in `connector.go`. | Each repo's `configui` |
 | `test/encryption` | The demo payload codec (AES-256-GCM, `DEMO_ENCRYPTION_KEY`) and its codec server (`go run ./nexus-connector-shared/test/encryption/codecserver`). For demos and tests only. | Demo workers, tests |
 | `test/codectest` | Test helpers: a codec server for the demo codec, a client using it, and a check that a payload is encrypted. | End-to-end tests |

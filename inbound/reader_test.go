@@ -678,29 +678,29 @@ func (s *syncBuffer) String() string {
 	return s.b.String()
 }
 
-// In ordered mode, an operation that failed and can't be retried sends every message in it to the
-// dead-letter topic, and the partition carries on past them.
-func TestInbound_FailedOperationGoesToTheDeadLetterTopic(t *testing.T) {
+// In ordered mode, an operation that failed was delivered: it isn't started again, nothing goes to
+// the dead-letter topic, and the partition carries on past it.
+func TestInbound_FailedOperationIsCommittedNotDeadLettered(t *testing.T) {
 	cfg := testenv.Kafka(t)
 	produce(t, cfg, 0, "bad0", "bad1")
 	produce(t, cfg, 1, "good")
 	starter := newFakeStarter()
 	starter.fail = func(input kafkaapi.ReceiveInput, _ int) error {
 		if input.Records[0].Partition == 0 {
-			return fmt.Errorf("%w: bad message (type: Bad, retryable: false)", nexussend.ErrFailed)
+			return fmt.Errorf("%w: bad message (type: Transient, retryable: true)", nexussend.ErrFailed)
 		}
 		return nil
 	}
-	r := startInbound(t, cfg, "g", starter, bigEnough)
+	r := startInbound(t, cfg, "g", starter, bigEnough, func(rd *reader) { rd.deadLetters = failingWriter{t} })
 	starter.waitFor(t, 1)
-
-	dls := deadLetters(t, cfg, 2)
-	require.Len(t, dls, 2, "every message of the failed operation is dead-lettered")
-	for i, dl := range dls {
-		require.Equal(t, fmt.Sprintf("bad%d", i), string(dl.Value))
-	}
+	require.Eventually(t, func() bool {
+		starter.mu.Lock()
+		defer starter.mu.Unlock()
+		return starter.attempts[opID(t, cfg, 0, 0, 1)] == 1
+	}, 10*time.Second, 50*time.Millisecond)
+	require.Empty(t, deadLetters(t, cfg, 1), "nothing reaches the dead-letter topic")
 	starter.mu.Lock()
-	require.Equal(t, 1, starter.attempts[opID(t, cfg, 0, 0, 1)], "a final failure isn't retried")
+	require.Equal(t, 1, starter.attempts[opID(t, cfg, 0, 0, 1)], "a failure isn't started again, even a retryable one")
 	starter.mu.Unlock()
 
 	r.stop()
@@ -708,7 +708,7 @@ func TestInbound_FailedOperationGoesToTheDeadLetterTopic(t *testing.T) {
 	next := newFakeStarter()
 	startInbound(t, cfg, "g", next, bigEnough)
 	next.waitFor(t, 1)
-	require.Equal(t, []string{"after"}, next.values(), "the dead-lettered messages were committed past")
+	require.Equal(t, []string{"after"}, next.values(), "the failed operation's messages were committed past")
 }
 
 // While a batch is being delivered, such as ordered mode waiting for a long operation, the status

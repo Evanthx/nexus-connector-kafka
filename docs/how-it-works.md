@@ -82,7 +82,8 @@ changes if the topic is deleted and created again, so a new topic's offsets don'
 one's IDs.
 
 The start uses two policies: `USE_EXISTING` (if the operation is still running, attach to it) and
-`ALLOW_DUPLICATE_FAILED_ONLY` (if it completed, count it as delivered; if it failed, run it again).
+`REJECT_DUPLICATE` (if it has closed, count it as delivered, whether it succeeded or failed). An
+operation is never run twice: a failed one was delivered, and is handled in Temporal.
 
 **Duplicates are possible when streaming in batches.** A batch delivered again starts at the same
 offset but can end at a different one, giving it a different ID and starting a new operation. This
@@ -139,14 +140,15 @@ partition, one operation runs at a time, in offset order. Different partitions s
 parallel, so parallelism is the number of partitions this Inbound Connector has, and a slow
 partition holds back the next batch for the others.
 
-When an operation completes unsuccessfully in `partition` mode:
+When an operation completes unsuccessfully in `partition` mode, whether it failed (with a
+retryable error or not), timed out (`INBOUND_OPERATION_TIMEOUT`), or was cancelled or terminated,
+its messages were delivered: the Inbound Connector logs an `ERROR` with the operation ID, doesn't
+start it again or send its messages to the dead-letter topic, and the partition moves on. The
+failure is handled in Temporal (see [Troubleshooting](troubleshooting.md#when-an-inbound-connector-operation-fails)).
+Cancelling or terminating an operation is how to skip a batch that is taking too long.
 
-| Outcome | What happens |
-|---|---|
-| Failed with a retryable application error (the default for a workflow's error) | Started again with the same ID, with backoff (1 second, doubling to 30), until it succeeds. The partition waits. Each failure is a `WARN`. |
-| Timed out (`INBOUND_OPERATION_TIMEOUT`), or Temporal unreachable while waiting | The same: retried. |
-| Failed with a non-retryable error: a non-retryable application error, a non-retryable handler error, or a Nexus "operation failed" from a synchronous handler | Its messages go to the dead-letter topic (or are deleted with `DELETE_DEAD_LETTERS=true`), an `ERROR` is logged, and the partition moves on. |
-| Cancelled or terminated, by someone | The same: dead-lettered. Cancelling or terminating an operation is how to skip a batch that will never succeed. |
+Only Temporal being unreachable while waiting is retried, with backoff (1 second, doubling to 30);
+the retry attaches to the operation, or finds it closed.
 
 The order the receiver sees covers only what its operation waits for. An operation backed by a
 workflow completes when the workflow does, so the work is in order. An operation that starts work
@@ -155,7 +157,7 @@ elsewhere and returns at once lets the next batch start before that work is done
 **Duplicates, in either mode.** A batch can be delivered again: after a crash before its commit,
 or a rebalance while its operation was running. The second delivery reuses the operation ID when
 the batch has the same first and last offsets, and then attaches to the running operation (or, if
-it completed, starts nothing). A batch redelivered with different boundaries gets a new ID, so its
+it has closed, successfully or not, starts nothing). A batch redelivered with different boundaries gets a new ID, so its
 messages can be processed twice and, in `partition` mode, can overlap a still-running operation.
 Make the receiver idempotent: process each message in a workflow or activity whose ID is derived
 from the message, such as `<topic>-<partition>-<offset>`, so a duplicate is rejected rather than

@@ -210,9 +210,8 @@ var InboundOrdering = settings.Define(settings.Variable{
 		"using every worker your receiver has, but a later batch can be processed before an earlier one. " +
 		"`partition` to process each partition's messages in order: wait for each operation to complete " +
 		"before starting the next for that partition, and commit only then. At most one operation per " +
-		"partition runs at a time, so parallelism is the number of partitions. A failed operation is " +
-		"started again if its error is retryable; one failed with a non-retryable error, cancelled or " +
-		"terminated goes to the dead-letter topic, and the partition carries on.",
+		"partition runs at a time, so parallelism is the number of partitions. A failed operation isn't " +
+		"started again or dead-lettered: it is logged, handled in Temporal, and the partition carries on.",
 	Docs: "See [Ordering](how-it-works.md#ordering).",
 }, func(v string) (bool, error) {
 	switch v {
