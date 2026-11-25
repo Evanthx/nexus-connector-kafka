@@ -68,9 +68,18 @@ A failure that retrying can't fix ends the operation at once, with Kafka's messa
 
 | Type | Cause | Fix |
 |---|---|---|
-| `Rejected` | Kafka refused some or all of a write's messages, such as a message over the broker's size limit, or `TOPIC_AUTHORIZATION_FAILED`. Its details (`WriteFailures`) list every message not written, by index, with Kafka's reason; every message not listed was written. | Fix the listed messages, or the Kafka login's permissions on the topic, and resend only those. |
+| `Rejected` | Kafka refused some or all of a write's messages for good, such as a message over the broker's size limit, or `TOPIC_AUTHORIZATION_FAILED`. | Fix the listed messages, or the Kafka login's permissions on the topic, and resend only those. |
+| `PartlyWritten` | Some messages were written and the rest failed for a reason that may pass, such as a partition without enough in-sync replicas. The write isn't retried as a whole, which would write the others twice. | Resend only the listed messages. |
 
-Every other failure (Kafka unreachable, slow, or not acknowledging) is retried by the caller's
+Both list, in their details (`WriteFailures`), every message not written, by index, with Kafka's
+reason; every message not listed was written. Kafka accepts or refuses each partition's share of a
+batch as a whole, so a listed message may have nothing wrong with it: it shared a partition with
+one that did.
+
+A broker's `UNKNOWN_SERVER_ERROR`, and the idempotent producer's sequence and epoch errors, which
+kgo marks final, are tried again within the same attempt, at once and then halfway to its
+deadline, before they count as `Rejected`. A write that wrote nothing and failed only for reasons
+that may pass (Kafka unreachable, slow, or not acknowledging) is retried by the caller's
 Temporal server, with its own backoff, until the caller's Nexus operation times out.
 
 ### A write times out with no Kafka error

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/twmb/franz-go/pkg/kerr"
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -20,9 +21,15 @@ type Writer struct {
 	client *kgo.Client
 }
 
+// writerMetadataMinAge is how soon the writer may refresh metadata again. After a retryable
+// produce error (a leader moving, too few in-sync replicas), kgo refreshes metadata before
+// retrying and checks the context only then; at kgo's default of 5 seconds, a write runs up to
+// 5 seconds past its context's deadline, past the Nexus request it answers.
+const writerMetadataMinAge = 250 * time.Millisecond
+
 // NewWriter connects to the brokers in cfg.
 func NewWriter(cfg Config) (*Writer, error) {
-	client, err := kgo.NewClient(cfg.clientOpts()...)
+	client, err := kgo.NewClient(cfg.clientOpts(kgo.MetadataMinAge(writerMetadataMinAge))...)
 	if err != nil {
 		return nil, fmt.Errorf("create Kafka producer: %w", err)
 	}
@@ -37,6 +44,10 @@ type RecordFailure struct {
 	Err error
 	// Rejected is true if retrying won't change it.
 	Rejected bool
+	// RetrySoon is true for an error kgo marks final that an attempt a moment later can still get
+	// past (see retriedSoon). Such a failure is worth retrying now, a few times at most, and is
+	// final if it persists.
+	RetrySoon bool
 }
 
 // WriteError is a write that failed for some of its records. Kafka acknowledged every other
@@ -100,14 +111,36 @@ func (w *Writer) Write(ctx context.Context, records ...*kgo.Record) error {
 		if r.Err == nil {
 			continue
 		}
-		var ke *kerr.Error
-		failures = append(failures, RecordFailure{Index: index[r.Record], Err: r.Err, Rejected: errors.As(r.Err, &ke) && !ke.Retriable})
+		soon := retrySoon(r.Err)
+		failures = append(failures, RecordFailure{Index: index[r.Record], Err: r.Err, Rejected: final(r.Err) && !soon, RetrySoon: soon})
 	}
 	if failures == nil {
 		return nil
 	}
 	slices.SortFunc(failures, func(a, b RecordFailure) int { return a.Index - b.Index })
 	return &WriteError{Failures: failures, Records: len(records)}
+}
+
+// retriedSoon are errors kgo marks not retriable that an attempt a moment later can still get
+// past: a broker's unexpected internal error, which a broker restart or a leader move can cause,
+// and the idempotent producer's sequence and epoch bookkeeping, which kgo resets.
+var retriedSoon = []*kerr.Error{
+	kerr.UnknownServerError,
+	kerr.OutOfOrderSequenceNumber,
+	kerr.DuplicateSequenceNumber,
+	kerr.InvalidProducerEpoch,
+}
+
+// final reports whether err is a Kafka error kgo marks not retriable.
+func final(err error) bool {
+	var ke *kerr.Error
+	return errors.As(err, &ke) && !ke.Retriable
+}
+
+// retrySoon reports whether err is one of retriedSoon.
+func retrySoon(err error) bool {
+	var ke *kerr.Error
+	return errors.As(err, &ke) && slices.Contains(retriedSoon, ke)
 }
 
 // Close closes the writer's connections.

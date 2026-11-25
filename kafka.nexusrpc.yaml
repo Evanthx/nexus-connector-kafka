@@ -111,7 +111,7 @@ $defs:
 
   WriteFailures:
     type: object
-    description: "The details of a Rejected error from write: every message that wasn't written, with why. Every message not listed was written."
+    description: "The details of a Rejected or PartlyWritten error from write: every message that wasn't written, with why. Every message not listed was written."
     properties:
       failures:
         type: array

@@ -208,11 +208,24 @@ caller's Temporal server gives a deadline (10 seconds by default, server dynamic
 `component.nexusoperations.request.timeout`). The write stops waiting for Kafka 1 second before it,
 to reply with the reason.
 
-- **Kafka refused some or all of the messages** (such as a message over the broker's size limit,
-  or `TOPIC_AUTHORIZATION_FAILED`): the operation fails at once, with Kafka's message and an
-  `ApplicationError` of type `Rejected` as the cause (find it with `errors.As`). Its details are a
-  `kafkaapi.WriteFailures`: every message not written, by `index` in `messages`, with Kafka's
-  `reason`. **Every message not listed was written**: resend only the listed ones, once fixed.
+- **Some or all messages not written, for good or after others were written**: the operation
+  fails at once, not retried, with Kafka's message and an `ApplicationError` as the cause (find it
+  with `errors.As`) of type:
+  - `Rejected`: Kafka refused a message for good (such as one over the broker's size limit, or
+    `TOPIC_AUTHORIZATION_FAILED`). Fix it before resending.
+  - `PartlyWritten`: some messages were written and the rest failed for a reason that may pass.
+    Resend them as they are. Retrying the whole write would write the others twice.
+
+  Its details are a `kafkaapi.WriteFailures`: every message not written, by `index` in
+  `messages`, with Kafka's `reason`. **Every message not listed was written**: resend only the
+  listed ones. Kafka accepts or refuses a partition's share of a batch as a whole, so a listed
+  message may have nothing wrong with it.
+- **Before giving up, a write tries again within the same attempt** the messages that failed with
+  an error kgo marks final but that a moment later can pass (`UNKNOWN_SERVER_ERROR`, the
+  idempotent producer's sequence and epoch errors): once at once, then once more halfway to the
+  attempt's deadline if that is still ahead. Only the failed messages are sent again. Within a
+  partition, a message sent again lands after the ones that were written, so order within a
+  partition can change.
 
   ```go
   var appErr *temporal.ApplicationError
@@ -365,10 +378,19 @@ Needs Go SDK v1.50 or later (the standalone Nexus client).
   The caller's server stores the request ID with the operation, so it is the same on every attempt.
 - `kafka.Writer.Write` returns a `*kafka.WriteError` listing each record not written (index, Kafka's
   error, whether retrying could fix it); it wraps `ErrRejected` if any record was rejected. Every
-  record not listed was acknowledged.
+  record not listed was acknowledged. A record is `Rejected` when kgo marks its error not
+  retriable, except `retriedSoon` (`UNKNOWN_SERVER_ERROR` and the idempotent producer's sequence
+  and epoch errors), which are `RetrySoon` instead. `NewWriter` sets kgo's `MetadataMinAge` to
+  250ms: after a retryable error kgo refreshes metadata and checks the context only then, and at
+  its 5-second default a write overran its deadline and the Nexus request with it.
+- `topicWriter.writeAll` (`write.go`) makes up to three tries within the attempt, sending again
+  only the `RetrySoon` records (at once, then at halfway to the deadline), and maps each try's
+  failures back to the original indexes (`merge`); `finalize` makes any left over `Rejected`.
 - `handlerError` (`errors.go`) maps `kafka.ErrRejected` to a non-retryable handler error with a
-  `Rejected` `ApplicationError` cause, whose details are a `kafkaapi.WriteFailures` (`writeFailures`), and every other error to a retryable `UNAVAILABLE` one, which
-  the caller's server retries until the caller's operation times out.
+  `Rejected` `ApplicationError` cause, a write that wrote some messages but not all to
+  `PartlyWritten` (both final, details a `kafkaapi.WriteFailures` from `writeFailures`), and a
+  write that wrote nothing to a retryable `UNAVAILABLE` one, which the caller's server retries
+  until the caller's operation times out.
 
 **`setup/`**
 - `setup/settings.go` declares `Inbound` and `Outbound`, the `settings.Program` of each: every

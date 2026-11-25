@@ -188,7 +188,12 @@ waiting for Kafka 1 second before it, so it can reply with the reason.
 as a message too large, or `TOPIC_AUTHORIZATION_FAILED`) fails the operation at once with a
 `Rejected` error. A batch's messages go to several partitions, so Kafka can write some and refuse
 others: the error's details (`WriteFailures`) list every message not written, by index, with
-Kafka's reason, and every message not listed was written. Any other failure is a retryable `UNAVAILABLE` handler error, which the caller's
+Kafka's reason, and every message not listed was written. Messages that failed with an error a
+moment later can pass (`UNKNOWN_SERVER_ERROR`, the idempotent producer's sequence and epoch
+errors) are sent again within the attempt, alone, at once and then halfway to its deadline. A write
+that wrote some messages and failed the rest for a reason that may pass ends with `PartlyWritten`
+rather than being retried, which would write the others twice; only a write that wrote nothing is
+retried by the caller's server. Any other failure is a retryable `UNAVAILABLE` handler error, which the caller's
 Temporal server retries with its own backoff (server-wide: 1 second, growing to at most 1 hour
 between attempts; `component.nexusoperations.retryPolicy.*`) until the caller's Nexus operation's
 `ScheduleToCloseTimeout`. Nothing else bounds the retries, so callers must give the call a timeout.

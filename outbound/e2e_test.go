@@ -190,6 +190,40 @@ func TestEndToEnd_PartlyRejected(t *testing.T) {
 	}
 }
 
+// A batch whose messages partly fail with an error retrying could fix, here one partition without
+// enough in-sync replicas until the attempt runs out, isn't retried as a whole, which would write
+// the others again: the caller gets PartlyWritten at once, listing the messages not written, and
+// every other message is in the topic exactly once.
+func TestEndToEnd_PartlyWritten(t *testing.T) {
+	h := newHarness(t)
+	cfg, refused := testenv.Refusing(t, func(p int32) bool { return p == 1 }, kerr.NotEnoughReplicas)
+	h.serve(t, nexuscaller.CustomersEndpoint, defaultTaskQueue, cfg)
+
+	const n = 30
+	in := kafkaapi.WriteInput{}
+	for i := range n {
+		in.Messages = append(in.Messages, kafkaapi.Message{Key: fmt.Appendf(nil, "key-%d", i), Value: fmt.Appendf(nil, "%d", i)})
+	}
+	run, err := h.test.ExecuteWorkflow(context.Background(), client.StartWorkflowOptions{TaskQueue: nexuscaller.TaskQueue},
+		writeWithin, nexuscaller.CustomersEndpoint, in, 2*time.Minute)
+	require.NoError(t, err)
+	err = run.Get(context.Background(), nil)
+	requireErrorType(t, err, ErrorTypePartlyWritten)
+	failed := failedIndexes(t, err)
+	require.NotEmpty(t, failed)
+	require.Less(t, len(failed), n)
+	require.Positive(t, refused())
+
+	var want []string
+	for i := range n {
+		if !slices.Contains(failed, int64(i)) {
+			want = append(want, fmt.Sprint(i))
+		}
+	}
+	recs := consume(t, cfg, len(want))
+	require.ElementsMatch(t, want, values(recs), "every message not listed was written, once")
+}
+
 // failedIndexes is the indexes in a Rejected error's details, after checking each has Kafka's
 // reason.
 func failedIndexes(t *testing.T, err error) []int64 {

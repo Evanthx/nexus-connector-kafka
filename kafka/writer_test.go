@@ -77,6 +77,25 @@ func TestWriter_RetryableIsNotRejected(t *testing.T) {
 	require.Equal(t, []int{0, 1}, indexes(we))
 }
 
+// Errors kgo marks not retriable but a later attempt can get past, such as a broker's
+// UNKNOWN_SERVER_ERROR, aren't Rejected, so the caller's server retries the write.
+func TestWriter_UnknownServerErrorIsNotRejected(t *testing.T) {
+	cfg, refused := testenv.Refusing(t, func(int32) bool { return true }, kerr.UnknownServerError)
+	w, err := kafka.NewWriter(cfg)
+	require.NoError(t, err)
+	t.Cleanup(w.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	err = w.Write(ctx, &kgo.Record{Topic: cfg.Topic, Value: []byte("a")})
+	require.NotErrorIs(t, err, kafka.ErrRejected)
+	var we *kafka.WriteError
+	require.ErrorAs(t, err, &we)
+	require.Equal(t, []int{0}, indexes(we))
+	require.ErrorIs(t, we.Failures[0].Err, kerr.UnknownServerError, "Kafka refused it")
+	require.False(t, we.Failures[0].Rejected)
+	require.Positive(t, refused())
+}
+
 func indexes(we *kafka.WriteError) []int {
 	var out []int
 	for _, f := range we.Failures {

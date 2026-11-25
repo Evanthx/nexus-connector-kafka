@@ -9,36 +9,59 @@ import (
 	"go.temporal.io/sdk/temporal"
 )
 
-// ErrorTypeRejected is the type of the ApplicationError a caller gets when Kafka refused one or
-// more of a write's messages for a reason retrying can't fix, for example a message larger than
-// the broker allows. Its details are a kafkaapi.WriteFailures: every message not written, by
-// index, with Kafka's reason; every message not listed was written. Callers find it with
-// errors.As. Any other failure is retried until the caller's Nexus operation times out.
-const ErrorTypeRejected = "Rejected"
+// Error types of the ApplicationError a caller gets when a write ends with messages not written.
+// Both are final: the caller's server doesn't retry the write. Their details are a
+// kafkaapi.WriteFailures: every message not written, by index, with Kafka's reason; every message
+// not listed was written. Callers find them with errors.As. A write that wrote nothing and failed
+// only with errors retrying could fix is retried instead, until the caller's Nexus operation
+// times out.
+const (
+	// ErrorTypeRejected: Kafka refused one or more messages for a reason retrying can't fix, for
+	// example a message larger than the broker allows.
+	ErrorTypeRejected = "Rejected"
+	// ErrorTypePartlyWritten: some messages were written and the others failed with errors
+	// retrying could fix. The write isn't retried as a whole, which would write the others again:
+	// resend only the listed messages.
+	ErrorTypePartlyWritten = "PartlyWritten"
+)
 
-// handlerError turns an error from the kafka package into what the write operation returns. A
-// write with a rejected message is a non-retryable handler error, which ends the operation,
-// carrying Kafka's message and a Rejected ApplicationError, with the messages not written in its
-// details, that the caller finds with errors.As. Any other error is a retryable UNAVAILABLE
-// handler error: the caller's server retries the whole write.
+// handlerError turns an error from the kafka package into what the write operation returns:
+//
+//   - a write with a rejected message: Rejected, final;
+//   - a write that wrote some messages and not others: PartlyWritten, final;
+//   - anything else, a write that wrote nothing: a retryable UNAVAILABLE handler error, so the
+//     caller's server retries the whole write.
+//
+// A final one is a non-retryable handler error carrying Kafka's message and the ApplicationError,
+// with the messages not written in its details.
 func handlerError(err error) error {
-	if errors.Is(err, kafka.ErrRejected) {
-		opts := temporal.ApplicationErrorOptions{NonRetryable: true}
-		var we *kafka.WriteError
-		if errors.As(err, &we) {
-			opts.Details = []any{writeFailures(we)}
-		}
-		return &nexus.HandlerError{
-			Type:          nexus.HandlerErrorTypeInternal,
-			Message:       err.Error(),
-			Cause:         temporal.NewApplicationErrorWithOptions(err.Error(), ErrorTypeRejected, opts),
-			RetryBehavior: nexus.HandlerErrorRetryBehaviorNonRetryable,
-		}
+	var we *kafka.WriteError
+	isWriteErr := errors.As(err, &we)
+	switch {
+	case errors.Is(err, kafka.ErrRejected):
+		return finalError(err, ErrorTypeRejected, we)
+	case isWriteErr && len(we.Failures) < we.Records:
+		return finalError(err, ErrorTypePartlyWritten, we)
 	}
 	return &nexus.HandlerError{Type: nexus.HandlerErrorTypeUnavailable, Message: err.Error(), Cause: err}
 }
 
-// writeFailures is the details of a Rejected error: every message we lists, rejected or not.
+// finalError is the non-retryable handler error for err, with an ApplicationError of errType
+// whose details list we's failures, if we isn't nil.
+func finalError(err error, errType string, we *kafka.WriteError) error {
+	opts := temporal.ApplicationErrorOptions{NonRetryable: true}
+	if we != nil {
+		opts.Details = []any{writeFailures(we)}
+	}
+	return &nexus.HandlerError{
+		Type:          nexus.HandlerErrorTypeInternal,
+		Message:       err.Error(),
+		Cause:         temporal.NewApplicationErrorWithOptions(err.Error(), errType, opts),
+		RetryBehavior: nexus.HandlerErrorRetryBehaviorNonRetryable,
+	}
+}
+
+// writeFailures is the details of a final error: every message we lists, rejected or not.
 func writeFailures(we *kafka.WriteError) kafkaapi.WriteFailures {
 	out := kafkaapi.WriteFailures{Failures: make([]kafkaapi.WriteFailure, len(we.Failures))}
 	for i, f := range we.Failures {

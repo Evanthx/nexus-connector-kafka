@@ -66,11 +66,17 @@ Every team that connects Kafka to Temporal tends to build the same things:
 - **Rate limiting.** `INBOUND_MAX_MESSAGES_PER_MINUTE` caps how many messages a minute go into
   Temporal, so a burst on the topic can't overwhelm your service; the rest wait in Kafka.
 - **Writing in batches.** One `write` takes many messages, which costs one Nexus operation for the
-  whole batch. If Kafka rejects some of them for good (such as a message over the broker's size
-  limit), the call fails with a `Rejected` error whose details list every message that wasn't
-  written, by its index in the batch, with Kafka's reason. **Every message not in that list was
-  written**, so resend only the listed ones once fixed. A failure retrying can fix, such as Kafka
-  being unreachable, retries the whole batch instead.
+  whole batch. A batch that ends with some messages not written fails with an error whose details
+  list every message that wasn't written, by its index in the batch, with Kafka's reason. **Every
+  message not in that list was written**, so resend only the listed ones. The error is `Rejected` if Kafka refused a
+  message for good (such as one over the broker's size limit: fix it first), or `PartlyWritten`
+  if the rest failed for a reason that may pass (resend them as they are). Kafka accepts or
+  refuses each partition's share of a batch as a whole, so a refused message can take messages
+  with nothing wrong with them along with it; they are listed with the same reason. A write that
+  wrote nothing, such as with Kafka unreachable, is retried for you until your call times out.
+  Delivery is at least once: a write whose reply is lost (the Outbound Connector crashing after
+  Kafka accepted it, or Kafka taking too long to confirm it) is retried, and its messages are
+  written again. Consumers that can't tolerate a duplicate drop them by `dedupe-id`.
 - **Identifying retried writes.** The Outbound Connector adds a `dedupe-id` header to each written
   message, the same on every retry, so consumers can drop a message a retried write sent twice.
   Kafka doesn't drop them itself: a consumer that can't tolerate a duplicate dedupes on this

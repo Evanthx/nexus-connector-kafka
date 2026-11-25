@@ -563,8 +563,8 @@ func (m WriteFailure) MarshalJSON() ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// WriteFailures The details of a Rejected error from write: every message that wasn't
-// written, with why. Every message not listed was written.
+// WriteFailures The details of a Rejected or PartlyWritten error from write: every
+// message that wasn't written, with why. Every message not listed was written.
 type WriteFailures struct {
 	// Failures corresponds to the "failures" JSON property.
 	Failures []WriteFailure `json:"failures"`
