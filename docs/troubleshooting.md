@@ -33,7 +33,7 @@ first:
 ```
 The Outbound Connector can't start:
 Invalid Outbound Connector configuration:
-  - KAFKA_MAX_DURATION_MINUTES must be a whole number of minutes, at least 1, not "0"
+  - set KAFKA_TOPIC: the topic to serve
 Failed to connect to Temporal:
   - failed reaching server: ... connection refused
 ```
@@ -63,15 +63,30 @@ that stops moving says why:
 
 ## Errors from `write`
 
-Failures that retrying can't fix are `ApplicationError`s:
+A failure that retrying can't fix ends the operation at once, with Kafka's message and an
+`ApplicationError` cause the caller finds with `errors.As`:
 
 | Type | Cause | Fix |
 |---|---|---|
-| `InvalidRequest` | The caller's Nexus operation timeout is 10 seconds or less, too short to run a write. | Give the call a longer timeout. |
-| `Rejected` | Kafka refused a write, such as a message over the broker's size limit. | Fix the message. |
+| `Rejected` | Kafka refused a write, such as a message over the broker's size limit, or `TOPIC_AUTHORIZATION_FAILED`. | Fix the message, or the Kafka login's permissions on the topic. |
 
-Other failures are retried for 10 minutes, or `KAFKA_MAX_DURATION_MINUTES`. Retries stop 10
-seconds before the caller's Nexus operation times out, if that comes first.
+Every other failure (Kafka unreachable, slow, or not acknowledging) is retried by the caller's
+Temporal server, with its own backoff, until the caller's Nexus operation times out.
+
+### A write times out with no Kafka error
+
+A caller whose write never succeeds gets a timeout error (`operation timed out (type:
+ScheduleToClose)`), not the Kafka error. To find the reason:
+
+- While the caller's server is still retrying, the reason is the last attempt's failure on the
+  caller workflow's pending Nexus operation. `temporal workflow describe --workflow-id <id>`
+  (in the caller's namespace) shows pending Nexus operations, such as `Kafka didn't acknowledge the
+  write in time; the Outbound Connector's log has the Kafka client's errors`.
+- The Outbound Connector's log has the Kafka client's own errors (`Kafka client: ...` lines), such
+  as brokers it can't reach.
+
+Give every call to `write` a Nexus operation timeout (`ScheduleToCloseTimeout`). Nothing else stops
+the caller's server retrying a failing write.
 
 ## Consumer group rules
 

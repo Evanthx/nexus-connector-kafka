@@ -84,7 +84,7 @@ topic, use the Inbound Connector.
 | `KAFKA_USERNAME`, `KAFKA_PASSWORD` | Your Kafka username and password, if your Kafka needs a login. See [Connecting to Kafka](#connecting-to-kafka). |
 | `KAFKA_TLS` | `true` if your Kafka needs encrypted connections, as hosted Kafka services do. |
 | `NEXUS_TASK_QUEUE` | The task queue to serve (default `nexus-connector-kafka`). Give each Outbound Connector for a different topic its own. |
-| `TEMPORAL_ADDRESS`, `TEMPORAL_NAMESPACE` | Your Temporal server and namespace (default `connectors`), plus `TEMPORAL_API_KEY` for Temporal Cloud. The namespace needs standalone activities with completion callbacks. |
+| `TEMPORAL_ADDRESS`, `TEMPORAL_NAMESPACE` | Your Temporal server and namespace (default `connectors`), plus `TEMPORAL_API_KEY` for Temporal Cloud. The Outbound Connector needs no special server feature. |
 
 To work them out and test them in a browser first, use the [setup
 page](#work-out-your-settings-in-a-browser). Every variable the Outbound Connector reads is in
@@ -111,20 +111,19 @@ temporal operator nexus endpoint create \
 
 ## Starting Temporal
 
-The namespace the Outbound Connector and the Inbound Connector run in needs two dynamic config
-values:
+The Inbound Connector's namespace needs standalone Nexus operations, a dynamic config value on a
+dev server. The Outbound Connector needs no special server feature.
 
 ```bash
 temporal server start-dev \
-  --dynamic-config-value activity.enableCallbacks=true \
   --dynamic-config-value nexusoperation.enableStandalone=true \
   --namespace connectors \
   --namespace kafka-test
 ```
 
 The `connectors` namespace is where the Inbound Connector and the Outbound Connector run.
-`kafka-test` is where test programs run. On Temporal Cloud, confirm with Temporal that both features
-are enabled for your namespace.
+`kafka-test` is where test programs run. On Temporal Cloud, confirm with Temporal that standalone
+Nexus operations are enabled for the Inbound Connector's namespace.
 
 ## Work out your settings in a browser
 
@@ -210,11 +209,9 @@ All Nexus connectors default to the same `connectors` namespace. They are kept a
 queue: each serves its own (here `NEXUS_TASK_QUEUE`, default `nexus-connector-kafka`). Two
 Outbound Connectors in one namespace, such as one per topic, need different `NEXUS_TASK_QUEUE` values.
 
-The namespace the Outbound Connector and the Inbound Connector run in needs:
-- **Standalone Nexus operations** (for the Inbound Connector)
-- **Standalone activities with completion callbacks** (for the Outbound Connector)
-
-Confirm with Temporal that both are enabled for your namespace before running.
+The Inbound Connector's namespace needs **standalone Nexus operations**. Confirm with Temporal
+that they are enabled for your namespace before running it. The Outbound Connector needs no special
+server feature.
 
 ## Environment variables
 
@@ -267,7 +264,7 @@ gRPC headers sent with every call to Temporal: `TEMPORAL_GRPC_META_<NAME>` sends
 | Variable | Required | Default | Meaning |
 |---|---|---|---|
 | `TEMPORAL_ADDRESS` |  | localhost:7233 | The Temporal frontend's `host:port`; for Temporal Cloud, the namespace's gRPC endpoint. The Temporal SDK's `envconfig` reads this and every variable below as the `temporal` CLI does: each one that is set overrides the profile file's value. See [Connecting to Temporal Cloud](#connecting-to-temporal-cloud). |
-| `TEMPORAL_NAMESPACE` |  | connectors | The namespace the program runs in. The Inbound Connector needs standalone Nexus operations enabled in it; the Outbound Connector, standalone activities with completion callbacks. All connectors default to `connectors` and are kept apart by task queue. |
+| `TEMPORAL_NAMESPACE` |  | connectors | The namespace the program runs in. The Inbound Connector needs standalone Nexus operations enabled in it; the Outbound Connector needs nothing extra. All connectors default to `connectors` and are kept apart by task queue. |
 | `TEMPORAL_API_KEY` (secret) |  | none | An API key, for a Temporal Cloud namespace that uses API key authentication. Turns on TLS unless `TEMPORAL_TLS` is `false`. |
 | `TEMPORAL_PROFILE` |  | default | The profile to read from the profile file. If it is set and the file has no such profile, the program can't connect; `default` may be missing. |
 | `TEMPORAL_CONFIG_FILE` |  | temporalio/temporal.toml in the user's config directory | The profile file, which `temporal config set` writes. A missing file is fine: only the variables apply. The user's config directory is `~/.config` on Linux (or `$XDG_CONFIG_HOME`) and `~/Library/Application Support` on macOS. |
@@ -314,7 +311,6 @@ gRPC headers sent with every call to Temporal: `TEMPORAL_GRPC_META_<NAME>` sends
 | Variable | Required | Default | Meaning |
 |---|---|---|---|
 | `NEXUS_TASK_QUEUE` |  | nexus-connector-kafka | The task queue the Outbound Connector's Nexus endpoint targets. Give each Outbound Connector for another topic its own. |
-| `KAFKA_MAX_DURATION_MINUTES` |  | 10 | The longest a write keeps retrying, in whole minutes, at least 1. Either way it stops 10 seconds before the caller's Nexus operation times out. |
 
 ### Temporal
 
@@ -323,7 +319,7 @@ gRPC headers sent with every call to Temporal: `TEMPORAL_GRPC_META_<NAME>` sends
 | Variable | Required | Default | Meaning |
 |---|---|---|---|
 | `TEMPORAL_ADDRESS` |  | localhost:7233 | The Temporal frontend's `host:port`; for Temporal Cloud, the namespace's gRPC endpoint. The Temporal SDK's `envconfig` reads this and every variable below as the `temporal` CLI does: each one that is set overrides the profile file's value. See [Connecting to Temporal Cloud](#connecting-to-temporal-cloud). |
-| `TEMPORAL_NAMESPACE` |  | connectors | The namespace the program runs in. The Inbound Connector needs standalone Nexus operations enabled in it; the Outbound Connector, standalone activities with completion callbacks. All connectors default to `connectors` and are kept apart by task queue. |
+| `TEMPORAL_NAMESPACE` |  | connectors | The namespace the program runs in. The Inbound Connector needs standalone Nexus operations enabled in it; the Outbound Connector needs nothing extra. All connectors default to `connectors` and are kept apart by task queue. |
 | `TEMPORAL_API_KEY` (secret) |  | none | An API key, for a Temporal Cloud namespace that uses API key authentication. Turns on TLS unless `TEMPORAL_TLS` is `false`. |
 | `TEMPORAL_PROFILE` |  | default | The profile to read from the profile file. If it is set and the file has no such profile, the program can't connect; `default` may be missing. |
 | `TEMPORAL_CONFIG_FILE` |  | temporalio/temporal.toml in the user's config directory | The profile file, which `temporal config set` writes. A missing file is fine: only the variables apply. The user's config directory is `~/.config` on Linux (or `$XDG_CONFIG_HOME`) and `~/Library/Application Support` on macOS. |

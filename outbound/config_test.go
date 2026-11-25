@@ -3,7 +3,6 @@ package main
 import (
 	"maps"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/settings"
@@ -21,29 +20,18 @@ func TestConfigFrom(t *testing.T) {
 	cfg, s, err := configFrom(kafkaEnv(nil))
 	require.NoError(t, err)
 	require.Equal(t, "orders", cfg.Topic)
-	require.Equal(t, config{taskQueue: defaultTaskQueue, maxDuration: 10 * time.Minute}, s, "the defaults")
+	require.Equal(t, config{taskQueue: defaultTaskQueue}, s, "the defaults")
 
 	_, s, err = configFrom(kafkaEnv(settings.Map{"NEXUS_TASK_QUEUE": "nexus-connector-kafka-orders"}))
 	require.NoError(t, err)
 	require.Equal(t, "nexus-connector-kafka-orders", s.taskQueue)
-
-	_, s, err = configFrom(kafkaEnv(settings.Map{"KAFKA_MAX_DURATION_MINUTES": "90"}))
-	require.NoError(t, err)
-	require.Equal(t, 90*time.Minute, s.maxDuration)
-	for _, bad := range []string{"0", "-1", "1.5", "1h", " 2"} {
-		_, _, err = configFrom(kafkaEnv(settings.Map{"KAFKA_MAX_DURATION_MINUTES": bad}))
-		require.ErrorContains(t, err, "KAFKA_MAX_DURATION_MINUTES", "value %q", bad)
-	}
 }
 
 // configFrom collects all invalid values in one error rather than stopping at the first.
 func TestConfigFrom_ReportsEveryInvalidValue(t *testing.T) {
-	_, _, err := configFrom(settings.Map{
-		"KAFKA_MAX_DURATION_MINUTES": "0", // must be ≥ 1
-	})
+	_, _, err := configFrom(settings.Map{})
 	require.EqualError(t, err, "set KAFKA_BROKERS: the Kafka brokers, as comma-separated host:port\n"+
-		"set KAFKA_TOPIC: the topic to serve\n"+
-		`KAFKA_MAX_DURATION_MINUTES must be a whole number of minutes, at least 1, not "0"`)
+		"set KAFKA_TOPIC: the topic to serve")
 }
 
 // The startup report says where to point the endpoint, and never shows the password.
@@ -59,7 +47,7 @@ func TestReport(t *testing.T) {
 	require.Contains(t, report, "with the operation write")
 	require.Contains(t, report, `point this Outbound Connector's Nexus endpoint at it`)
 	require.Regexp(t, `NEXUS_TASK_QUEUE +nexus-connector-kafka-orders\n`, report)
-	require.Regexp(t, `KAFKA_MAX_DURATION_MINUTES +10m \(default\)`, report)
+	require.Contains(t, report, "with no activity")
 	require.NotContains(t, report, "KAFKA_START_FROM", "only the Inbound Connector reads it")
 
 	env = kafkaEnv(nil)

@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/temporalio/nexus-connector-kafka/kafka"
 	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/report"
@@ -14,8 +13,7 @@ import (
 
 // config is the Outbound Connector's settings besides the topic's.
 type config struct {
-	taskQueue   string        // NEXUS_TASK_QUEUE: the task queue the Nexus endpoint targets
-	maxDuration time.Duration // KAFKA_MAX_DURATION_MINUTES: the longest a write may take, retries included
+	taskQueue string // NEXUS_TASK_QUEUE: the task queue the Nexus endpoint targets
 }
 
 // configFrom checks every variable the Outbound Connector reads (setup.Outbound) in env, reporting
@@ -30,8 +28,7 @@ func configFrom(env settings.Env) (kafka.Config, config, error) {
 		return kafka.Config{}, config{}, err
 	}
 	return kafkaCfg, config{
-		taskQueue:   setup.TaskQueue.From(vals),
-		maxDuration: setup.MaxDuration.From(vals),
+		taskQueue: setup.TaskQueue.From(vals),
 	}, nil
 }
 
@@ -43,14 +40,14 @@ func (s config) report(env settings.Env, cfg kafka.Config, temporal client.Optio
 		cfg.Settings(env),
 		{Title: "Outbound Connector", Settings: []report.Setting{
 			report.Env(env, "NEXUS_TASK_QUEUE", s.taskQueue),
-			report.Env(env, setup.MaxDuration.Name, s.maxDuration),
 		}},
 		temporalclient.Section(env, temporal),
 	}
 	behavior := []string{
 		fmt.Sprintf("Serve the topic %q as the KafkaService Nexus service, with the operation write.", cfg.Topic),
-		fmt.Sprintf("Take Nexus requests and run writes on the task queue %q: point this Outbound Connector's Nexus endpoint at it.", s.taskQueue),
-		fmt.Sprintf("Write messages to the topic %q, each with a dedupe-id header.", cfg.Topic),
+		fmt.Sprintf("Take Nexus requests on the task queue %q: point this Outbound Connector's Nexus endpoint at it.", s.taskQueue),
+		fmt.Sprintf("Write messages to the topic %q within each Nexus request, with no activity, each with a dedupe-id header. "+
+			"A failed write is retried by the caller's Temporal server until the caller's Nexus operation times out.", cfg.Topic),
 	}
 	return report.Format("Outbound Connector", sections, behavior)
 }

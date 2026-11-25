@@ -44,7 +44,7 @@ var Outbound = &settings.Program{
 	Sections: []*settings.Section{
 		KafkaSection,
 		{Title: "Outbound Connector", Variables: []*settings.Variable{
-			TaskQueue.Variable, MaxDuration.Variable,
+			TaskQueue.Variable,
 		}},
 		temporalSection,
 		networkSection,
@@ -57,7 +57,7 @@ var Outbound = &settings.Program{
 var temporalSection = settings.Temporal{
 	Namespace: temporalclient.DefaultNamespace,
 	NamespaceHelp: "The namespace the program runs in. The Inbound Connector needs standalone Nexus operations enabled in it; the " +
-		"Outbound Connector, standalone activities with completion callbacks. All connectors default to `" +
+		"Outbound Connector needs nothing extra. All connectors default to `" +
 		temporalclient.DefaultNamespace + "` and are kept apart by task queue.",
 	Docs: "See [Connecting to Temporal Cloud](#connecting-to-temporal-cloud).",
 }.Section()
@@ -253,14 +253,6 @@ var (
 		Default: DefaultTaskQueue,
 		Help:    "The task queue the Outbound Connector's Nexus endpoint targets. Give each Outbound Connector for another topic its own.",
 	}, settings.TextOr(DefaultTaskQueue))
-
-	// MaxDuration is 0 when unset: a write may then take 10 minutes.
-	MaxDuration = settings.Define(settings.Variable{
-		Name:    "KAFKA_MAX_DURATION_MINUTES",
-		Default: "10",
-		Help: "The longest a write keeps retrying, in whole minutes, at least 1. Either way it stops 10 seconds " +
-			"before the caller's Nexus operation times out.",
-	}, settings.Minutes("KAFKA_MAX_DURATION_MINUTES", 10*time.Minute))
 )
 
 // DefaultTaskQueue is the Outbound Connector's task queue unless NEXUS_TASK_QUEUE says otherwise.

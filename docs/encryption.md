@@ -92,12 +92,12 @@ codec server's encoding runs first, then the compiled-in codecs.
 | | Encrypted | Not encrypted |
 |---|---|---|
 | **Inbound Connector** | The batch of messages (the operation's input). The operation's summary (topic, partition, offsets). Errors, as below. | The operation ID (`kafka-<hash>-<partition>-<first>-<last>`: no message content). The endpoint, service and operation names. |
-| **Outbound Connector** | Each `write`'s input and result, and the activity input and result inside it. Errors it returns: their details, messages and stack traces. | Each error's type. |
+| **Outbound Connector** | Each `write`'s input and result. Errors it returns: their details, messages and stack traces. | Each error's type. |
 | **Kafka** | | Messages: the Outbound Connector writes what the caller passed, decrypted, and the Inbound Connector delivers what is in the topic. To keep Kafka encrypted too, encrypt message values yourself before `write`. Dead letters are the original Kafka messages. |
 
 **Errors are encrypted too.** With a codec set, both programs use a failure converter that
 encrypts each error's details, message and stack trace (`EncodeCommonAttributes`). Temporal then
-stores the message as `Encoded failure`; the error's type (such as `InvalidRequest`) and whether it
+stores the message as `Encoded failure`; the error's type (such as `Rejected`) and whether it
 is retryable stay readable, so callers can still branch on them. Your workers need the same failure
 converter to read the messages: `temporal.NewDefaultFailureConverter` with your data converter and
 `EncodeCommonAttributes: true`; the demo's ENCRYPTION blocks set it. Without it, a worker sees `Encoded failure` and no error is
@@ -129,7 +129,6 @@ for the demo only: a real codec gets its keys from a key management service.
 
    ```bash
    temporal server start-dev \
-     --dynamic-config-value activity.enableCallbacks=true \
      --dynamic-config-value nexusoperation.enableStandalone=true \
      --namespace connectors --namespace kafka-test \
      --ui-codec-endpoint http://localhost:8089

@@ -60,9 +60,7 @@ func Temporal(t *testing.T) (connector, test client.Client) {
 		ClientOptions: &client.Options{Namespace: ConnectorNamespace},
 		ExtraArgs: []string{
 			"--namespace", TestNamespace,
-			// The Outbound Connector's operations complete through standalone activities'
-			// callbacks.
-			"--dynamic-config-value", "activity.enableCallbacks=true",
+			// The Outbound Connector's write is synchronous, so it needs no activity callbacks.
 			// The Inbound Connector starts standalone Nexus operations.
 			"--dynamic-config-value", "nexusoperation.enableStandalone=true",
 		},

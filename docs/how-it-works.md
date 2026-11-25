@@ -13,7 +13,7 @@ The Kafka connector ships as two programs: the Inbound Connector and the Outboun
 | `configui/` | The setup page (`make configui`): `connector.go` lists the two programs and their Kafka checks; the page itself is in `nexus-connector-shared/configui`. It shows `setup.Inbound` and `setup.Outbound`, tests values without changing any environment, and lists the `export` lines; see [Setup](setup.md#work-out-your-settings-in-a-browser). Not part of either program. `configui/gendocs` writes `docs/setup.md`'s tables (`make docs`). |
 | `generated/kafkaapi/` | Go types for the contract, generated from `kafka.nexusrpc.yaml`. |
 | `test/` | Testing only: a receiver for the Inbound Connector, a caller for the Outbound Connector, shared end-to-end test setup, and a local Kafka. |
-| `nexus-connector-shared/` | Code every Go connector shares, the same in every Go connector repo; see its [README](../nexus-connector-shared/README.md). `settings` (declaring and reading environment variables; the only code that reads the environment), `temporalclient` (the Temporal client options), `codec` ([encryption](encryption.md)), `startup` (how each program starts), `report` (the startup report), `deadline` (the Outbound Connector's time limit), `nexussend` (how the Inbound Connector sends each batch: starting the operation, retrying, the rate limit, ordered mode), `configui` (the setup page), and test helpers with the demo codec (`test/encryption`). |
+| `nexus-connector-shared/` | Code every Go connector shares, the same in every Go connector repo; see its [README](../nexus-connector-shared/README.md). `settings` (declaring and reading environment variables; the only code that reads the environment), `temporalclient` (the Temporal client options), `codec` ([encryption](encryption.md)), `startup` (how each program starts), `report` (the startup report), `deadline` (a call's time limit, for Outbound Connectors whose calls run as standalone activities; this repo's doesn't use it), `nexussend` (how the Inbound Connector sends each batch: starting the operation, retrying, the rate limit, ordered mode), `configui` (the setup page), and test helpers with the demo codec (`test/encryption`). |
 
 At the top level, `kafka.nexusrpc.yaml` is the contract and `endpoint-description.md` is the
 description for the Outbound Connector's Nexus endpoint.
@@ -170,12 +170,28 @@ callers can't choose it. To serve several topics, run an Outbound Connector for 
 `NEXUS_TASK_QUEUE` and a Nexus endpoint that targets it.
 
 **One task queue.** The endpoint targets `NEXUS_TASK_QUEUE` (`nexus-connector-kafka` by default).
-One worker on it runs the Nexus operations and the writes.
+One worker on it serves the Nexus service. There is no activity or workflow behind it.
 
 **`write(messages)`** writes messages in order and waits for Kafka to acknowledge them. Each
-message gets a `dedupe-id` header, `<activity ID>-<index>`, the same on every retry attempt.
+message gets a `dedupe-id` header, `kafka-write-<Nexus request ID>-<index>`. The caller's Temporal
+server stores the request ID with the operation, so the header is the same on every attempt, and
+consumers can drop the copies a retried write leaves.
 [`test/nexuscaller/workflows.go`](../test/nexuscaller/workflows.go) (`WriterWorkflow`) shows a
 call.
+
+**Each attempt runs within one Nexus request.** `write` is a synchronous Nexus operation: it writes
+and replies within the request. The caller's Temporal server gives the request a deadline (10
+seconds by default, dynamic config `component.nexusoperations.request.timeout`). The write stops
+waiting for Kafka 1 second before it, so it can reply with the reason.
+
+**Retries are the caller's server's.** A write Kafka refuses for good (`kafka.ErrRejected`, such
+as a message too large, or `TOPIC_AUTHORIZATION_FAILED`) fails the operation at once with a
+`Rejected` error. Any other failure is a retryable `UNAVAILABLE` handler error, which the caller's
+Temporal server retries with its own backoff (server-wide: 1 second, growing to at most 1 hour
+between attempts; `component.nexusoperations.retryPolicy.*`) until the caller's Nexus operation's
+`ScheduleToCloseTimeout`. Nothing else bounds the retries, so callers must give the call a timeout.
+A caller whose retries never succeed gets a timeout error, not the Kafka error; see
+[Troubleshooting](troubleshooting.md#a-write-times-out-with-no-kafka-error).
 
 **The Outbound Connector only writes.** To consume the topic, run the Inbound Connector.
 
@@ -185,8 +201,8 @@ Temporal Cloud bills by [Action](https://docs.temporal.io/evaluate/cloud/actions
 
 - **The Inbound Connector:** one standalone Nexus operation per partition in each batch, plus
   whatever the receiving service starts. It costs nothing while the topic is idle.
-- **The Outbound Connector:** each `write` is one Action for the Nexus operation and one for the
-  activity behind it.
+- **The Outbound Connector:** each `write` is one Action, for its Nexus operation. There is no activity
+  behind it.
 
 With full batches, the Kafka connector's share is small. What decides the bill:
 

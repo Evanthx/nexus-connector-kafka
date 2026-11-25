@@ -31,13 +31,11 @@ Each process serves one topic. For several topics, run one process per topic.
 
 - Go 1.26 or later. Build with `go build -o bin/ ./inbound ./outbound`, or run with `go run`.
 - Temporal Server 1.32 or later (Temporal CLI 1.9.1 or later for a local dev server), or Temporal
-  Cloud. The namespace the Outbound Connector and the Inbound Connector run in needs:
-  - **Standalone Nexus operations**, for the Inbound Connector. Dev server: `--dynamic-config-value
-    nexusoperation.enableStandalone=true`.
-  - **Standalone activities with completion callbacks**, for the Outbound Connector. Dev server:
-    `--dynamic-config-value activity.enableCallbacks=true`.
-  - On Temporal Cloud, ask the user to confirm with Temporal that both are enabled for the
-    namespace. Don't assume.
+  Cloud.
+  - The Inbound Connector's namespace needs **standalone Nexus operations**. Dev server:
+    `--dynamic-config-value nexusoperation.enableStandalone=true`. On Temporal Cloud, ask the user
+    to confirm with Temporal that they are enabled for the namespace. Don't assume.
+  - The Outbound Connector needs no special server feature.
 - Kafka reachable from the process. Supported: plaintext or TLS (`KAFKA_TLS`, optionally
   `KAFKA_TLS_SERVER_CA_CERT_PATH`), and no login, a username and password (`KAFKA_SASL_MECHANISM`:
   `SCRAM-SHA-256` default, `SCRAM-SHA-512`, `PLAIN`), or mTLS (`KAFKA_TLS_CLIENT_CERT_PATH`,
@@ -107,7 +105,6 @@ selected Temporal profile file sets beside each `TEMPORAL_*` field.
    | `KAFKA_BROKERS`, `KAFKA_TOPIC` | As for the Inbound Connector. Callers can't choose another topic. |
    | `KAFKA_USERNAME`, `KAFKA_PASSWORD`, `KAFKA_SASL_MECHANISM`, `KAFKA_TLS*` | If needed. |
    | `NEXUS_TASK_QUEUE` | Default `nexus-connector-kafka`. Give each Outbound Connector for a different topic its own. |
-   | `KAFKA_MAX_DURATION_MINUTES` | Optional. Longest a write retries, in whole minutes. Default 10. |
 
 2. **Create a Nexus endpoint** that targets the Outbound Connector's namespace and
    `NEXUS_TASK_QUEUE` exactly.
@@ -121,7 +118,9 @@ selected Temporal profile file sets beside each `TEMPORAL_*` field.
 3. **Call it from a workflow** with a Nexus client for `KafkaService` on that endpoint.
    `test/nexuscaller/workflows.go` (`WriterWorkflow`) is a working Go example to copy. `write`
    takes `messages: [{key?, value, headers?}]` and returns `written`. Each message gets a
-   `dedupe-id` header that stays the same when the write is retried.
+   `dedupe-id` header that stays the same when the write is retried. **Give the call a timeout**
+   (`ScheduleToCloseTimeout`): the caller's Temporal server retries a failed write until it, and
+   nothing else stops the retries.
 
 ## Encryption
 
@@ -170,7 +169,7 @@ Kafka. If anything fails, the program reports every problem in one message and e
 ```
 The Outbound Connector can't start:
 Invalid Outbound Connector configuration:
-  - KAFKA_MAX_DURATION_MINUTES must be a whole number of minutes, at least 1, not "0"
+  - set KAFKA_TOPIC: the topic to serve
 Failed to connect to Temporal:
   - failed reaching server: ... connection refused
 ```
@@ -204,16 +203,22 @@ Then:
 
 ## Errors from `write`
 
-Failures that retrying can't fix are `ApplicationError`s:
+`write` is a synchronous Nexus operation: each attempt runs within one Nexus request, which the
+caller's Temporal server gives a deadline (10 seconds by default, server dynamic config
+`component.nexusoperations.request.timeout`). The write stops waiting for Kafka 1 second before it,
+to reply with the reason.
 
-| Type | Cause | Fix |
-|---|---|---|
-| `InvalidRequest` | The caller's Nexus operation timeout is 10 seconds or less, too short to run a write. | Give the call a longer timeout. |
-| `Rejected` | Kafka refused a write, such as a message over the broker's size limit. | Fix the message. |
-
-Other failures are retried for 10 minutes, or `KAFKA_MAX_DURATION_MINUTES`. Retries stop 10
-seconds before the caller's Nexus operation times out, if that comes first, so the caller gets the
-last error rather than a timeout.
+- **Kafka refused the write** (such as a message over the broker's size limit, or
+  `TOPIC_AUTHORIZATION_FAILED`): the operation fails at once, with Kafka's message and an
+  `ApplicationError` of type `Rejected` as the cause (find it with `errors.As`). Fix the message or
+  the Kafka permissions.
+- **Anything else** (Kafka unreachable, slow, or not acknowledging): a retryable `UNAVAILABLE`
+  handler error. The caller's Temporal server retries it with its own backoff (1 second, growing to
+  at most 1 hour between attempts; `component.nexusoperations.retryPolicy.*`) until the caller's
+  Nexus operation times out. The caller then gets a timeout error (`operation timed out (type:
+  ScheduleToClose)`), not the Kafka error. While it retries, the reason is the last attempt's
+  failure on the caller workflow's pending Nexus operation (`temporal workflow describe`), and the
+  Outbound Connector's log has the Kafka client's errors.
 
 ## Work out settings with the user
 
@@ -255,7 +260,7 @@ make lint              # golangci-lint
 make ci                # vet, workflowcheck, lint, test
 ```
 
-Needs Go SDK v1.50 or later (`temporalnexus.StartActivity`, the standalone Nexus client).
+Needs Go SDK v1.50 or later (the standalone Nexus client).
 
 ### Rules for changes
 
@@ -343,9 +348,15 @@ Needs Go SDK v1.50 or later (`temporalnexus.StartActivity`, the standalone Nexus
 
 **`outbound/`**
 - One process serves one topic (`KAFKA_TOPIC`) behind one endpoint.
-- `write`'s `Start` starts `activities.Write` as a standalone activity. One worker on
-  `NEXUS_TASK_QUEUE` runs the Nexus operation and the activity.
-- `Write` adds the header `dedupe-id: <activityID>-<i>`.
+- `write` is a synchronous Nexus operation (`nexus.NewSyncOperation` in `service.go`), with no
+  activity or workflow. One worker on `NEXUS_TASK_QUEUE` serves the Nexus service; nothing is
+  registered as an activity. It writes with a deadline `replyMargin` (1 second) before the Nexus
+  request's, so it can reply with the reason.
+- `topicWriter.records` (`write.go`) adds the header `dedupe-id: kafka-write-<Nexus request ID>-<i>`.
+  The caller's server stores the request ID with the operation, so it is the same on every attempt.
+- `handlerError` (`errors.go`) maps `kafka.ErrRejected` to a non-retryable handler error with a
+  `Rejected` `ApplicationError` cause, and every other error to a retryable `UNAVAILABLE` one, which
+  the caller's server retries until the caller's operation times out.
 
 **`setup/`**
 - `setup/settings.go` declares `Inbound` and `Outbound`, the `settings.Program` of each: every
@@ -366,8 +377,8 @@ Needs Go SDK v1.50 or later (`temporalnexus.StartActivity`, the standalone Nexus
 - `temporalclient.Options(env)`: envconfig from env (TEMPORAL_* and the profile file), namespace
   defaulting to `connectors`, then `codec.Apply`. `Section` is the report's Temporal section.
 - `report`: `Format`, `Section`, `Setting`, `Env` (marks defaults) for the startup reports.
-- `deadline.ScheduleToClose`: a write's limit, ending `CallbackMargin` before the caller's operation
-  times out; `ErrTooShort` becomes `InvalidRequest`.
+- `deadline`: a call's time limit, for Outbound Connectors whose calls run as standalone
+  activities. This repo's Outbound Connector doesn't use it.
 - `settings`: `Program`, `Load(env)`, `Define`/`Typed`, `Env` (`OS()` or `Map`), and `Markdown` for
   the docs tables.
 

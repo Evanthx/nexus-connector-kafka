@@ -44,7 +44,7 @@ same topic:
 ┌──────────────────────────────┐  Nexus     ┌─────────────────────────────────┐
 │ your workflow                │──────────▶ │ Outbound Connector:             │
 │  write(messages)             │  endpoint  │  KafkaService.write →           │
-│                              │ ◀───────── │  standalone activity            │
+│                              │ ◀───────── │  writes to Kafka                │
 └──────────────────────────────┘            └─────────────────────────────────┘
 ```
 

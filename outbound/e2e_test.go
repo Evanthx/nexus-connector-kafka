@@ -3,10 +3,11 @@ package main
 import (
 	"context"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/nexus-rpc/sdk-go/nexus"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/temporalio/nexus-connector-kafka/generated/kafkaapi"
 	"github.com/temporalio/nexus-connector-kafka/kafka"
@@ -14,7 +15,10 @@ import (
 	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/test/codectest"
 	"github.com/temporalio/nexus-connector-kafka/test/nexuscaller"
 	"github.com/temporalio/nexus-connector-kafka/test/testenv"
+	"github.com/twmb/franz-go/pkg/kerr"
+	"github.com/twmb/franz-go/pkg/kfake"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"github.com/twmb/franz-go/pkg/kmsg"
 	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/temporal"
@@ -64,7 +68,7 @@ func (h harness) serve(t *testing.T, endpoint, taskQueue string, cfg kafka.Confi
 	writer, err := kafka.NewWriter(cfg)
 	require.NoError(t, err)
 	t.Cleanup(writer.Close)
-	w := newWorker(h.connector, taskQueue, &activities{writer: writer, topic: cfg.Topic})
+	w := newWorker(h.connector, taskQueue, &topicWriter{writer: writer, topic: cfg.Topic})
 	require.NoError(t, w.Start())
 	t.Cleanup(w.Stop)
 }
@@ -120,7 +124,7 @@ func requireErrorType(t *testing.T, err error, errType string) {
 }
 
 // A caller in another namespace writes messages through the Outbound Connector, and they reach the
-// topic, each with a dedupe-id from the write's activity ID.
+// topic, each with a dedupe-id from the write's Nexus request ID.
 func TestEndToEnd_Write(t *testing.T) {
 	h := start(t)
 	h.write(t, "m0", "m1", "m2")
@@ -134,28 +138,74 @@ func TestEndToEnd_Write(t *testing.T) {
 	}
 }
 
-// A write whose caller's Nexus operation leaves 10 seconds or less to run it is refused before any
-// activity starts.
-func TestEndToEnd_CallerTimeoutTooShort(t *testing.T) {
-	h := start(t)
+// A write Kafka refuses for good, here a topic the Outbound Connector isn't authorized to write,
+// fails the caller's operation at once with Rejected: it isn't retried.
+func TestEndToEnd_Rejected(t *testing.T) {
+	h := newHarness(t)
+	refusing, err := kfake.NewCluster(kfake.NumBrokers(1), kfake.SeedTopics(1, testenv.Topic))
+	require.NoError(t, err)
+	t.Cleanup(refusing.Close)
+	var produces atomic.Int32
+	refusing.ControlKey(int16(kmsg.Produce), func(req kmsg.Request) (kmsg.Response, error, bool) {
+		refusing.KeepControl()
+		produces.Add(1)
+		pr := req.(*kmsg.ProduceRequest)
+		resp := pr.ResponseKind().(*kmsg.ProduceResponse)
+		for _, rt := range pr.Topics {
+			topic := kmsg.NewProduceResponseTopic()
+			topic.Topic, topic.TopicID = rt.Topic, rt.TopicID
+			for _, rp := range rt.Partitions {
+				p := kmsg.NewProduceResponseTopicPartition()
+				p.Partition = rp.Partition
+				p.ErrorCode = kerr.TopicAuthorizationFailed.Code
+				topic.Partitions = append(topic.Partitions, p)
+			}
+			resp.Topics = append(resp.Topics, topic)
+		}
+		return resp, nil, true
+	})
+	cfg := h.kafkaCfg
+	cfg.Brokers = refusing.ListenAddrs()
+	h.serve(t, nexuscaller.CustomersEndpoint, defaultTaskQueue, cfg)
+
 	in := kafkaapi.WriteInput{Messages: []kafkaapi.Message{{Value: []byte("m")}}}
 	run, err := h.test.ExecuteWorkflow(context.Background(), client.StartWorkflowOptions{TaskQueue: nexuscaller.TaskQueue},
-		writeWithin, nexuscaller.CustomersEndpoint, in, 8*time.Second)
+		writeWithin, nexuscaller.CustomersEndpoint, in, time.Minute)
 	require.NoError(t, err)
 	err = run.Get(context.Background(), nil)
-	var handlerErr *nexus.HandlerError
-	require.ErrorAs(t, err, &handlerErr)
-	require.Equal(t, nexus.HandlerErrorTypeBadRequest, handlerErr.Type)
-	requireErrorType(t, err, ErrorTypeInvalidRequest)
-	var appErr *temporal.ApplicationError
-	require.ErrorAs(t, err, &appErr)
-	require.Contains(t, appErr.Message(), "it needs more than 10s")
+	requireErrorType(t, err, ErrorTypeRejected)
+	require.Contains(t, err.Error(), "TOPIC_AUTHORIZATION_FAILED")
+	require.Equal(t, int32(1), produces.Load(), "a rejected write is sent once, not retried")
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	_, found, err := kafka.ReadLast(ctx, h.kafkaCfg)
+// A write that keeps failing with an error retrying could fix, here brokers that don't answer, is
+// retried by the caller's server until the caller's Nexus operation times out. The caller then gets
+// a timeout.
+func TestEndToEnd_RetriedUntilCallerTimeout(t *testing.T) {
+	h := newHarness(t)
+	unreachable := h.kafkaCfg
+	unreachable.Brokers = []string{"127.0.0.1:1"} // nothing listens on port 1
+	h.serve(t, nexuscaller.CustomersEndpoint, defaultTaskQueue, unreachable)
+
+	in := kafkaapi.WriteInput{Messages: []kafkaapi.Message{{Value: []byte("m")}}}
+	run, err := h.test.ExecuteWorkflow(context.Background(), client.StartWorkflowOptions{TaskQueue: nexuscaller.TaskQueue},
+		writeWithin, nexuscaller.CustomersEndpoint, in, 25*time.Second)
 	require.NoError(t, err)
-	require.False(t, found, "the refused write wrote nothing")
+
+	// While it retries, the reason is the caller's pending operation's last attempt failure. The
+	// caller's final error is only a timeout.
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		desc, err := h.test.DescribeWorkflowExecution(context.Background(), run.GetID(), run.GetRunID())
+		require.NoError(c, err)
+		ops := desc.GetPendingNexusOperations()
+		require.Len(c, ops, 1)
+		require.GreaterOrEqual(c, ops[0].GetAttempt(), int32(2), "retried")
+		require.Contains(c, ops[0].GetLastAttemptFailure().GetMessage(), "Kafka didn't acknowledge the write in time")
+	}, 20*time.Second, 200*time.Millisecond)
+
+	err = run.Get(context.Background(), nil)
+	var timeoutErr *temporal.TimeoutError
+	require.ErrorAs(t, err, &timeoutErr, err.Error())
 }
 
 // Two Outbound Connectors serve two topics through two endpoints, as two processes of main would,
@@ -194,7 +244,7 @@ func TestEndToEnd_EncryptedWrite(t *testing.T) {
 	writer, err := kafka.NewWriter(kafkaCfg)
 	require.NoError(t, err)
 	t.Cleanup(writer.Close)
-	w := newWorker(encryptedConnector, taskQueue, &activities{writer: writer, topic: kafkaCfg.Topic})
+	w := newWorker(encryptedConnector, taskQueue, &topicWriter{writer: writer, topic: kafkaCfg.Topic})
 	require.NoError(t, w.Start())
 	t.Cleanup(w.Stop)
 

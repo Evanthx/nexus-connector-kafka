@@ -21,9 +21,10 @@ What the tests cover:
   batch for a rebalance, operation IDs' source key and its check on every batch, splitting a
   refused operation, which refusals count as undeliverable, retries, and the dead-letter topic.
   Its end-to-end tests start a dev server and deliver to a receiver in another namespace.
-- `outbound/`: its configuration and startup report, and how long a write may retry. Its
-  end-to-end tests write across namespaces through the endpoint, write two topics through two
-  Outbound Connectors, and refuse a caller's Nexus timeout too short to run a write.
+- `outbound/`: its configuration and startup report, and the `dedupe-id` header built from the
+  Nexus request ID. Its end-to-end tests write across namespaces through the endpoint, write two
+  topics through two Outbound Connectors, fail a write Kafka rejects at once as `Rejected`, retry a
+  failing write until the caller's Nexus operation times out, and write with encryption.
 
 ## Demo
 
@@ -44,7 +45,6 @@ Run every command from the repository root.
 
 ```bash
 temporal server start-dev \
-  --dynamic-config-value activity.enableCallbacks=true \
   --dynamic-config-value nexusoperation.enableStandalone=true \
   --namespace connectors \
   --namespace kafka-test

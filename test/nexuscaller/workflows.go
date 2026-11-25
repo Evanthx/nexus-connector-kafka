@@ -43,8 +43,9 @@ func WriterWorkflow(ctx workflow.Context, in WriterInput) (int64, error) {
 	}
 	var out kafkaapi.WriteOutput
 	err := kafkaService.ExecuteOperation(ctx, kafkaapi.KafkaService.Write, write, workflow.NexusOperationOptions{
-		// The write retries for up to ten minutes (or the Outbound Connector's
-		// KAFKA_MAX_DURATION_MINUTES), and stops 10 seconds before this if that comes first.
+		// A failed write is retried by this workflow's Temporal server until this timeout, and
+		// nothing else stops the retries, so always set one. If it passes, the call fails with a
+		// timeout error; the last attempt's failure, on the pending Nexus operation, has the reason.
 		ScheduleToCloseTimeout: 15 * time.Minute,
 	}).Get(ctx, &out)
 	if err != nil {

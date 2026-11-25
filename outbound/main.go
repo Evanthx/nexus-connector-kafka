@@ -1,6 +1,6 @@
 // Command outbound is the Outbound Connector. It serves the topic named by KAFKA_TOPIC as the
-// KafkaService Nexus service, whose one operation, write, writes messages to it. Each call runs as
-// a standalone activity. To consume the topic, use the Inbound Connector.
+// KafkaService Nexus service, whose one operation, write, writes messages to it. Each call is a
+// synchronous Nexus operation, with no activity. To consume the topic, use the Inbound Connector.
 //
 // Every environment variable it reads is listed in setup.Outbound: the topic's KAFKA_* settings
 // and its own. It connects to Temporal with the standard TEMPORAL_* variables and the temporal
@@ -54,8 +54,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	a := &activities{writer: writer, topic: cfg.Topic, maxDuration: own.maxDuration}
-	w := newWorker(c, own.taskQueue, a)
+	w := newWorker(c, own.taskQueue, &topicWriter{writer: writer, topic: cfg.Topic})
 	log.Printf("Serving topic %q on task queue %q", cfg.Topic, own.taskQueue)
 	if err := w.Run(worker.InterruptCh()); err != nil {
 		log.Fatalf("Worker stopped: %v", err)
