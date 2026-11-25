@@ -494,6 +494,172 @@ func (m Record) MarshalJSON() ([]byte, error) {
 	return json.Marshal(out)
 }
 
+// WriteFailure A message write didn't write.
+type WriteFailure struct {
+	// Index The message's position in the write's messages, from 0
+	Index int64 `json:"index"`
+	// Reason Kafka's error for the message, such as MESSAGE_TOO_LARGE
+	Reason string `json:"reason"`
+}
+
+// Validate checks m against every constraint and returns a PayloadValidationError
+// listing any violations.
+func (m WriteFailure) Validate() error {
+	var errs []Violation
+	if m.Index < -integerCap || m.Index > integerCap {
+		errs = append(errs, Violation{"index", "exceeds ±(2^53-1) integer cap"})
+	}
+	if len(errs) > 0 {
+		return newPayloadValidationError(errs)
+	}
+	return nil
+}
+
+// UnmarshalJSON parses data into m and validates it, returning a
+// PayloadValidationError listing any violations.
+func (m *WriteFailure) UnmarshalJSON(data []byte) error {
+	var all map[string]json.RawMessage
+	if err := json.Unmarshal(data, &all); err != nil {
+		return err
+	}
+	var errs []Violation
+	for k := range all {
+		switch k {
+		case "index", "reason":
+		default:
+			errs = append(errs, Violation{memberPath(k), "unknown field"})
+		}
+	}
+	get := func(k string) *json.RawMessage {
+		if v, ok := all[k]; ok {
+			return &v
+		}
+		return nil
+	}
+	_ = get
+	if v, ok := parseIntegerField(get("index"), "index", true, false, &errs); ok {
+		m.Index = v
+	}
+	if v, ok := parseStringField(get("reason"), "reason", true, false, &errs); ok {
+		m.Reason = v
+	}
+	if len(errs) > 0 {
+		return newPayloadValidationError(errs)
+	}
+	return nil
+}
+
+// MarshalJSON validates m, then serializes it to JSON, returning a
+// PayloadValidationError if validation fails.
+func (m WriteFailure) MarshalJSON() ([]byte, error) {
+	var errs []Violation
+	addViolations(&errs, m.Validate())
+	out := map[string]json.RawMessage{}
+	marshalField(out, "index", m.Index, &errs)
+	marshalField(out, "reason", m.Reason, &errs)
+	if len(errs) > 0 {
+		return nil, newPayloadValidationError(errs)
+	}
+	return json.Marshal(out)
+}
+
+// WriteFailures The details of a Rejected error from write: every message that wasn't
+// written, with why. Every message not listed was written.
+type WriteFailures struct {
+	// Failures corresponds to the "failures" JSON property.
+	Failures []WriteFailure `json:"failures"`
+}
+
+// Validate checks m against every constraint and returns a PayloadValidationError
+// listing any violations.
+func (m WriteFailures) Validate() error {
+	var errs []Violation
+	for i0, v0 := range m.Failures {
+		p0 := fmt.Sprintf("%s[%d]", "failures", i0)
+		mergeNested(&errs, p0, v0.Validate())
+	}
+	if n := len(m.Failures); n < 1 {
+		errs = append(errs, Violation{"failures", fmt.Sprintf("must have at least 1 items, got %d", n)})
+	}
+	if len(errs) > 0 {
+		return newPayloadValidationError(errs)
+	}
+	return nil
+}
+
+// UnmarshalJSON parses data into m and validates it, returning a
+// PayloadValidationError listing any violations.
+func (m *WriteFailures) UnmarshalJSON(data []byte) error {
+	var all map[string]json.RawMessage
+	if err := json.Unmarshal(data, &all); err != nil {
+		return err
+	}
+	var errs []Violation
+	for k := range all {
+		switch k {
+		case "failures":
+		default:
+			errs = append(errs, Violation{memberPath(k), "unknown field"})
+		}
+	}
+	get := func(k string) *json.RawMessage {
+		if v, ok := all[k]; ok {
+			return &v
+		}
+		return nil
+	}
+	_ = get
+	if raw := get("failures"); raw == nil {
+		errs = append(errs, Violation{"failures", "required"})
+	} else if isNull(*raw) {
+		errs = append(errs, Violation{"failures", "explicit null not allowed"})
+	} else {
+		var elems0 []json.RawMessage
+		if err := json.Unmarshal(*raw, &elems0); err != nil {
+			errs = append(errs, Violation{"failures", "expected array"})
+		} else {
+			m.Failures = make([]WriteFailure, 0, len(elems0))
+			for i0, e0 := range elems0 {
+				p0 := fmt.Sprintf("%s[%d]", "failures", i0)
+				if isNull(e0) {
+					errs = append(errs, Violation{p0, "explicit null not allowed"})
+					continue
+				}
+				var value0 WriteFailure
+				if err := json.Unmarshal(e0, &value0); err != nil {
+					mergeNested(&errs, p0, err)
+				} else {
+					m.Failures = append(m.Failures, value0)
+				}
+			}
+			if n := len(elems0); n < 1 {
+				errs = append(errs, Violation{"failures", fmt.Sprintf("must have at least 1 items, got %d", n)})
+			}
+		}
+	}
+	if len(errs) > 0 {
+		return newPayloadValidationError(errs)
+	}
+	return nil
+}
+
+// MarshalJSON validates m, then serializes it to JSON, returning a
+// PayloadValidationError if validation fails.
+func (m WriteFailures) MarshalJSON() ([]byte, error) {
+	var errs []Violation
+	addViolations(&errs, m.Validate())
+	out := map[string]json.RawMessage{}
+	if m.Failures == nil {
+		out["failures"] = json.RawMessage("[]")
+	} else {
+		marshalField(out, "failures", m.Failures, &errs)
+	}
+	if len(errs) > 0 {
+		return nil, newPayloadValidationError(errs)
+	}
+	return json.Marshal(out)
+}
+
 // WriteInput is generated from the corresponding JSON Schema definition.
 type WriteInput struct {
 	// Messages corresponds to the "messages" JSON property.

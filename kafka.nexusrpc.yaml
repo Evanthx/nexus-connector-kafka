@@ -109,6 +109,32 @@ $defs:
     required: [written]
     additionalProperties: false
 
+  WriteFailures:
+    type: object
+    description: "The details of a Rejected error from write: every message that wasn't written, with why. Every message not listed was written."
+    properties:
+      failures:
+        type: array
+        minItems: 1
+        items:
+          $ref: "#/$defs/WriteFailure"
+    required: [failures]
+    additionalProperties: false
+
+  WriteFailure:
+    type: object
+    description: "A message write didn't write."
+    properties:
+      index:
+        type: integer
+        description: "The message's position in the write's messages, from 0"
+        x-java-name: messageIndex # `index` collides with a local in the generated Java; the wire name stays index
+      reason:
+        type: string
+        description: "Kafka's error for the message, such as MESSAGE_TOO_LARGE"
+    required: [index, reason]
+    additionalProperties: false
+
   ReceiveInput:
     type: object
     description: "Messages from one partition, in offset order."

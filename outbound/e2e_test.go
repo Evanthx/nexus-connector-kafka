@@ -2,8 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"slices"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,9 +17,7 @@ import (
 	"github.com/temporalio/nexus-connector-kafka/test/nexuscaller"
 	"github.com/temporalio/nexus-connector-kafka/test/testenv"
 	"github.com/twmb/franz-go/pkg/kerr"
-	"github.com/twmb/franz-go/pkg/kfake"
 	"github.com/twmb/franz-go/pkg/kgo"
-	"github.com/twmb/franz-go/pkg/kmsg"
 	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/temporal"
@@ -139,33 +138,10 @@ func TestEndToEnd_Write(t *testing.T) {
 }
 
 // A write Kafka refuses for good, here a topic the Outbound Connector isn't authorized to write,
-// fails the caller's operation at once with Rejected: it isn't retried.
+// fails the caller's operation at once with Rejected, listing the message: it isn't retried.
 func TestEndToEnd_Rejected(t *testing.T) {
 	h := newHarness(t)
-	refusing, err := kfake.NewCluster(kfake.NumBrokers(1), kfake.SeedTopics(1, testenv.Topic))
-	require.NoError(t, err)
-	t.Cleanup(refusing.Close)
-	var produces atomic.Int32
-	refusing.ControlKey(int16(kmsg.Produce), func(req kmsg.Request) (kmsg.Response, error, bool) {
-		refusing.KeepControl()
-		produces.Add(1)
-		pr := req.(*kmsg.ProduceRequest)
-		resp := pr.ResponseKind().(*kmsg.ProduceResponse)
-		for _, rt := range pr.Topics {
-			topic := kmsg.NewProduceResponseTopic()
-			topic.Topic, topic.TopicID = rt.Topic, rt.TopicID
-			for _, rp := range rt.Partitions {
-				p := kmsg.NewProduceResponseTopicPartition()
-				p.Partition = rp.Partition
-				p.ErrorCode = kerr.TopicAuthorizationFailed.Code
-				topic.Partitions = append(topic.Partitions, p)
-			}
-			resp.Topics = append(resp.Topics, topic)
-		}
-		return resp, nil, true
-	})
-	cfg := h.kafkaCfg
-	cfg.Brokers = refusing.ListenAddrs()
+	cfg, refused := testenv.Refusing(t, func(int32) bool { return true }, kerr.TopicAuthorizationFailed)
 	h.serve(t, nexuscaller.CustomersEndpoint, defaultTaskQueue, cfg)
 
 	in := kafkaapi.WriteInput{Messages: []kafkaapi.Message{{Value: []byte("m")}}}
@@ -175,7 +151,59 @@ func TestEndToEnd_Rejected(t *testing.T) {
 	err = run.Get(context.Background(), nil)
 	requireErrorType(t, err, ErrorTypeRejected)
 	require.Contains(t, err.Error(), "TOPIC_AUTHORIZATION_FAILED")
-	require.Equal(t, int32(1), produces.Load(), "a rejected write is sent once, not retried")
+	require.Equal(t, []int64{0}, failedIndexes(t, err))
+	require.Equal(t, 1, refused(), "a rejected write is sent once, not retried")
+}
+
+// A batch Kafka partly rejects fails with Rejected, whose details list every message not written,
+// by index, with Kafka's reason; every other message is in the topic.
+func TestEndToEnd_PartlyRejected(t *testing.T) {
+	h := newHarness(t)
+	cfg, _ := testenv.Refusing(t, func(p int32) bool { return p == 1 }, kerr.MessageTooLarge)
+	h.serve(t, nexuscaller.CustomersEndpoint, defaultTaskQueue, cfg)
+
+	const n = 30
+	in := kafkaapi.WriteInput{}
+	for i := range n {
+		// Keys spread the messages over the partitions.
+		in.Messages = append(in.Messages, kafkaapi.Message{Key: fmt.Appendf(nil, "key-%d", i), Value: fmt.Appendf(nil, "%d", i)})
+	}
+	run, err := h.test.ExecuteWorkflow(context.Background(), client.StartWorkflowOptions{TaskQueue: nexuscaller.TaskQueue},
+		writeWithin, nexuscaller.CustomersEndpoint, in, time.Minute)
+	require.NoError(t, err)
+	err = run.Get(context.Background(), nil)
+	requireErrorType(t, err, ErrorTypeRejected)
+
+	failed := failedIndexes(t, err)
+	require.NotEmpty(t, failed)
+	require.Less(t, len(failed), n, "only partition 1 refuses")
+	var want []string
+	for i := range n {
+		if !slices.Contains(failed, int64(i)) {
+			want = append(want, fmt.Sprint(i))
+		}
+	}
+	recs := consume(t, cfg, len(want))
+	require.ElementsMatch(t, want, values(recs), "every message not listed was written")
+	for _, r := range recs {
+		require.NotEqual(t, int32(1), r.Partition)
+	}
+}
+
+// failedIndexes is the indexes in a Rejected error's details, after checking each has Kafka's
+// reason.
+func failedIndexes(t *testing.T, err error) []int64 {
+	t.Helper()
+	var appErr *temporal.ApplicationError
+	require.ErrorAs(t, err, &appErr)
+	var details kafkaapi.WriteFailures
+	require.NoError(t, appErr.Details(&details))
+	var out []int64
+	for _, f := range details.Failures {
+		require.NotEmpty(t, f.Reason, "message %d", f.Index)
+		out = append(out, f.Index)
+	}
+	return out
 }
 
 // A write that keeps failing with an error retrying could fix, here brokers that don't answer, is

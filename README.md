@@ -65,8 +65,16 @@ Every team that connects Kafka to Temporal tends to build the same things:
   stalling the stream indefinitely.
 - **Rate limiting.** `INBOUND_MAX_MESSAGES_PER_MINUTE` caps how many messages a minute go into
   Temporal, so a burst on the topic can't overwhelm your service; the rest wait in Kafka.
+- **Writing in batches.** One `write` takes many messages, which costs one Nexus operation for the
+  whole batch. If Kafka rejects some of them for good (such as a message over the broker's size
+  limit), the call fails with a `Rejected` error whose details list every message that wasn't
+  written, by its index in the batch, with Kafka's reason. **Every message not in that list was
+  written**, so resend only the listed ones once fixed. A failure retrying can fix, such as Kafka
+  being unreachable, retries the whole batch instead.
 - **Identifying retried writes.** The Outbound Connector adds a `dedupe-id` header to each written
   message, the same on every retry, so consumers can drop a message a retried write sent twice.
+  Kafka doesn't drop them itself: a consumer that can't tolerate a duplicate dedupes on this
+  header.
 - **Keeping credentials in one place.** The Outbound Connector holds the Kafka login. Callers
   reach the topic through a Nexus endpoint without needing Kafka access themselves.
 

@@ -186,7 +186,9 @@ waiting for Kafka 1 second before it, so it can reply with the reason.
 
 **Retries are the caller's server's.** A write Kafka refuses for good (`kafka.ErrRejected`, such
 as a message too large, or `TOPIC_AUTHORIZATION_FAILED`) fails the operation at once with a
-`Rejected` error. Any other failure is a retryable `UNAVAILABLE` handler error, which the caller's
+`Rejected` error. A batch's messages go to several partitions, so Kafka can write some and refuse
+others: the error's details (`WriteFailures`) list every message not written, by index, with
+Kafka's reason, and every message not listed was written. Any other failure is a retryable `UNAVAILABLE` handler error, which the caller's
 Temporal server retries with its own backoff (server-wide: 1 second, growing to at most 1 hour
 between attempts; `component.nexusoperations.retryPolicy.*`) until the caller's Nexus operation's
 `ScheduleToCloseTimeout`. Nothing else bounds the retries, so callers must give the call a timeout.

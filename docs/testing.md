@@ -21,9 +21,12 @@ What the tests cover:
   batch for a rebalance, operation IDs' source key and its check on every batch, splitting a
   refused operation, which refusals count as undeliverable, retries, and the dead-letter topic.
   Its end-to-end tests start a dev server and deliver to a receiver in another namespace.
+- `kafka/`: `writer_test.go` has a fake Kafka (`testenv.Refusing`, one partition per broker) refuse
+  one partition, and checks the writer lists exactly that partition's records.
 - `outbound/`: its configuration and startup report, and the `dedupe-id` header built from the
   Nexus request ID. Its end-to-end tests write across namespaces through the endpoint, write two
-  topics through two Outbound Connectors, fail a write Kafka rejects at once as `Rejected`, retry a
+  topics through two Outbound Connectors, fail a write Kafka rejects at once as `Rejected`, report each message of a partly rejected
+  batch by index (with every other message in the topic), retry a
   failing write until the caller's Nexus operation times out, and write with encryption.
 
 ## Demo

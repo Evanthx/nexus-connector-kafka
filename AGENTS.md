@@ -208,10 +208,19 @@ caller's Temporal server gives a deadline (10 seconds by default, server dynamic
 `component.nexusoperations.request.timeout`). The write stops waiting for Kafka 1 second before it,
 to reply with the reason.
 
-- **Kafka refused the write** (such as a message over the broker's size limit, or
-  `TOPIC_AUTHORIZATION_FAILED`): the operation fails at once, with Kafka's message and an
-  `ApplicationError` of type `Rejected` as the cause (find it with `errors.As`). Fix the message or
-  the Kafka permissions.
+- **Kafka refused some or all of the messages** (such as a message over the broker's size limit,
+  or `TOPIC_AUTHORIZATION_FAILED`): the operation fails at once, with Kafka's message and an
+  `ApplicationError` of type `Rejected` as the cause (find it with `errors.As`). Its details are a
+  `kafkaapi.WriteFailures`: every message not written, by `index` in `messages`, with Kafka's
+  `reason`. **Every message not listed was written**: resend only the listed ones, once fixed.
+
+  ```go
+  var appErr *temporal.ApplicationError
+  if errors.As(err, &appErr) && appErr.Type() == "Rejected" {
+      var failed kafkaapi.WriteFailures
+      _ = appErr.Details(&failed) // failed.Failures[i].Index, .Reason
+  }
+  ```
 - **Anything else** (Kafka unreachable, slow, or not acknowledging): a retryable `UNAVAILABLE`
   handler error. The caller's Temporal server retries it with its own backoff (1 second, growing to
   at most 1 hour between attempts; `component.nexusoperations.retryPolicy.*`) until the caller's
@@ -354,8 +363,11 @@ Needs Go SDK v1.50 or later (the standalone Nexus client).
   request's, so it can reply with the reason.
 - `topicWriter.records` (`write.go`) adds the header `dedupe-id: kafka-write-<Nexus request ID>-<i>`.
   The caller's server stores the request ID with the operation, so it is the same on every attempt.
+- `kafka.Writer.Write` returns a `*kafka.WriteError` listing each record not written (index, Kafka's
+  error, whether retrying could fix it); it wraps `ErrRejected` if any record was rejected. Every
+  record not listed was acknowledged.
 - `handlerError` (`errors.go`) maps `kafka.ErrRejected` to a non-retryable handler error with a
-  `Rejected` `ApplicationError` cause, and every other error to a retryable `UNAVAILABLE` one, which
+  `Rejected` `ApplicationError` cause, whose details are a `kafkaapi.WriteFailures` (`writeFailures`), and every other error to a retryable `UNAVAILABLE` one, which
   the caller's server retries until the caller's operation times out.
 
 **`setup/`**

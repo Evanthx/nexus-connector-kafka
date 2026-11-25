@@ -68,7 +68,7 @@ A failure that retrying can't fix ends the operation at once, with Kafka's messa
 
 | Type | Cause | Fix |
 |---|---|---|
-| `Rejected` | Kafka refused a write, such as a message over the broker's size limit, or `TOPIC_AUTHORIZATION_FAILED`. | Fix the message, or the Kafka login's permissions on the topic. |
+| `Rejected` | Kafka refused some or all of a write's messages, such as a message over the broker's size limit, or `TOPIC_AUTHORIZATION_FAILED`. Its details (`WriteFailures`) list every message not written, by index, with Kafka's reason; every message not listed was written. | Fix the listed messages, or the Kafka login's permissions on the topic, and resend only those. |
 
 Every other failure (Kafka unreachable, slow, or not acknowledging) is retried by the caller's
 Temporal server, with its own backoff, until the caller's Nexus operation times out.
