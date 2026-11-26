@@ -17,7 +17,7 @@ import (
 
 // KafkaSection is the Kafka variables, in the order the setup page and the docs show them.
 var KafkaSection = &settings.Section{Title: "Kafka", Variables: []*settings.Variable{
-	brokersSetting.Variable, topicSetting.Variable, usernameSetting.Variable, passwordSetting.Variable,
+	brokersSetting.Variable, usernameSetting.Variable, passwordSetting.Variable,
 	mechanismSetting.Variable, tlsSetting.Variable, tlsServerCASetting.Variable, tlsClientCertSetting.Variable,
 	tlsClientKeySetting.Variable, clientLogLevelSetting.Variable,
 }}
@@ -45,12 +45,6 @@ var brokersSetting = settings.Define(settings.Variable{
 	}
 	return strings.Split(v, ","), nil
 })
-
-var topicSetting = settings.Define(settings.Variable{
-	Name:     "KAFKA_TOPIC",
-	Required: "yes",
-	Help:     "The topic the program serves. One process serves one topic; run one per topic.",
-}, settings.RequiredText("KAFKA_TOPIC", "the topic to serve"))
 
 var usernameSetting = settings.Define(settings.Variable{
 	Name:    "KAFKA_USERNAME",
@@ -149,37 +143,15 @@ func tlsRule(env settings.Env) error {
 	return nil
 }
 
-// KafkaStartFrom is KAFKA_START_FROM. Only the Inbound Connector reads it, since only the Inbound
-// Connector consumes with a consumer group, so it is in the Inbound Connector's section rather than
-// KafkaSection.
-var KafkaStartFrom = settings.Define(settings.Variable{
-	Name:    "KAFKA_START_FROM",
-	Default: string(kafka.StartFromOldest),
-	Help: "Where a consumer group with no committed offset starts reading a partition: `oldest`, every " +
-		"message still in the topic, or `newest`, only messages written from then on.",
-	Docs: "See [How it works](how-it-works.md#where-reading-starts).",
-}, func(v string) (kafka.StartFrom, error) {
-	switch s := kafka.StartFrom(v); s {
-	case "":
-		return kafka.StartFromOldest, nil
-	case kafka.StartFromOldest, kafka.StartFromNewest:
-		return s, nil
-	default:
-		return "", fmt.Errorf("KAFKA_START_FROM must be %s or %s, not %q", kafka.StartFromOldest, kafka.StartFromNewest, v)
-	}
-})
-
 // Kafka is the Kafka configuration in vals, which the Load of a program with KafkaSection and
-// KafkaRules made. StartFrom is set only if the program has KafkaStartFrom too. It reads the TLS
+// KafkaRules made. It reads the TLS
 // files, so it fails if they changed since Load checked them.
 func Kafka(vals *settings.Values) (kafka.Config, error) {
 	cfg := kafka.Config{
 		Brokers:        brokersSetting.From(vals),
-		Topic:          topicSetting.From(vals),
 		Username:       usernameSetting.From(vals),
 		Password:       passwordSetting.From(vals),
 		Mechanism:      mechanismSetting.From(vals),
-		StartFrom:      KafkaStartFrom.From(vals),
 		ClientLogLevel: clientLogLevelSetting.From(vals),
 	}
 	if files, on := tlsFiles(vals); on {

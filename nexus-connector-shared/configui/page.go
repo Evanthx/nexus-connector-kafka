@@ -59,6 +59,11 @@ type variableJSON struct {
 	Secret   bool     `json:"secret"`
 	External string   `json:"external"` // what reads it from the process's environment; "" if the program does
 	Aliases  []string `json:"aliases"`  // other names External reads it under
+	// Multiline, Example and HelpURL are the variable's own: a text area, an "Insert example"
+	// button, and a link to more help.
+	Multiline bool   `json:"multiline"`
+	Example   string `json:"example"`
+	HelpURL   string `json:"helpURL"`
 }
 
 type PageFamily struct {
@@ -102,6 +107,7 @@ func (s *server) describe() Page {
 				sj.Variables = append(sj.Variables, variableJSON{
 					Name: v.Name, Help: v.Help, Default: v.Default, Required: v.Required, Secret: v.Secret,
 					External: v.External, Aliases: nonNil(v.Aliases),
+					Multiline: v.Multiline, Example: v.Example, HelpURL: v.HelpURL,
 				})
 				if v.External != "" {
 					out.External[v.Name] = describeExternal(s.env, v)

@@ -5,14 +5,15 @@ package kafkaapi
 import (
 	"encoding/json"
 	"fmt"
+	"unicode/utf8"
 
 	"github.com/nexus-rpc/sdk-go/nexus"
 )
 
-// Writes to one Kafka topic. Served by the Outbound Connector, which decides the topic.
+// Writes to the Kafka topics its Outbound Connector allows.
 var KafkaService = struct {
 	ServiceName string
-	// Write messages to the topic.
+	// Write messages to a topic the Outbound Connector allows.
 	Write nexus.OperationReference[WriteInput, WriteOutput]
 }{
 	ServiceName: "KafkaService",
@@ -662,6 +663,9 @@ func (m WriteFailures) MarshalJSON() ([]byte, error) {
 
 // WriteInput is generated from the corresponding JSON Schema definition.
 type WriteInput struct {
+	// Topic The topic to write to. It must be one the Outbound Connector allows
+	// (KAFKA_TOPICS)
+	Topic string `json:"topic"`
 	// Messages corresponds to the "messages" JSON property.
 	Messages []Message `json:"messages"`
 }
@@ -670,6 +674,9 @@ type WriteInput struct {
 // listing any violations.
 func (m WriteInput) Validate() error {
 	var errs []Violation
+	if n := utf8.RuneCountInString(m.Topic); n < 1 {
+		errs = append(errs, Violation{"topic", fmt.Sprintf("must have length >= 1, got %d", n)})
+	}
 	for i0, v0 := range m.Messages {
 		p0 := fmt.Sprintf("%s[%d]", "messages", i0)
 		mergeNested(&errs, p0, v0.Validate())
@@ -696,7 +703,7 @@ func (m *WriteInput) UnmarshalJSON(data []byte) error {
 	var errs []Violation
 	for k := range all {
 		switch k {
-		case "messages":
+		case "topic", "messages":
 		default:
 			errs = append(errs, Violation{memberPath(k), "unknown field"})
 		}
@@ -708,6 +715,12 @@ func (m *WriteInput) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	_ = get
+	if v, ok := parseStringField(get("topic"), "topic", true, false, &errs); ok {
+		m.Topic = v
+		if n := utf8.RuneCountInString(v); n < 1 {
+			errs = append(errs, Violation{"topic", fmt.Sprintf("must have length >= 1, got %d", n)})
+		}
+	}
 	if raw := get("messages"); raw == nil {
 		errs = append(errs, Violation{"messages", "required"})
 	} else if isNull(*raw) {
@@ -751,6 +764,7 @@ func (m WriteInput) MarshalJSON() ([]byte, error) {
 	var errs []Violation
 	addViolations(&errs, m.Validate())
 	out := map[string]json.RawMessage{}
+	marshalField(out, "topic", m.Topic, &errs)
 	if m.Messages == nil {
 		out["messages"] = json.RawMessage("[]")
 	} else {

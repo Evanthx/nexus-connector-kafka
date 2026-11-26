@@ -23,14 +23,14 @@ following the principle of least privilege.
 
 ## What is the Kafka Connector?
 
-**Durable Kafka integration for Temporal workflows.** The Kafka connector bridges a Kafka topic and
+**Durable Kafka integration for Temporal workflows.** The Kafka connector bridges Kafka topics and
 Temporal. It ships as two programs, which share their Kafka code and can run side by side on the
-same topic:
+same topics:
 
-- **The Inbound Connector** reads messages from a Kafka topic and sends them to a Nexus endpoint
-  you implement: it brings messages **in** to Temporal from Kafka.
-- **The Outbound Connector** runs as a Nexus operation that writes messages to a Kafka topic: it
-  sends messages **out** of Temporal to Kafka.
+- **The Inbound Connector** reads messages from one or more Kafka topics and sends each topic's to a
+  Nexus endpoint you implement: it brings messages **in** to Temporal from Kafka.
+- **The Outbound Connector** runs as a Nexus operation that writes messages to the Kafka topics it
+  allows: it sends messages **out** of Temporal to Kafka.
 
 ```
  Inbound Connector                           namespace: kafka-test
@@ -43,7 +43,7 @@ same topic:
  namespace: kafka-test                       namespace: connectors
 ┌──────────────────────────────┐  Nexus     ┌─────────────────────────────────┐
 │ your workflow                │──────────▶ │ Outbound Connector:             │
-│  write(messages)             │  endpoint  │  KafkaService.write →           │
+│  write(topic, messages)      │  endpoint  │  KafkaService.write →           │
 │                              │ ◀───────── │  writes to Kafka                │
 └──────────────────────────────┘            └─────────────────────────────────┘
 ```
@@ -60,10 +60,10 @@ Every team that connects Kafka to Temporal tends to build the same things:
   operations. If the Inbound Connector restarts before committing, a redelivered batch reuses its
   operation ID, so an operation is never started twice, even if it failed: a failure is handled in
   Temporal. With batches of more than one message, a message can still be delivered twice;
-  `KAFKA_BATCH_SIZE=1` rules that out.
+  a route's `batchSize` of 1 rules that out.
 - **Dead-letter handling.** Messages too large to deliver go to a dead-letter topic instead of
   stalling the stream indefinitely.
-- **Rate limiting.** `INBOUND_MAX_MESSAGES_PER_MINUTE` caps how many messages a minute go into
+- **Rate limiting.** A route's `maxMessagesPerMinute` caps how many messages a minute go into
   Temporal, so a burst on the topic can't overwhelm your service; the rest wait in Kafka.
 - **Writing in batches.** One `write` takes many messages, which costs one Nexus operation for the
   whole batch. A batch that ends with some messages not written fails with an error whose details
@@ -82,7 +82,8 @@ Every team that connects Kafka to Temporal tends to build the same things:
   Kafka doesn't drop them itself: a consumer that can't tolerate a duplicate dedupes on this
   header.
 - **Keeping credentials in one place.** The Outbound Connector holds the Kafka login. Callers
-  reach the topic through a Nexus endpoint without needing Kafka access themselves.
+  reach the topics it allows (`KAFKA_TOPICS`) through a Nexus endpoint without needing Kafka access
+  themselves.
 
 ## When to use it
 
@@ -102,18 +103,17 @@ It is not a fit when:
   and password, and client certificates (mTLS) are supported; see [Connecting to
   Kafka](docs/setup.md#connecting-to-kafka).
 - You need exactly-once delivery; the Inbound Connector delivers at least once.
-- You need to serve more than one topic from one process; run a separate Outbound Connector or
-  Inbound Connector per topic.
+- You need topic wildcards or patterns: both programs take exact topic names.
 
 ## Message order
 
 **By default, batches can be processed out of order.** The Inbound Connector goes as fast as it
-can (`INBOUND_ORDERING=none`): it starts each batch's operation without waiting for the one before,
+can (a route's `ordering` is `none` by default): it starts each batch's operation without waiting for the one before,
 so your receiver can use every worker it has. Messages within one operation are in offset order,
 but two batches from the same partition can run at the same time and finish in either order, and a
 failed operation doesn't hold back the ones after it.
 
-**To process each partition in order, set `INBOUND_ORDERING=partition`.** The Inbound Connector
+**To process each partition in order, set a route's `ordering` to `partition`.** The Inbound Connector
 then waits for each operation to complete before starting the next one for that partition, and
 commits only then. Partitions still run in parallel; Kafka never orders messages across partitions.
 
@@ -163,7 +163,7 @@ your settings before running either program.
 
 **Is delivery at-least-once or exactly-once?**
 At-least-once. The Inbound Connector commits a batch only after Temporal accepts its operations. If
-it restarts before committing, the batch is delivered again. Set `KAFKA_BATCH_SIZE=1` to ensure each
+it restarts before committing, the batch is delivered again. Set a route's `batchSize` to 1 to ensure each
 message always has the same operation ID and can't be delivered twice with different offsets. The
 Outbound Connector's `write` adds a `dedupe-id` header that is stable across retries; use it to
 deduplicate on the consumer side.
@@ -174,7 +174,7 @@ with your codec, and every payload they send is encrypted before it leaves the p
 workers use the same codec. Messages in Kafka are not changed. See [Encryption](docs/encryption.md).
 
 **Where does reading start — from the beginning of the topic or from now?**
-From `KAFKA_START_FROM`: `oldest` (the default) starts at the oldest message still in the topic;
+From the route's `startFrom`: `oldest` (the default) starts at the oldest message still in the topic;
 `newest` reads only messages written after the Inbound Connector starts. This applies only when the
 Inbound Connector's consumer group has no committed offsets yet. See
 [How it works: where reading starts](docs/how-it-works.md#where-reading-starts).
@@ -192,7 +192,7 @@ See [How it works](docs/how-it-works.md) for more detail.
   environment variable. To work out and test the environment variables in a form, run
   `make configui` and open <http://localhost:8090>: its **Test** checks every variable as the
   program does at startup, connects to Temporal and checks the namespace and the Nexus endpoint,
-  and reads the topic's last message through the programs' own Kafka code (see
+  and reads each topic's last message through the programs' own Kafka code (see
   [Work out your settings in a browser](docs/setup.md#work-out-your-settings-in-a-browser)).
 - [Testing](docs/testing.md): demo walkthrough with a local dev server and Docker Kafka, and unit
   and end-to-end tests.

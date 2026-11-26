@@ -5,8 +5,8 @@ import (
 	"time"
 )
 
-// This file is the status line the Inbound Connector logs while nothing is delivered, so a stream
-// that stopped moving says why.
+// This file is the status line each route logs while nothing is delivered, so a stream that
+// stopped moving says why. The route's logger names its topic.
 
 // reportStatus logs a status line every statusInterval in which nothing was delivered, until ctx
 // ends. With partitions, a quiet topic looks like this; with none, the group gave this Inbound
@@ -27,17 +27,17 @@ func (r *reader) reportStatus(ctx context.Context) {
 		if started := r.batchStarted.Load(); started != 0 {
 			// Most often ordered mode waiting for a long operation; otherwise retries, which log
 			// their own warnings, or the rate limit.
-			r.logger.Info("Still delivering a batch: waiting for its operations to start, or with INBOUND_ORDERING=partition "+
-				"to complete", "topic", r.topic, "for", time.Since(time.Unix(0, started)).Round(time.Second).String())
+			r.logger.Info("Still delivering a batch: waiting for its operations to start, or with ordering partition "+
+				"to complete", "for", time.Since(time.Unix(0, started)).Round(time.Second).String())
 			continue
 		}
 		parts := r.partitions()
 		if len(parts) == 0 {
 			r.logger.Info("Waiting for messages, but the consumer group has given this Inbound Connector no partitions: "+
 				"other Inbound Connectors in the group have them all, or the group hasn't finished joining",
-				"topic", r.topic, "group", r.group, "lastDelivered", since.String()+" ago")
+				"group", r.group, "lastDelivered", since.String()+" ago")
 			continue
 		}
-		r.logger.Info("Waiting for messages", "topic", r.topic, "partitions", parts, "lastDelivered", since.String()+" ago")
+		r.logger.Info("Waiting for messages", "partitions", parts, "lastDelivered", since.String()+" ago")
 	}
 }

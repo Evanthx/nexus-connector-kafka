@@ -44,10 +44,11 @@
   .help { color: var(--muted); font-size: 14px; margin: 4px 0 8px; }
   code { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--code-bg); padding: 0 4px; border-radius: 4px; }
   .row { display: flex; gap: 8px; }
-  input[type=text], input[type=password], select {
+  input[type=text], input[type=password], select, textarea {
     flex: 1; min-width: 0; padding: 8px 10px; font: 14px ui-monospace, SFMono-Regular, Menlo, monospace;
     color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; }
-  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  textarea { min-height: 12em; resize: vertical; }
+  input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   input.bad { border-color: var(--err); }
   button { font: inherit; padding: 8px 14px; border-radius: 6px; border: 1px solid var(--border);
            background: var(--panel); color: var(--text); cursor: pointer; }
@@ -210,8 +211,20 @@ function renderVariable(v) {
   tags(head, v.required, v.default);
   const fromProfile = profile() && profile().values[v.name];
   const placeholder = fromProfile ? "blank: " + fromProfile + " (from the profile)" : v.default ? "blank: " + v.default : "";
-  return el("div", { class: "var" }, head, el("div", { class: "help" }, rich(v.help)),
-    input(v.name, v.secret, placeholder), ...profileNotes(v.name));
+  const help = el("div", { class: "help" }, rich(v.help));
+  if (v.helpURL) help.append(" ", el("a", { href: v.helpURL, target: "_blank", rel: "noopener" }, "More help"));
+  const field = input(v.name, v.secret, placeholder, v.multiline);
+  if (v.example && !v.secret) { // a secret field is never filled from the page
+    const button = el("button", { type: "button" }, "Insert example");
+    button.onclick = () => {
+      const control = field.querySelector("input, textarea");
+      control.value = v.example;
+      state.values[v.name] = v.example;
+      renderExports();
+    };
+    field.append(button);
+  }
+  return el("div", { class: "var" }, head, help, field, ...profileNotes(v.name));
 }
 
 // renderExternal shows a variable a library reads from the environment the page was started in:
@@ -251,10 +264,12 @@ function profileNotes(name) {
 }
 
 // input is the field for one variable. A secret's field never shows a value it didn't get typed.
-function input(name, secret, placeholder) {
+function input(name, secret, placeholder, multiline) {
   const row = el("div", { class: "row" });
   if (!secret) {
-    const i = el("input", { type: "text", autocomplete: "off", spellcheck: "false", placeholder: placeholder || "" });
+    const i = multiline
+      ? el("textarea", { autocomplete: "off", spellcheck: "false", placeholder: placeholder || "" })
+      : el("input", { type: "text", autocomplete: "off", spellcheck: "false", placeholder: placeholder || "" });
     i.value = state.values[name] || "";
     i.oninput = () => { state.values[name] = i.value; renderExports(); };
     row.append(i);

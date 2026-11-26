@@ -14,18 +14,21 @@ full user-facing documentation; this file has what you need to act, and the mist
 
 ## What this is
 
-A Temporal connector for **one Kafka topic** (Go). It ships as two programs: the Inbound
+A Temporal connector for **Kafka topics** (Go). It ships as two programs: the Inbound
 Connector and the Outbound Connector.
 
 | Program | Use it to | How it reaches Temporal |
 |---|---|---|
-| `inbound/` | Move every message from Kafka into Temporal as it arrives. | Joins a Kafka consumer group and starts one standalone Nexus operation per partition of each batch, through a Nexus endpoint, on a service you implement: `KafkaMessageReceiver.receive`. One-way: it never receives results. |
-| `outbound/` | Let workflows write to Kafka. | Serves `KafkaService.write` as a Nexus operation behind a Nexus endpoint. Workflows call it. |
+| `inbound/` | Move every message from one or more topics into Temporal as it arrives. | For each route (a topic and its endpoint, in JSON), joins a Kafka consumer group and starts one standalone Nexus operation per partition of each batch, through the route's Nexus endpoint, on a service you implement: `KafkaMessageReceiver.receive`. One-way: it never receives results. |
+| `outbound/` | Let workflows write to Kafka. | Serves `KafkaService.write` as a Nexus operation behind a Nexus endpoint. Workflows call it, naming a topic on its allowlist (`KAFKA_TOPICS`). |
 
 Choose by the user's need. To consume a topic, use the Inbound Connector: the Outbound Connector
-only writes. To write to Kafka, use the Outbound Connector. They can run side by side on one topic.
+only writes. To write to Kafka, use the Outbound Connector. They can run side by side on the same
+topics.
 
-Each process serves one topic. For several topics, run one process per topic.
+The Inbound Connector streams every topic in its routes; the Outbound Connector writes to every
+topic in `KAFKA_TOPICS`. No wildcards: exact names only. Topics Kafka marks internal are refused;
+names starting with `_` are fine. Changing topics takes a restart.
 
 ## Requirements
 
@@ -47,7 +50,7 @@ Both programs connect to Temporal like the `temporal` CLI: `TEMPORAL_ADDRESS`,
 CLI's profile file. `connectors` applies only when neither the variable nor the profile sets a
 namespace; any name works, including `default`. Nexus connectors share the `connectors`
 namespace and are kept apart by task queue, so two Outbound Connectors in one namespace, such as
-one per topic, need different `NEXUS_TASK_QUEUE` values.
+one per group of callers with different access, need different `NEXUS_TASK_QUEUE` values.
 
 The setup page shows External variables (`HTTPS_PROXY`, `NO_PROXY`, read by gRPC for the Temporal
 connection only, never by Kafka) read-only and masked from its own environment, and shows what the
@@ -60,11 +63,12 @@ selected Temporal profile file sets beside each `TEMPORAL_*` field.
    messages from one partition, in offset order (schema in `kafka.nexusrpc.yaml`; Go types in
    `generated/kafkaapi`; bytes are base64 in JSON). Its output is empty. Back it with a workflow,
    so the work is durable and isn't bound by a synchronous handler's deadline (under 10 seconds).
-   `test/inboundreceiver/main.go` is a working Go example to copy.
+   `test/inboundreceiver/main.go` is a working Go example to copy. One receiver can serve several
+   routes (each record names its `topic`).
 2. **Make the receiver idempotent.** Delivery is at least once, and batches can overlap when
    redelivered. Drop messages already handled using `topic` + `partition` + `offset`. If
-   duplicates are unacceptable, set `KAFKA_BATCH_SIZE=1`.
-3. **Create a Nexus endpoint** that targets the receiver's namespace and task queue:
+   duplicates are unacceptable, set the route's `batchSize` to 1.
+3. **Create a Nexus endpoint** per receiver, targeting its namespace and task queue:
 
    ```bash
    temporal operator nexus endpoint create --name <endpoint> \
@@ -73,28 +77,46 @@ selected Temporal profile file sets beside each `TEMPORAL_*` field.
 
    On Temporal Cloud, create it in the Cloud UI or with `tcld`, and allow the Inbound Connector's
    namespace to call it.
-4. **Create the dead-letter topic** in Kafka, or plan to set `DELETE_DEAD_LETTERS=true`. The
-   Inbound Connector won't start with neither, or both.
-5. **Set the environment and run** `inbound`:
+4. **Create the dead-letter topics** in Kafka, or plan to set `deleteDeadLetters` to `true`. Each
+   route needs one or the other, not both. A dead-letter topic can't be a topic any route streams.
+5. **Write the routes** as JSON, in `INBOUND_CONFIG` or a file named by `INBOUND_CONFIG_FILE`
+   (exactly one). A `defaults` section, then `routes`; each route sets `topic` and `endpoint`, and
+   overrides any default:
+
+   ```json
+   {
+     "defaults": { "deadLetterTopic": "dead-letters", "batchSize": 100 },
+     "routes": [
+       { "topic": "orders", "endpoint": "orders-receiver" },
+       { "topic": "customers", "endpoint": "customers-receiver", "ordering": "partition" }
+     ]
+   }
+   ```
+
+   Fields (built-in default): `topic`, `endpoint`, `group` (routes only; group defaults to
+   `nexus-connector-kafka:<topic>:<endpoint>`), `service` (`KafkaMessageReceiver`), `operation`
+   (`receive`), `startFrom` (`oldest` or `newest`), `deadLetterTopic`, `deleteDeadLetters`
+   (`false`), `batchSize` (100), `batchTimeLimit` (`"0s"`; `"1s"` lets batches fill on a quiet
+   topic, which costs fewer operations), `operationTimeout` (`"24h"`), `maxInputBytes`,
+   `maxMessagesPerMinute` (0, no limit; per route and per process, at least `batchSize`),
+   `ordering` (`none`, or `partition` to process each partition in order; see
+   `docs/how-it-works.md#ordering`). Strict: unknown keys are errors. `""` or `null` is the same as
+   leaving a field out. On a route, `deadLetterTopic` or `deleteDeadLetters` replaces the other
+   from `defaults`. No two routes may share a topic or a consumer group. `docs/setup.md#inbound-routes`
+   has the full table and example; `make configui`'s **Insert example** fills one in.
+6. **Set the environment and run** `inbound`:
 
    | Variable | Value |
    |---|---|
    | `KAFKA_BROKERS` | Comma-separated `host:port`. |
-   | `KAFKA_TOPIC` | The topic to stream. |
    | `KAFKA_USERNAME`, `KAFKA_PASSWORD`, `KAFKA_SASL_MECHANISM`, `KAFKA_TLS*` | Kafka login and TLS, if needed (see Requirements). |
-   | `KAFKA_GROUP` | The Inbound Connector's consumer group. Inbound Connectors with the same consumer group share the partitions. |
-   | `KAFKA_DEAD_LETTER_TOPIC` | An existing topic, different from `KAFKA_TOPIC`. Or `DELETE_DEAD_LETTERS=true` instead. |
-   | `INBOUND_ENDPOINT` | The endpoint from step 3. |
+   | `INBOUND_CONFIG` or `INBOUND_CONFIG_FILE` | The routes from step 5. |
 
-   Optional: `KAFKA_START_FROM` (`oldest`, the default, or `newest`; where a new consumer group
-   starts), `KAFKA_BATCH_SIZE` (100),
-   `KAFKA_BATCH_TIME_LIMIT` (0; `1s` lets batches fill on a quiet topic, which costs fewer
-   operations), `INBOUND_OPERATION_TIMEOUT` (`24h`), `INBOUND_MAX_MESSAGES_PER_MINUTE` (no
-   limit; per process, spread evenly, at least `KAFKA_BATCH_SIZE`), `INBOUND_ORDERING` (`none`, or
-   `partition` to process each partition in order; see `docs/how-it-works.md#ordering`). `docs/setup.md` lists every
-   variable.
-6. **Scale out** by running more Inbound Connectors with the same `KAFKA_GROUP`, up to one per
-   partition.
+   Optional: `INBOUND_STATUS_INTERVAL` (`5m`), `KAFKA_CLIENT_LOG_LEVEL` (`warn`). `docs/setup.md`
+   lists every variable. It starts no route until Kafka has every route's topic and dead-letter
+   topic.
+7. **Scale out** by running more Inbound Connectors with the same routes, up to one per partition.
+   Every process runs every route; split a busy topic into its own deployment.
 
 ## Run the Outbound Connector
 
@@ -102,9 +124,14 @@ selected Temporal profile file sets beside each `TEMPORAL_*` field.
 
    | Variable | Value |
    |---|---|
-   | `KAFKA_BROKERS`, `KAFKA_TOPIC` | As for the Inbound Connector. Callers can't choose another topic. |
+   | `KAFKA_BROKERS` | As for the Inbound Connector. |
+   | `KAFKA_TOPICS` | The topics callers may write to, comma-separated exact names. Each must exist at startup. |
    | `KAFKA_USERNAME`, `KAFKA_PASSWORD`, `KAFKA_SASL_MECHANISM`, `KAFKA_TLS*` | If needed. |
-   | `NEXUS_TASK_QUEUE` | Default `nexus-connector-kafka`. Give each Outbound Connector for a different topic its own. |
+   | `NEXUS_TASK_QUEUE` | Default `nexus-connector-kafka`. Give each Outbound Connector in a namespace its own. |
+
+   Everyone who can call the endpoint can write to every listed topic. For callers with different
+   access, run separate Outbound Connectors with their own `KAFKA_TOPICS`, `NEXUS_TASK_QUEUE` and
+   endpoint.
 
 2. **Create a Nexus endpoint** that targets the Outbound Connector's namespace and
    `NEXUS_TASK_QUEUE` exactly.
@@ -117,10 +144,10 @@ selected Temporal profile file sets beside each `TEMPORAL_*` field.
 
 3. **Call it from a workflow** with a Nexus client for `KafkaService` on that endpoint.
    `test/nexuscaller/workflows.go` (`WriterWorkflow`) is a working Go example to copy. `write`
-   takes `messages: [{key?, value, headers?}]` and returns `written`. Each message gets a
-   `dedupe-id` header that stays the same when the write is retried. **Give the call a timeout**
-   (`ScheduleToCloseTimeout`): the caller's Temporal server retries a failed write until it, and
-   nothing else stops the retries.
+   takes `topic` (required; one in `KAFKA_TOPICS`) and `messages: [{key?, value, headers?}]` and
+   returns `written`. Each message gets a `dedupe-id` header that stays the same when the write is
+   retried. **Give the call a timeout** (`ScheduleToCloseTimeout`): the caller's Temporal server
+   retries a failed write until it, and nothing else stops the retries.
 
 ## Encryption
 
@@ -143,7 +170,7 @@ encrypted, and the demo (`DEMO_ENCRYPTION_KEY`, `go run ./nexus-connector-shared
   operation's input go to the dead-letter topic. Every other error, such as Temporal unreachable or
   an endpoint that doesn't exist, is retried forever, and the stream waits. Read the Inbound
   Connector's log, not the dead-letter topic, to diagnose a stalled stream.
-- **Batches can be processed out of order** unless `INBOUND_ORDERING=partition`. With it, each
+- **Batches can be processed out of order** unless the route's `ordering` is `partition`. With it, each
   partition's operations run one at a time, in order, at the cost of parallelism (one operation
   per partition at a time); a failed operation is logged and the partition moves on. Order
   covers only what the receiver's operation waits for: back it with a workflow. Either way, make the
@@ -151,7 +178,7 @@ encrypted, and the demo (`DEMO_ENCRYPTION_KEY`, `go run ./nexus-connector-shared
 - **An operation is never started twice, even after it fails.** Its messages were delivered; the
   failure is handled in Temporal, never by the Inbound Connector running it again or
   dead-lettering it. Don't add a retry or a dead letter for a failed operation. With the default
-  `INBOUND_ORDERING=none`, the Inbound Connector doesn't even see failures in the receiver: a batch
+  `ordering` `none`, the Inbound Connector doesn't even see failures in the receiver: a batch
   is committed once Temporal accepts its operation. Find failed ones with:
 
   ```bash
@@ -169,7 +196,7 @@ Kafka. If anything fails, the program reports every problem in one message and e
 ```
 The Outbound Connector can't start:
 Invalid Outbound Connector configuration:
-  - set KAFKA_TOPIC: the topic to serve
+  - set KAFKA_TOPICS: the topics callers may write to, comma-separated
 Failed to connect to Temporal:
   - failed reaching server: ... connection refused
 ```
@@ -178,24 +205,29 @@ If configuration and Temporal are OK, both programs log:
 
 1. A configuration report: every setting, defaults marked, the password shown only as set or not,
    then what the program will do. Read it back to the user to confirm the setup.
-2. `Connected to Kafka brokers=... topic=... cluster=...`. Until then, a `WARN Can't reach Kafka or
-   see the topic yet; retrying` every 5 seconds with the reason:
+2. `Connected to Kafka brokers=... topics=... cluster=...`, once Kafka has every topic (the
+   Outbound Connector's `KAFKA_TOPICS`; every route's topic and dead-letter topic). Until then, a
+   `WARN Can't reach Kafka or see these topics yet; retrying` every 5 seconds, naming the missing
+   `topics=`, with the reason:
    - `connection refused` or a dial error means the brokers are wrong or unreachable.
    - `SASL_AUTHENTICATION_FAILED` means the username, password or `KAFKA_SASL_MECHANISM` is wrong.
    - `is TLS missing?` or `plaintext connection speaking to a tls endpoint` means Kafka needs
      `KAFKA_TLS=true`; `certificate is not trusted` means it
      needs `KAFKA_TLS_SERVER_CA_CERT_PATH`; `certificate required` means it needs a client
      certificate.
-   - `UNKNOWN_TOPIC_OR_PARTITION` means the topic doesn't exist.
+   - `UNKNOWN_TOPIC_OR_PARTITION` means a topic doesn't exist.
+   - `is a topic Kafka keeps for itself (internal)` stops the program at once: remove that topic.
 
    Fix the cause; the program carries on by itself once Kafka answers.
 
    After startup, `Kafka client:` lines (`KAFKA_CLIENT_LOG_LEVEL`, warn by default), the consumer
-   group's partition lines, and the Inbound Connector's `Waiting for messages` status line show why
-   a stream stopped moving. `docs/troubleshooting.md` explains each.
+   group's partition lines, and each route's `Waiting for messages` status line (every route's lines
+   carry `topic=`) show why a stream stopped moving. One route stalled (endpoint missing, Temporal
+   unreachable) doesn't hold up the others; a route that fails for good stops them all, and the
+   process exits non-zero. `docs/troubleshooting.md` explains each.
 
 Then:
-- **Inbound Connector:** `INFO Delivered batch records=N` per batch. `temporal nexus operation list
+- **Inbound Connector:** `INFO Delivered batch topic=... records=N` per batch. `temporal nexus operation list
   --namespace <Inbound Connector's namespace>` shows one operation per partition batch, with IDs
   `kafka-<source>-<partition>-<first offset>-<last offset>`.
 - **Outbound Connector:** a caller's `write` returns `written`. A caller workflow that never
@@ -203,7 +235,7 @@ Then:
 
 ## Errors from `write`
 
-`write` is a synchronous Nexus operation: each attempt runs within one Nexus request, which the
+`write` names its topic (`WriteInput.topic`, required) and is a synchronous Nexus operation: each attempt runs within one Nexus request, which the
 caller's Temporal server gives a deadline (10 seconds by default, server dynamic config
 `component.nexusoperations.request.timeout`). The write stops waiting for Kafka 1 second before it,
 to reply with the reason.
@@ -212,7 +244,9 @@ to reply with the reason.
   fails at once, not retried, with Kafka's message and an `ApplicationError` as the cause (find it
   with `errors.As`) of type:
   - `Rejected`: Kafka refused a message for good (such as one over the broker's size limit, or
-    `TOPIC_AUTHORIZATION_FAILED`). Fix it before resending.
+    `TOPIC_AUTHORIZATION_FAILED`), or the write named a topic not in `KAFKA_TOPICS` (message
+    `topic "x" isn't one this Outbound Connector writes to`, nothing written, every message listed;
+    the allowlist is never shown to callers). Fix it before resending.
   - `PartlyWritten`: some messages were written and the rest failed for a reason that may pass.
     Resend them as they are. Retrying the whole write would write the others twice.
 
@@ -253,18 +287,23 @@ programs; it shows each variable with its help and default, secrets only as set 
 - **Settings**: every variable, checked exactly as the program checks them at startup.
 - **Temporal**: connects as the program would and checks the namespace exists. For the Outbound
   Connector, that an endpoint targets the namespace and `NEXUS_TASK_QUEUE` (it shows the create
-  command if not); for the Inbound Connector, that the endpoint `INBOUND_ENDPOINT` names exists.
-- **Kafka**: `kafka.Identify`, then `kafka.ReadLast` (the topic's last message, no consumer group,
-  nothing committed) with the programs' own Kafka code, showing Kafka's whole error on failure. For
-  the Inbound Connector, that `KAFKA_DEAD_LETTER_TOPIC` exists.
+  command if not).
+- **Kafka** (Outbound Connector): for each topic in `KAFKA_TOPICS`, `kafka.Identify`, then
+  `kafka.ReadLast` (the topic's last message, no consumer group, nothing committed) with the
+  programs' own Kafka code, showing Kafka's whole error on failure.
+- **Routes** (Inbound Connector, once the routes are valid): every route resolved; that each
+  route's endpoint exists; then each route's topic as above, and that its dead-letter topic exists.
+
+`INBOUND_CONFIG` is a text area with **Insert example** (`setup.RoutesExample`) and a link to
+docs/setup.md#inbound-routes.
 
 It changes no environment; it lists the `export` lines to set where the program runs.
 
 ## Try it locally first
 
 `docs/testing.md` has the full demo walkthrough with a local dev server and Docker Kafka
-(`test/kafka/`): the Inbound Connector with the example receiver, and two Outbound Connectors
-writing to two topics with the example caller. Run it top to bottom without stopping programs in between.
+(`test/kafka/`): the Inbound Connector with two routes (`test/kafka/routes.json`) and the example
+receiver, and one Outbound Connector allowing two topics with the example caller. Run it top to bottom without stopping programs in between.
 
 ## Changing the code
 
@@ -296,8 +335,13 @@ Needs Go SDK v1.50 or later (the standalone Nexus client).
   `setup/kafka.go`. Read it with `.From(vals)` in `configFrom` (`inbound/config.go`,
   `outbound/config.go`), or `setup.Kafka`. Use the shared parse functions (`settings.Text`,
   `settings.PositiveInt`, `settings.Minutes`, ...) where one fits. Then run `make docs`; a test fails while
-  docs/setup.md is stale. A rule between variables, such as "`KAFKA_DEAD_LETTER_TOPIC` or
-  `DELETE_DEAD_LETTERS=true`, not both", goes in the `Program`'s `Rules`. Never read the environment directly
+  docs/setup.md is stale. A rule between variables, such as "`INBOUND_CONFIG` or
+  `INBOUND_CONFIG_FILE`, not both", goes in the `Program`'s `Rules`.
+- **A new per-route setting of the Inbound Connector goes in `setup.RouteFields`** (`setup/routes.go`):
+  name, help, default and parse, a field on `setup.Route`, the built-in default in `builtIn`, the
+  example (`RoutesExample`: in `defaults` and the second route), any rule in `routeRules`, the
+  report (`routeSection`, `routeBehavior` in `inbound/config.go`) and `make docs` (the routes table
+  between `routes:start` and `routes:end`). Never read the environment directly
   (`os.Getenv`, `os.LookupEnv`, `os.Environ`, ...): only `nexus-connector-shared/settings/env.go`
   may, and its `nobypass_test.go` fails otherwise.
 - Add a new setting to the program's startup report too (`config.report` in `inbound/config.go`,
@@ -340,36 +384,47 @@ Needs Go SDK v1.50 or later (the standalone Nexus client).
 - `Record.tombstone` marks a null value; dead letters keep the null.
 - `batch` and `pollUntil` are the Inbound Connector's batching rule: count and time limit. The
   Inbound Connector then splits each partition's records by encoded size
-  (`INBOUND_MAX_INPUT_BYTES`).
-- `startOffset` and kgo's `ConsumeResetOffset` implement `KAFKA_START_FROM` for the Inbound
-  Connector. `listBounds` serves both `GroupMember` and `ReadLast`.
-- `ConnectAtStartup` wraps `WaitForTopic`: `Identify` every 5 seconds, 10 seconds per attempt, a
-  WARN per failure, INFO on success. Both programs call it after the startup report and before
+  (the route's `maxInputBytes`).
+- `startOffset` and kgo's `ConsumeResetOffset` implement a route's `startFrom` for the Inbound
+  Connector. The topic is an argument everywhere (`Identify`, `ReadLast`, `NewGroupMember`), not
+  part of `Config`, since one process uses several. `TopicIdentity.Internal` marks a topic Kafka
+  keeps for itself. `listBounds` serves both `GroupMember` and `ReadLast`.
+- `ConnectAtStartup(ctx, cfg, topics)` wraps `WaitForTopics`: `Identify` every topic every 5
+  seconds, 10 seconds per attempt, a WARN per failed attempt naming the missing topics, INFO once
+  all are there. An internal topic ends it at once with `ErrInternalTopic`. Both programs call it after the startup report and before
   dialing Temporal, because kgo connects lazily and would otherwise wait silently.
 
 **`inbound/`**
+- `main.run` builds one `reader` per route (`newReader`: its own `GroupMember`, sender from
+  `layers`, and logger `With("topic", ...)`; one dead-letter `Writer` shared) after `Ready` waits
+  for every route's topics, then `runReaders` runs them under `errgroup.WithContext`: the first
+  error cancels the rest, and each reader closes its member (leaving its group) before
+  `runReaders` returns.
 - `reader.run` loops: `Next`, then `deliver`, then `Commit`.
   - `deliver` handles partitions in parallel. Each partition's records are split into as few
-    `ReceiveInput`s as fit `INBOUND_MAX_INPUT_BYTES`, started in order.
+    `ReceiveInput`s as fit the route's `maxInputBytes`, started in order.
   - `Commit` uses a context that survives shutdown.
 - `reader` sends each operation through a `nexussend.Sender` built by `layers` in `main.go`:
-  `RateLimited` (only with `INBOUND_MAX_MESSAGES_PER_MINUTE`) around `Retrying` around `Nexus`. The
-  rate limit is outside the retries so a batch counts once.
+  `RateLimited` (only with the route's `maxMessagesPerMinute`) around `Retrying` around `Nexus`.
+  The rate limit is outside the retries so a batch counts once, and per route.
 - Only two things go to the dead-letter topic: an `InvalidArgument` saying the input exceeds the
   size limit (`refusedAsTooLarge`; a part of several records is first split in half and retried),
-  and single messages over `INBOUND_MAX_INPUT_BYTES`. The size check is local because gRPC's own
+  and single messages over the route's `maxInputBytes`. The size check is local because gRPC's own
   too-large error is an internal SDK type. Every other error retries forever, so an outage stalls
-  the stream instead of draining it into dead letters. `DELETE_DEAD_LETTERS=true` makes
-  `deadLetter` log and skip instead.
-- `reportStatus` (`status.go`) logs `Waiting for messages` with the member's partitions every
+  the stream instead of draining it into dead letters. A route's `deleteDeadLetters`
+  makes `deadLetter` log and skip instead.
+- `reportStatus` (`status.go`) logs, per route, `Waiting for messages` with the member's partitions every
   `INBOUND_STATUS_INTERVAL` (5m; 0 off) in which nothing was delivered.
 - The operation ID (`operationid.go`) is `kafka-<source>-<partition>-<first>-<last>`. `sourceKey` hashes cluster ID,
   topic ID, topic, and group as a JSON array, which can't be ambiguous, and the identity is
   fetched for every batch. A redelivered batch can end at another offset and get a new ID, so
-  batches can duplicate messages; `KAFKA_BATCH_SIZE=1` rules that out.
+  batches can duplicate messages; `batchSize` 1 rules that out.
 
 **`outbound/`**
-- One process serves one topic (`KAFKA_TOPIC`) behind one endpoint.
+- One process serves the topics in `KAFKA_TOPICS` behind one endpoint. `topicWriter` holds them as
+  a set; `write` refuses any other topic with `topicNotAllowed` before sending anything, which
+  `handlerError` maps to `Rejected` with every message in `WriteFailures`. Its message never lists
+  the allowed topics.
 - `write` is a synchronous Nexus operation (`nexus.NewSyncOperation` in `service.go`), with no
   activity or workflow. One worker on `NEXUS_TASK_QUEUE` serves the Nexus service; nothing is
   registered as an activity. It writes with a deadline `replyMargin` (1 second) before the Nexus
@@ -394,7 +449,12 @@ Needs Go SDK v1.50 or later (the standalone Nexus client).
 
 **`setup/`**
 - `setup/settings.go` declares `Inbound` and `Outbound`, the `settings.Program` of each: every
-  variable it reads, in sections, with its check, plus the Inbound Connector's dead-letter rule. The
+  variable it reads, in sections, with its check, plus the Inbound Connector's routes rule.
+  `setup/topics.go` is `KAFKA_TOPICS` and `CheckTopicName`. `setup/routes.go` is the routes:
+  `RouteFields` (one table for parsing, docs and example), `ParseRoutes` (strict JSON, every problem
+  at once, `routes[i] (topic)` labels, line and column for syntax errors), `routeRules`,
+  `LoadRoutes` (`INBOUND_CONFIG` or the file `INBOUND_CONFIG_FILE` names; a file, not the
+  environment), `Topics`, `RoutesMarkdown` and `RoutesExample`. The
   Kafka section is `KafkaSection` (`setup/kafka.go`), shared by both; the Temporal section
   lists the variables envconfig reads, unchecked. They live in a package of their own because
   `inbound` and `outbound` are main packages, which configui can't import, and `kafka/` has no
@@ -420,7 +480,7 @@ Needs Go SDK v1.50 or later (the standalone Nexus client).
 - `Nexus` starts operations with `USE_EXISTING` and `REJECT_DUPLICATE`: an ID is never run twice,
   even if its operation failed. `NexusOperationExecutionAlreadyStarted` counts as sent;
   `refusedAsTooLarge` maps the server's size refusal to `ErrTooLarge`.
-- With `wait` (`INBOUND_ORDERING=partition`), `Nexus.Send` also waits on the handle's `Get` (for an
+- With `wait` (a route's `ordering` `partition`), `Nexus.Send` also waits on the handle's `Get` (for an
   already-started ID, a handle from `GetNexusOperationHandle`). If `Get` fails and `Describe` says
   the operation has closed, it returns `ErrFailed`, whatever the failure; `reader` logs an ERROR and
   commits past it, with no dead letter. Otherwise (Temporal unreachable while waiting) it returns
@@ -443,11 +503,15 @@ Needs Go SDK v1.50 or later (the standalone Nexus client).
 **`configui/`**
 - The setup page, never imported by either program. The page is `nexus-connector-shared/configui`
   (it renders only from `/api/settings`; its own tests use made-up programs); this repo's
-  `main.go` runs it and `connector.go` lists the two programs and their Kafka checks (`checkKafka`, `inboundChecks`). A test runs against a `settings.Map` built from the process's environment
+  `main.go` runs it and `connector.go` lists the two programs and their Kafka checks (`checkKafka`, `checkRoutes`). A test runs against a `settings.Map` built from the process's environment
   with the page's values in place of every variable the program owns; nothing calls `os.Setenv`.
 - `GET /api/settings`: the programs and the environment's values. Secrets are sent only as set or
   not set. `POST /api/test`: the Settings, Temporal and Kafka checks; secret values are redacted
   from every message.
+- `connector.go`: the Outbound Connector's Check runs `checkKafka` per allowed topic; the Inbound
+  Connector's is `checkRoutes` (resolved routes, each endpoint looked up with its own Temporal
+  client from `temporalclient.Options`, then Kafka per route), so the shared page's API is
+  unchanged. The shared page renders `settings.Variable`'s `Multiline`, `Example` and `HelpURL`.
 - `localOnly` refuses a non-localhost `Host` and non-JSON POSTs, so other sites can't use it
   through the browser.
 - `kafka.ReadLast` (`kafka/last.go`) reads each partition's last offset with no consumer group,
@@ -457,14 +521,15 @@ Needs Go SDK v1.50 or later (the standalone Nexus client).
 
 **`test/`** (test only)
 - `testenv`: kfake plus a dev server with both namespaces.
-- `nexuscaller`: `WriterWorkflow` writes messages through an Outbound Connector's endpoint; the
-  starter's `write` command starts it.
+- `nexuscaller`: `WriterWorkflow` writes messages to a topic through the Outbound Connector's
+  endpoint (`Endpoint`); the starter's `write` command (`-topic`, `-endpoint`) starts it.
 - `inboundreceiver`: the example receiver.
 - `nexus-connector-shared/test/encryption`: the demo AES-GCM codec (`DEMO_ENCRYPTION_KEY`) and `codecserver`. The caller and the
   receiver use it in blocks marked `BEGIN ENCRYPTION (optional)` / `END ENCRYPTION (optional)`, plus
   an import marked `ENCRYPTION (optional)`; deleting them leaves working code.
-- `kafka/`: docker-compose plus seed, produce, consume, and configui scripts. Seed writes 10 messages to
-  `customers` and 3 to `orders`.
+- `kafka/`: docker-compose, `.env`, `routes.json` (the demo's two inbound routes), plus seed,
+  produce, consume, and configui scripts. Seed creates `customers`, `orders` and `dead-letters`, and
+  writes 10 messages to `customers` and 3 to `orders`.
 
 ### Testing notes
 

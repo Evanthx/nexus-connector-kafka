@@ -23,8 +23,8 @@ import (
 // Each message's dedupe-id comes from the Nexus request ID and its place in the write, so every
 // attempt of one operation gives a message the same dedupe-id.
 func TestRecords_DedupeIDFromRequestID(t *testing.T) {
-	w := &topicWriter{topic: "orders"}
-	in := kafkaapi.WriteInput{Messages: []kafkaapi.Message{{Value: []byte("a")}, {Value: []byte("b")}}}
+	w := &topicWriter{}
+	in := kafkaapi.WriteInput{Topic: "orders", Messages: []kafkaapi.Message{{Value: []byte("a")}, {Value: []byte("b")}}}
 	for range 2 { // two attempts
 		recs := w.records("req-1", in)
 		require.Len(t, recs, 2)
@@ -42,7 +42,7 @@ func TestRecords_DedupeIDFromRequestID(t *testing.T) {
 // the given timeout, and returns how long it took and the error.
 func writeKeyed(t *testing.T, w *topicWriter, n int, timeout time.Duration) (time.Duration, error) {
 	t.Helper()
-	in := kafkaapi.WriteInput{}
+	in := kafkaapi.WriteInput{Topic: testenv.Topic}
 	for i := range n {
 		in.Messages = append(in.Messages, kafkaapi.Message{Key: fmt.Appendf(nil, "key-%d", i), Value: fmt.Appendf(nil, "%d", i)})
 	}
@@ -62,7 +62,7 @@ func refusingFirst(t *testing.T, n int32) (*topicWriter, kafka.Config, *atomic.I
 	writer, err := kafka.NewWriter(cfg)
 	require.NoError(t, err)
 	t.Cleanup(writer.Close)
-	return &topicWriter{writer: writer, topic: cfg.Topic}, cfg, &refused
+	return newTopicWriter(writer, []string{testenv.Topic}), cfg, &refused
 }
 
 // requireEachOnce checks every one of the n messages is in the topic exactly once.
@@ -81,7 +81,7 @@ func requireEachOnce(t *testing.T, cfg kafka.Config, n int, except ...int) {
 	cl, err := kgo.NewClient(kgo.SeedBrokers(cfg.Brokers...))
 	require.NoError(t, err)
 	defer cl.Close()
-	ends, err := kadm.NewClient(cl).ListEndOffsets(context.Background(), cfg.Topic)
+	ends, err := kadm.NewClient(cl).ListEndOffsets(context.Background(), testenv.Topic)
 	require.NoError(t, err)
 	var total int64
 	ends.Each(func(o kadm.ListedOffset) { total += o.Offset })
@@ -148,4 +148,32 @@ func TestHandlerError_PartlyWrittenIsFinal(t *testing.T) {
 	require.ErrorAs(t, handlerError(none), &he)
 	require.True(t, he.Retryable(), "nothing was written: retrying duplicates nothing")
 	require.Equal(t, nexus.HandlerErrorTypeUnavailable, he.Type)
+}
+
+// A write to a topic not on the list is Rejected before anything is sent to Kafka, with every
+// message listed, and its message never shows the topics that are allowed.
+func TestWrite_TopicNotAllowed(t *testing.T) {
+	writer, err := kafka.NewWriter(kafka.Config{Brokers: []string{"127.0.0.1:1"}}) // never reached
+	require.NoError(t, err)
+	t.Cleanup(writer.Close)
+	w := newTopicWriter(writer, []string{"orders", "billing"})
+	in := kafkaapi.WriteInput{Topic: "payroll", Messages: []kafkaapi.Message{{Value: []byte("a")}, {Value: []byte("b")}, {Value: []byte("c")}}}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err = w.write(ctx, "req", in)
+	require.Error(t, err)
+
+	var he *nexus.HandlerError
+	require.ErrorAs(t, handlerError(err), &he)
+	require.False(t, he.Retryable())
+	var appErr *temporal.ApplicationError
+	require.ErrorAs(t, he, &appErr)
+	require.Equal(t, ErrorTypeRejected, appErr.Type())
+	require.Equal(t, `topic "payroll" isn't one this Outbound Connector writes to`, appErr.Message())
+	require.NotContains(t, he.Message, "orders")
+	require.NotContains(t, he.Message, "billing")
+	var details kafkaapi.WriteFailures
+	require.NoError(t, appErr.Details(&details))
+	reason := `topic "payroll" isn't one this Outbound Connector writes to`
+	require.Equal(t, []kafkaapi.WriteFailure{{Index: 0, Reason: reason}, {Index: 1, Reason: reason}, {Index: 2, Reason: reason}}, details.Failures)
 }

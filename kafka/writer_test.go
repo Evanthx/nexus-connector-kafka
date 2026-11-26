@@ -26,7 +26,7 @@ func TestWriter_PartlyRejected(t *testing.T) {
 	records := make([]*kgo.Record, n)
 	for i := range records {
 		// Keys spread the records over the partitions.
-		records[i] = &kgo.Record{Topic: cfg.Topic, Key: fmt.Appendf(nil, "key-%d", i), Value: fmt.Appendf(nil, "%d", i)}
+		records[i] = &kgo.Record{Topic: testenv.Topic, Key: fmt.Appendf(nil, "key-%d", i), Value: fmt.Appendf(nil, "%d", i)}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -65,7 +65,7 @@ func TestWriter_PartlyRejected(t *testing.T) {
 
 // A write that fails only with errors retrying could fix isn't Rejected.
 func TestWriter_RetryableIsNotRejected(t *testing.T) {
-	w, err := kafka.NewWriter(kafka.Config{Brokers: []string{"127.0.0.1:1"}, Topic: "t"})
+	w, err := kafka.NewWriter(kafka.Config{Brokers: []string{"127.0.0.1:1"}})
 	require.NoError(t, err)
 	t.Cleanup(w.Close)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -86,7 +86,7 @@ func TestWriter_UnknownServerErrorIsNotRejected(t *testing.T) {
 	t.Cleanup(w.Close)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	err = w.Write(ctx, &kgo.Record{Topic: cfg.Topic, Value: []byte("a")})
+	err = w.Write(ctx, &kgo.Record{Topic: testenv.Topic, Value: []byte("a")})
 	require.NotErrorIs(t, err, kafka.ErrRejected)
 	var we *kafka.WriteError
 	require.ErrorAs(t, err, &we)
@@ -107,7 +107,7 @@ func indexes(we *kafka.WriteError) []int {
 // consumeValues reads n values from cfg's topic, from every partition, without a consumer group.
 func consumeValues(t *testing.T, cfg kafka.Config, n int) []string {
 	t.Helper()
-	cl, err := kgo.NewClient(kgo.SeedBrokers(cfg.Brokers...), kgo.ConsumeTopics(cfg.Topic),
+	cl, err := kgo.NewClient(kgo.SeedBrokers(cfg.Brokers...), kgo.ConsumeTopics(testenv.Topic),
 		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()))
 	require.NoError(t, err)
 	defer cl.Close()

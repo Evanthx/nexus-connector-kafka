@@ -35,21 +35,20 @@ type GroupMember struct {
 	assigned map[int32]bool // the partitions the group has given this member
 }
 
-// NewGroupMember joins group for the topic in cfg. A partition the group has no committed offset
-// for, or whose committed offset is no longer in the log, starts where cfg.StartFrom says (see
-// startOffset).
-func NewGroupMember(cfg Config, group string) (*GroupMember, error) {
+// NewGroupMember joins group for topic. A partition the group has no committed offset for, or
+// whose committed offset is no longer in the log, starts where startFrom says (see startOffset).
+func NewGroupMember(cfg Config, topic, group string, startFrom StartFrom) (*GroupMember, error) {
 	reset := kgo.NewOffset().AtStart()
-	if cfg.StartFrom == StartFromNewest {
+	if startFrom == StartFromNewest {
 		reset = kgo.NewOffset().AtEnd()
 	}
 	m := &GroupMember{
-		ready: make(chan struct{}), topic: cfg.Topic, startFrom: cfg.StartFrom,
+		ready: make(chan struct{}), topic: topic, startFrom: startFrom,
 		wanted: make(chan struct{}), assigned: map[int32]bool{},
 	}
 	client, err := kgo.NewClient(cfg.readOpts(
 		kgo.ConsumerGroup(group),
-		kgo.ConsumeTopics(cfg.Topic),
+		kgo.ConsumeTopics(topic),
 		kgo.ConsumeResetOffset(reset), // not normally used: chooseStarts resolves every start
 		kgo.DisableAutoCommit(),
 		kgo.BlockRebalanceOnPoll(),

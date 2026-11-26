@@ -2,9 +2,9 @@
 // and calls the Outbound Connector's KafkaService through a Nexus endpoint, the way a real caller
 // would, to write messages.
 //
-// Each Outbound Connector serves one topic, so the endpoint a call goes to decides the topic. The
-// walkthrough in docs/testing.md runs two Outbound Connectors on two topics, behind
-// CustomersEndpoint and OrdersEndpoint.
+// Each write names its topic, which must be one the Outbound Connector behind the endpoint allows.
+// The walkthrough in docs/testing.md runs one Outbound Connector allowing two topics, customers and
+// orders, behind Endpoint.
 package nexuscaller
 
 import (
@@ -19,25 +19,25 @@ const (
 	Namespace = "kafka-test"
 	// TaskQueue is the test caller worker's task queue.
 	TaskQueue = "kafka-nexuscaller"
-	// CustomersEndpoint routes to an Outbound Connector serving the customers topic.
-	CustomersEndpoint = "kafka-customers-endpoint"
-	// OrdersEndpoint routes to a second Outbound Connector, serving the orders topic.
-	OrdersEndpoint = "kafka-orders-endpoint"
+	// Endpoint routes to the Outbound Connector, which allows the customers and orders topics.
+	Endpoint = "kafka-outbound-endpoint"
 )
 
 // WriterInput starts WriterWorkflow.
 type WriterInput struct {
-	// Endpoint is the Nexus endpoint to write through. Its Outbound Connector decides the topic.
+	// Endpoint is the Nexus endpoint to write through.
 	Endpoint string
+	// Topic is the topic to write to: one the endpoint's Outbound Connector allows.
+	Topic string
 	// Messages are the messages to write, in order.
 	Messages []string
 }
 
-// WriterWorkflow writes messages to the topic behind in.Endpoint and returns how many were
+// WriterWorkflow writes messages to in.Topic through in.Endpoint and returns how many were
 // written. It runs once and finishes: one write operation for all the messages, in order.
 func WriterWorkflow(ctx workflow.Context, in WriterInput) (int64, error) {
 	kafkaService := workflow.NewNexusClient(in.Endpoint, kafkaapi.KafkaService.ServiceName)
-	write := kafkaapi.WriteInput{}
+	write := kafkaapi.WriteInput{Topic: in.Topic}
 	for _, m := range in.Messages {
 		write.Messages = append(write.Messages, kafkaapi.Message{Value: []byte(m)})
 	}

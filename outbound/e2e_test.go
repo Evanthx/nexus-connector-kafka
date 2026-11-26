@@ -16,6 +16,7 @@ import (
 	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/test/codectest"
 	"github.com/temporalio/nexus-connector-kafka/test/nexuscaller"
 	"github.com/temporalio/nexus-connector-kafka/test/testenv"
+	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kerr"
 	"github.com/twmb/franz-go/pkg/kgo"
 	historypb "go.temporal.io/api/history/v1"
@@ -32,7 +33,7 @@ func writeWithin(ctx workflow.Context, endpoint string, in kafkaapi.WriteInput, 
 }
 
 type harness struct {
-	kafkaCfg  kafka.Config // for the customers topic
+	kafkaCfg  kafka.Config // with the customers and orders topics
 	connector client.Client
 	test      client.Client
 }
@@ -51,48 +52,54 @@ func newHarness(t *testing.T) harness {
 	return harness{kafkaCfg: kafkaCfg, connector: connector, test: test}
 }
 
-// start is newHarness serving the customers topic through CustomersEndpoint.
+// start is newHarness serving the customers and orders topics through Endpoint.
 func start(t *testing.T) harness {
 	t.Helper()
 	h := newHarness(t)
-	h.serve(t, nexuscaller.CustomersEndpoint, defaultTaskQueue, h.kafkaCfg)
+	h.serve(t, nexuscaller.Endpoint, defaultTaskQueue, h.kafkaCfg)
 	return h
 }
 
-// serve runs an Outbound Connector for cfg's topic on taskQueue, behind a Nexus endpoint, as one
-// process of main would.
+// serve runs an Outbound Connector allowing the customers and orders topics on taskQueue, behind a
+// Nexus endpoint, as one process of main would.
 func (h harness) serve(t *testing.T, endpoint, taskQueue string, cfg kafka.Config) {
 	t.Helper()
 	testenv.Endpoint(t, h.connector, endpoint, testenv.ConnectorNamespace, taskQueue)
 	writer, err := kafka.NewWriter(cfg)
 	require.NoError(t, err)
 	t.Cleanup(writer.Close)
-	w := newWorker(h.connector, taskQueue, &topicWriter{writer: writer, topic: cfg.Topic})
+	w := newWorker(h.connector, taskQueue, newTopicWriter(writer, []string{testenv.Topic, testenv.OrdersTopic}))
 	require.NoError(t, w.Start())
 	t.Cleanup(w.Stop)
 }
 
-// write writes through CustomersEndpoint.
+// write writes to the customers topic through Endpoint.
 func (h harness) write(t *testing.T, messages ...string) {
 	t.Helper()
-	h.writeTo(t, nexuscaller.CustomersEndpoint, messages...)
+	h.writeTo(t, testenv.Topic, messages...)
 }
 
-func (h harness) writeTo(t *testing.T, endpoint string, messages ...string) {
+func (h harness) writeTo(t *testing.T, topic string, messages ...string) {
 	t.Helper()
 	run, err := h.test.ExecuteWorkflow(context.Background(), client.StartWorkflowOptions{TaskQueue: nexuscaller.TaskQueue},
-		nexuscaller.WriterWorkflow, nexuscaller.WriterInput{Endpoint: endpoint, Messages: messages})
+		nexuscaller.WriterWorkflow, nexuscaller.WriterInput{Endpoint: nexuscaller.Endpoint, Topic: topic, Messages: messages})
 	require.NoError(t, err)
 	var written int64
 	require.NoError(t, run.Get(context.Background(), &written))
 	require.Equal(t, int64(len(messages)), written)
 }
 
-// consume reads the first n messages in cfg's topic, from every partition, without a consumer
-// group.
+// consume reads the first n messages in the customers topic, from every partition, without a
+// consumer group.
 func consume(t *testing.T, cfg kafka.Config, n int) []*kgo.Record {
 	t.Helper()
-	cl, err := kgo.NewClient(kgo.SeedBrokers(cfg.Brokers...), kgo.ConsumeTopics(cfg.Topic),
+	return consumeTopic(t, cfg, testenv.Topic, n)
+}
+
+// consumeTopic reads the first n messages in topic, from every partition, without a consumer group.
+func consumeTopic(t *testing.T, cfg kafka.Config, topic string, n int) []*kgo.Record {
+	t.Helper()
+	cl, err := kgo.NewClient(kgo.SeedBrokers(cfg.Brokers...), kgo.ConsumeTopics(topic),
 		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()))
 	require.NoError(t, err)
 	defer cl.Close()
@@ -142,11 +149,11 @@ func TestEndToEnd_Write(t *testing.T) {
 func TestEndToEnd_Rejected(t *testing.T) {
 	h := newHarness(t)
 	cfg, refused := testenv.Refusing(t, func(int32) bool { return true }, kerr.TopicAuthorizationFailed)
-	h.serve(t, nexuscaller.CustomersEndpoint, defaultTaskQueue, cfg)
+	h.serve(t, nexuscaller.Endpoint, defaultTaskQueue, cfg)
 
-	in := kafkaapi.WriteInput{Messages: []kafkaapi.Message{{Value: []byte("m")}}}
+	in := kafkaapi.WriteInput{Topic: testenv.Topic, Messages: []kafkaapi.Message{{Value: []byte("m")}}}
 	run, err := h.test.ExecuteWorkflow(context.Background(), client.StartWorkflowOptions{TaskQueue: nexuscaller.TaskQueue},
-		writeWithin, nexuscaller.CustomersEndpoint, in, time.Minute)
+		writeWithin, nexuscaller.Endpoint, in, time.Minute)
 	require.NoError(t, err)
 	err = run.Get(context.Background(), nil)
 	requireErrorType(t, err, ErrorTypeRejected)
@@ -160,16 +167,16 @@ func TestEndToEnd_Rejected(t *testing.T) {
 func TestEndToEnd_PartlyRejected(t *testing.T) {
 	h := newHarness(t)
 	cfg, _ := testenv.Refusing(t, func(p int32) bool { return p == 1 }, kerr.MessageTooLarge)
-	h.serve(t, nexuscaller.CustomersEndpoint, defaultTaskQueue, cfg)
+	h.serve(t, nexuscaller.Endpoint, defaultTaskQueue, cfg)
 
 	const n = 30
-	in := kafkaapi.WriteInput{}
+	in := kafkaapi.WriteInput{Topic: testenv.Topic}
 	for i := range n {
 		// Keys spread the messages over the partitions.
 		in.Messages = append(in.Messages, kafkaapi.Message{Key: fmt.Appendf(nil, "key-%d", i), Value: fmt.Appendf(nil, "%d", i)})
 	}
 	run, err := h.test.ExecuteWorkflow(context.Background(), client.StartWorkflowOptions{TaskQueue: nexuscaller.TaskQueue},
-		writeWithin, nexuscaller.CustomersEndpoint, in, time.Minute)
+		writeWithin, nexuscaller.Endpoint, in, time.Minute)
 	require.NoError(t, err)
 	err = run.Get(context.Background(), nil)
 	requireErrorType(t, err, ErrorTypeRejected)
@@ -197,15 +204,15 @@ func TestEndToEnd_PartlyRejected(t *testing.T) {
 func TestEndToEnd_PartlyWritten(t *testing.T) {
 	h := newHarness(t)
 	cfg, refused := testenv.Refusing(t, func(p int32) bool { return p == 1 }, kerr.NotEnoughReplicas)
-	h.serve(t, nexuscaller.CustomersEndpoint, defaultTaskQueue, cfg)
+	h.serve(t, nexuscaller.Endpoint, defaultTaskQueue, cfg)
 
 	const n = 30
-	in := kafkaapi.WriteInput{}
+	in := kafkaapi.WriteInput{Topic: testenv.Topic}
 	for i := range n {
 		in.Messages = append(in.Messages, kafkaapi.Message{Key: fmt.Appendf(nil, "key-%d", i), Value: fmt.Appendf(nil, "%d", i)})
 	}
 	run, err := h.test.ExecuteWorkflow(context.Background(), client.StartWorkflowOptions{TaskQueue: nexuscaller.TaskQueue},
-		writeWithin, nexuscaller.CustomersEndpoint, in, 2*time.Minute)
+		writeWithin, nexuscaller.Endpoint, in, 2*time.Minute)
 	require.NoError(t, err)
 	err = run.Get(context.Background(), nil)
 	requireErrorType(t, err, ErrorTypePartlyWritten)
@@ -247,11 +254,11 @@ func TestEndToEnd_RetriedUntilCallerTimeout(t *testing.T) {
 	h := newHarness(t)
 	unreachable := h.kafkaCfg
 	unreachable.Brokers = []string{"127.0.0.1:1"} // nothing listens on port 1
-	h.serve(t, nexuscaller.CustomersEndpoint, defaultTaskQueue, unreachable)
+	h.serve(t, nexuscaller.Endpoint, defaultTaskQueue, unreachable)
 
-	in := kafkaapi.WriteInput{Messages: []kafkaapi.Message{{Value: []byte("m")}}}
+	in := kafkaapi.WriteInput{Topic: testenv.Topic, Messages: []kafkaapi.Message{{Value: []byte("m")}}}
 	run, err := h.test.ExecuteWorkflow(context.Background(), client.StartWorkflowOptions{TaskQueue: nexuscaller.TaskQueue},
-		writeWithin, nexuscaller.CustomersEndpoint, in, 25*time.Second)
+		writeWithin, nexuscaller.Endpoint, in, 25*time.Second)
 	require.NoError(t, err)
 
 	// While it retries, the reason is the caller's pending operation's last attempt failure. The
@@ -270,20 +277,38 @@ func TestEndToEnd_RetriedUntilCallerTimeout(t *testing.T) {
 	require.ErrorAs(t, err, &timeoutErr, err.Error())
 }
 
-// Two Outbound Connectors serve two topics through two endpoints, as two processes of main would,
-// and each endpoint writes to its own topic.
-func TestEndToEnd_TwoEndpointsTwoTopics(t *testing.T) {
-	h := newHarness(t)
-	h.serve(t, nexuscaller.CustomersEndpoint, defaultTaskQueue, h.kafkaCfg)
-	ordersCfg := h.kafkaCfg
-	ordersCfg.Topic = testenv.OrdersTopic
-	h.serve(t, nexuscaller.OrdersEndpoint, defaultTaskQueue+"-orders", ordersCfg)
-
-	h.writeTo(t, nexuscaller.CustomersEndpoint, "event0", "event1")
-	h.writeTo(t, nexuscaller.OrdersEndpoint, "order0")
+// One Outbound Connector allows two topics behind one endpoint, and each write lands in the topic
+// it names.
+func TestEndToEnd_TwoTopics(t *testing.T) {
+	h := start(t)
+	h.writeTo(t, testenv.Topic, "event0", "event1")
+	h.writeTo(t, testenv.OrdersTopic, "order0")
 
 	require.ElementsMatch(t, []string{"event0", "event1"}, values(consume(t, h.kafkaCfg, 2)))
-	require.Equal(t, []string{"order0"}, values(consume(t, ordersCfg, 1)))
+	require.Equal(t, []string{"order0"}, values(consumeTopic(t, h.kafkaCfg, testenv.OrdersTopic, 1)))
+}
+
+// A write to a topic the Outbound Connector doesn't allow, even one that exists in Kafka, fails at
+// once with Rejected, listing every message, and writes nothing. The error never lists the topics
+// it does allow.
+func TestEndToEnd_TopicNotAllowed(t *testing.T) {
+	h := start(t)
+	in := kafkaapi.WriteInput{Topic: testenv.DeadLetterTopic, Messages: []kafkaapi.Message{{Value: []byte("a")}, {Value: []byte("b")}}}
+	run, err := h.test.ExecuteWorkflow(context.Background(), client.StartWorkflowOptions{TaskQueue: nexuscaller.TaskQueue},
+		writeWithin, nexuscaller.Endpoint, in, time.Minute)
+	require.NoError(t, err)
+	err = run.Get(context.Background(), nil)
+	requireErrorType(t, err, ErrorTypeRejected)
+	require.Contains(t, err.Error(), `topic "customers-dead-letters" isn't one this Outbound Connector writes to`)
+	require.NotContains(t, err.Error(), testenv.OrdersTopic, "the allowed topics aren't shown")
+	require.Equal(t, []int64{0, 1}, failedIndexes(t, err))
+
+	cl, err := kgo.NewClient(kgo.SeedBrokers(h.kafkaCfg.Brokers...))
+	require.NoError(t, err)
+	defer cl.Close()
+	ends, err := kadm.NewClient(cl).ListEndOffsets(context.Background(), testenv.DeadLetterTopic, testenv.Topic, testenv.OrdersTopic)
+	require.NoError(t, err)
+	ends.Each(func(o kadm.ListedOffset) { require.Zero(t, o.Offset, "nothing written to %s", o.Topic) })
 }
 
 // With encryption, the caller's write input reaches Temporal only encrypted. The Outbound
@@ -306,7 +331,7 @@ func TestEndToEnd_EncryptedWrite(t *testing.T) {
 	writer, err := kafka.NewWriter(kafkaCfg)
 	require.NoError(t, err)
 	t.Cleanup(writer.Close)
-	w := newWorker(encryptedConnector, taskQueue, &topicWriter{writer: writer, topic: kafkaCfg.Topic})
+	w := newWorker(encryptedConnector, taskQueue, newTopicWriter(writer, []string{testenv.Topic}))
 	require.NoError(t, w.Start())
 	t.Cleanup(w.Stop)
 
@@ -318,7 +343,7 @@ func TestEndToEnd_EncryptedWrite(t *testing.T) {
 	t.Cleanup(cw.Stop)
 
 	run, err := caller.ExecuteWorkflow(context.Background(), client.StartWorkflowOptions{TaskQueue: callerQueue},
-		nexuscaller.WriterWorkflow, nexuscaller.WriterInput{Endpoint: endpoint, Messages: []string{"secret-1"}})
+		nexuscaller.WriterWorkflow, nexuscaller.WriterInput{Endpoint: endpoint, Topic: testenv.Topic, Messages: []string{"secret-1"}})
 	require.NoError(t, err)
 	var written int64
 	require.NoError(t, run.Get(context.Background(), &written))

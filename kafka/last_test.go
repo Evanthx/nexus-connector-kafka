@@ -12,7 +12,7 @@ func readLast(t *testing.T, cfg Config) (string, int64, bool) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	rec, ok, err := ReadLast(ctx, cfg)
+	rec, ok, err := ReadLast(ctx, cfg, testTopic)
 	require.NoError(t, err)
 	return string(rec.Value), rec.Partition, ok
 }
@@ -45,9 +45,8 @@ func TestReadLast_ReturnsTheNewestMessageEveryTime(t *testing.T) {
 
 func TestReadLast_UnknownTopic(t *testing.T) {
 	cfg := newCluster(t)
-	cfg.Topic = "missing"
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_, _, err := ReadLast(ctx, cfg)
+	_, _, err := ReadLast(ctx, cfg, "missing")
 	require.ErrorContains(t, err, "UNKNOWN_TOPIC_OR_PARTITION")
 }

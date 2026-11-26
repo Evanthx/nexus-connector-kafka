@@ -5,10 +5,12 @@
 Both programs log a configuration report at startup: every setting, defaults marked, the password
 shown only as set or not set, and what the program will do. Read it back to confirm the setup.
 
-Then the program waits for Kafka. It logs a warning every 5 seconds until Kafka answers:
+Then the program waits for Kafka and every topic it uses: the Outbound Connector's `KAFKA_TOPICS`,
+and every route's topic and dead-letter topic for the Inbound Connector. Nothing starts until Kafka
+has them all. It logs a warning every 5 seconds, naming the topics it can't see yet:
 
 ```
-WARN  Can't reach Kafka or see the topic yet; retrying  reason=...
+WARN  Can't reach Kafka or see these topics yet; retrying  topics=orders,dead-letters error=...
 ```
 
 Common reasons:
@@ -22,9 +24,13 @@ Common reasons:
 | `i/o timeout` with TLS on | The broker's port doesn't use TLS. | Unset `KAFKA_TLS`, or use the broker's TLS port. |
 | `certificate is not trusted` or `certificate signed by unknown authority` | The brokers' certificate isn't from a CA the program trusts. | Set `KAFKA_TLS_SERVER_CA_CERT_PATH` to the CA's certificate. |
 | `certificate required` or `bad certificate` | Kafka needs a client certificate (mTLS), or refused the one given. | Set or check `KAFKA_TLS_CLIENT_CERT_PATH` and `KAFKA_TLS_CLIENT_KEY_PATH`. |
-| `UNKNOWN_TOPIC_OR_PARTITION` | Topic doesn't exist. | Create the topic or check `KAFKA_TOPIC`. |
+| `UNKNOWN_TOPIC_OR_PARTITION` | A topic named in `topics=` doesn't exist. | Create it, or check `KAFKA_TOPICS` or the routes. |
 
-Once Kafka answers, it logs `Connected to Kafka brokers=... topic=... cluster=...`.
+A topic Kafka marks internal (such as `__consumer_offsets`) stops the program at once, with
+`is a topic Kafka keeps for itself (internal)`: remove it from `KAFKA_TOPICS` or the routes. Topics
+whose names merely start with `_` are fine.
+
+Once Kafka has every topic, it logs `Connected to Kafka brokers=... topics=... cluster=...`.
 
 Before waiting for Kafka, both programs verify their configuration and connect to Temporal.
 If anything fails, the program reports every problem in one message rather than stopping at the
@@ -33,14 +39,18 @@ first:
 ```
 The Outbound Connector can't start:
 Invalid Outbound Connector configuration:
-  - set KAFKA_TOPIC: the topic to serve
+  - set KAFKA_TOPICS: the topics callers may write to, comma-separated
 Failed to connect to Temporal:
   - failed reaching server: ... connection refused
 ```
 
 To find these problems before starting either program, use the
 [setup page](setup.md#work-out-your-settings-in-a-browser) (`make configui`): its **Test** makes
-the same checks, and connects to Kafka and reads the topic's last message.
+the same checks, and connects to Kafka and reads each topic's last message.
+
+The Inbound Connector's routes are checked the same way, every problem at once, each naming its
+route, such as `routes[1] (customers): set endpoint: the Nexus endpoint to deliver to`. Invalid JSON
+names the line and column.
 
 ## After startup: reading the log
 
@@ -55,7 +65,9 @@ that stops moving says why:
   show each rebalance. `This Inbound Connector lost partitions` (WARN) means its group session
   ended, such as when Kafka was unreachable; it rejoins by itself, and the next `gave ...
   partitions` line shows it has.
-- `Waiting for messages` (INFO), every `INBOUND_STATUS_INTERVAL` (5 minutes by default) with
+- Each route's lines from the Inbound Connector carry `topic=`, so one route can be told from
+  another.
+- `Waiting for messages` (INFO), for each route, every `INBOUND_STATUS_INTERVAL` (5 minutes by default) with
   nothing delivered, lists the partitions it has and when it last delivered. Partitions and no
   errors means the topic is quiet. `no partitions` means the group gave it none: other Inbound
   Connectors in the group have them all, or the group hasn't finished joining; look for the group's
@@ -68,7 +80,7 @@ A failure that retrying can't fix ends the operation at once, with Kafka's messa
 
 | Type | Cause | Fix |
 |---|---|---|
-| `Rejected` | Kafka refused some or all of a write's messages for good, such as a message over the broker's size limit, or `TOPIC_AUTHORIZATION_FAILED`. | Fix the listed messages, or the Kafka login's permissions on the topic, and resend only those. |
+| `Rejected` | Kafka refused some or all of a write's messages for good, such as a message over the broker's size limit, or `TOPIC_AUTHORIZATION_FAILED`; or the write named a topic the Outbound Connector doesn't allow (`topic "x" isn't one this Outbound Connector writes to`; nothing was written, and every message is listed). | Fix the listed messages, the Kafka login's permissions on the topic, or the topic name (or add it to `KAFKA_TOPICS` and restart), and resend only those. |
 | `PartlyWritten` | Some messages were written and the rest failed for a reason that may pass, such as a partition without enough in-sync replicas. The write isn't retried as a whole, which would write the others twice. | Resend only the listed messages. |
 
 Both list, in their details (`WriteFailures`), every message not written, by index, with Kafka's
@@ -79,7 +91,8 @@ one that did.
 A broker's `UNKNOWN_SERVER_ERROR`, and the idempotent producer's sequence and epoch errors, which
 kgo marks final, are tried again within the same attempt, at once and then halfway to its
 deadline, before they count as `Rejected`. A write that wrote nothing and failed only for reasons
-that may pass (Kafka unreachable, slow, or not acknowledging) is retried by the caller's
+that may pass (Kafka unreachable, slow, or not acknowledging, or a listed topic deleted after
+startup) is retried by the caller's
 Temporal server, with its own backoff, until the caller's Nexus operation times out.
 
 ### A write times out with no Kafka error
@@ -104,7 +117,7 @@ consumer group gets every message, so separate groups can read the same topic in
 
 **Kafka forgets an idle group's offsets** after `offsets.retention.minutes` (7 days by default)
 since the group's last commit. A consumer group whose Inbound Connectors all stop for longer starts
-again where `KAFKA_START_FROM` says.
+again where the route's `startFrom` says.
 
 ## When an Inbound Connector operation fails
 
@@ -143,18 +156,22 @@ doesn't run them again either: a redelivered batch with the same ID counts as de
 
 Only messages too large for an operation's input go to the dead-letter topic. Every other error
 (Temporal unreachable, endpoint missing, standalone Nexus operations not enabled) is retried
-forever. The stream waits rather than drain working messages into dead letters. Read the
-Inbound Connector's log to diagnose a stalled stream.
+forever. The route waits rather than drain working messages into dead letters; the other routes
+carry on. Read the Inbound Connector's log, for the route's `topic=`, to diagnose a stalled stream.
+
+An error a route can't recover from, such as its Kafka client closing, stops every route: each
+leaves its consumer group, and the process exits with the error, for your process manager to
+restart.
 
 ## The Inbound Connector falls behind the topic
 
-If `INBOUND_MAX_MESSAGES_PER_MINUTE` is set and messages arrive faster than that, the Inbound
-Connector sends at the limit and the rest wait in Kafka: the consumer group's lag grows, and the
+If a route's `maxMessagesPerMinute` is set and messages arrive faster than that, the route sends
+at the limit and the rest wait in Kafka: the consumer group's lag grows, and the
 log shows batches delivered steadily with no errors. That is the limit working. Raise it, or run
-more Inbound Connectors in the same group (up to one per partition; the limit is per process). The
-startup report's `INBOUND_MAX_MESSAGES_PER_MINUTE` line shows the limit in use.
+more Inbound Connectors with the same routes (up to one per partition; the limit is per route and
+per process). The startup report's `maxMessagesPerMinute` line for the route shows the limit in use.
 
-## A partition stopped moving with `INBOUND_ORDERING=partition`
+## A partition stopped moving with `"ordering": "partition"`
 
 In ordered mode, a partition waits for its operation to complete. The status line says `Still
 delivering a batch` with how long: the receiver's operation is still running, such as a workflow
@@ -170,7 +187,8 @@ temporal nexus operation terminate --namespace connectors --operation-id <operat
 
 ## Known limitations
 
-- **One topic** per Outbound Connector or Inbound Connector process, set by `KAFKA_TOPIC`.
+- **No wildcards.** `KAFKA_TOPICS` and the routes name exact topics.
+- **Changing topics takes a restart**, for both programs.
 - **No AWS IAM, OAuth, or Kerberos login yet.** TLS, a username and password (SCRAM-SHA-256,
   SCRAM-SHA-512, PLAIN), and client certificates (mTLS) are supported. See [Connecting to
   Kafka](setup.md#connecting-to-kafka).

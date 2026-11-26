@@ -2,12 +2,12 @@
 # Prints every message in a topic, with its headers, then exits. Use it to see the dead-letter
 # topic, or the dedupe-id headers on messages the Outbound Connector wrote.
 #
-# Usage: test/kafka/scripts/consume.sh [topic]    (default: the topic in .env)
+# Usage: test/kafka/scripts/consume.sh [topic]    (default: customers)
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 set -a; source .env; set +a
-TOPIC="${1:-$KAFKA_TOPIC}"
+TOPIC="${1:-customers}"
 
 scripts/client-config.sh
 docker exec nexus-connector-kafka /opt/kafka/bin/kafka-console-consumer.sh \

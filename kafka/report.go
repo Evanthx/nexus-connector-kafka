@@ -33,17 +33,16 @@ func (c Config) Settings(env settings.Env) report.Section {
 	}
 	return report.Section{Title: "Kafka", Settings: []report.Setting{
 		{Name: "KAFKA_BROKERS", Value: strings.Join(c.Brokers, ",")},
-		{Name: "KAFKA_TOPIC", Value: c.Topic},
 		{Name: "KAFKA_USERNAME", Value: login},
 		{Name: "KAFKA_TLS", Value: tlsLine},
 		report.Env(env, "KAFKA_CLIENT_LOG_LEVEL", strings.ToLower(c.clientLogLevel().String())),
 	}}
 }
 
-// StartFromMeaning says in a sentence where a consumer group starts reading a partition it has no
+// Meaning says in a sentence where a consumer group starts reading a partition it has no
 // committed offset for.
-func (c Config) StartFromMeaning() string {
-	if c.StartFrom == StartFromNewest {
+func (s StartFrom) Meaning() string {
+	if s == StartFromNewest {
 		return "starts at the end, so only messages written from then on are read"
 	}
 	return "starts at the oldest message still in the topic"

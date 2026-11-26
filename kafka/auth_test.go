@@ -17,7 +17,7 @@ import (
 func identifyWithin(cfg Config) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_, err := Identify(ctx, cfg)
+	_, err := Identify(ctx, cfg, testTopic)
 	return err
 }
 
@@ -29,7 +29,7 @@ func TestLogin(t *testing.T) {
 				kfake.EnableSASL(), kfake.Superuser(string(m), "connector", "secret"))
 			require.NoError(t, err)
 			t.Cleanup(c.Close)
-			cfg := Config{Brokers: c.ListenAddrs(), Topic: testTopic, Username: "connector", Password: "secret", Mechanism: m}
+			cfg := Config{Brokers: c.ListenAddrs(), Username: "connector", Password: "secret", Mechanism: m}
 			require.NoError(t, identifyWithin(cfg))
 
 			wrong := cfg
@@ -48,7 +48,7 @@ func TestLogin_DefaultIsScramSHA256(t *testing.T) {
 		kfake.EnableSASL(), kfake.Superuser(string(ScramSHA256), "connector", "secret"))
 	require.NoError(t, err)
 	t.Cleanup(c.Close)
-	require.NoError(t, identifyWithin(Config{Brokers: c.ListenAddrs(), Topic: testTopic, Username: "connector", Password: "secret"}))
+	require.NoError(t, identifyWithin(Config{Brokers: c.ListenAddrs(), Username: "connector", Password: "secret"}))
 }
 
 func TestTLS(t *testing.T) {
@@ -56,7 +56,7 @@ func TestTLS(t *testing.T) {
 	c, err := kfake.NewCluster(kfake.NumBrokers(1), kfake.SeedTopics(1, testTopic), kfake.TLS(certs.Server(t, false)))
 	require.NoError(t, err)
 	t.Cleanup(c.Close)
-	cfg := Config{Brokers: c.ListenAddrs(), Topic: testTopic}
+	cfg := Config{Brokers: c.ListenAddrs()}
 
 	tlsCfg, err := TLSFiles{ServerCA: certs.CA}.Load()
 	require.NoError(t, err)
@@ -78,7 +78,7 @@ func TestMTLS(t *testing.T) {
 	c, err := kfake.NewCluster(kfake.NumBrokers(1), kfake.SeedTopics(1, testTopic), kfake.TLS(certs.Server(t, true)))
 	require.NoError(t, err)
 	t.Cleanup(c.Close)
-	cfg := Config{Brokers: c.ListenAddrs(), Topic: testTopic}
+	cfg := Config{Brokers: c.ListenAddrs()}
 
 	withCert, err := TLSFiles{ServerCA: certs.CA, ClientCert: certs.ClientCert, ClientKey: certs.ClientKey}.Load()
 	require.NoError(t, err)
@@ -106,7 +106,7 @@ func TestTLSWithLogin(t *testing.T) {
 	t.Cleanup(c.Close)
 	tlsCfg, err := TLSFiles{ServerCA: certs.CA}.Load()
 	require.NoError(t, err)
-	cfg := Config{Brokers: c.ListenAddrs(), Topic: testTopic, Username: "connector", Password: "secret", Mechanism: Plain, TLS: tlsCfg}
+	cfg := Config{Brokers: c.ListenAddrs(), Username: "connector", Password: "secret", Mechanism: Plain, TLS: tlsCfg}
 	require.NoError(t, identifyWithin(cfg))
 }
 

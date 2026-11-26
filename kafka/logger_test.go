@@ -47,7 +47,7 @@ func TestClientLogger_BrokerFailuresAreLogged(t *testing.T) {
 	buf := captureLog(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_, err := Identify(ctx, Config{Brokers: []string{"127.0.0.1:1"}, Topic: "t"})
+	_, err := Identify(ctx, Config{Brokers: []string{"127.0.0.1:1"}}, "t")
 	require.Error(t, err)
 	require.Eventually(t, func() bool {
 		out := buf.String()

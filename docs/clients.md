@@ -9,9 +9,10 @@ fields, and a bad request fails in your code, with the field named, before it is
 The Kafka connector's operations are defined in one file,
 [`kafka.nexusrpc.yaml`](../kafka.nexusrpc.yaml), its *contract*. It names two services:
 
-- **`KafkaService`**, served by the Outbound Connector: `write`.
+- **`KafkaService`**, served by the Outbound Connector: `write`, which names the topic to write to
+  (`WriteInput.topic`, required; one the Outbound Connector allows).
 - **`KafkaMessageReceiver`**, which the Inbound Connector calls: `receive`, one call per partition
-  batch. Implement this service to receive the topic's messages.
+  batch. Implement this service to receive a route's messages.
 
 The contract also defines every input and output type as JSON Schema. It is the source of truth for
 what a request may contain; the Outbound Connector rejects anything it doesn't allow.

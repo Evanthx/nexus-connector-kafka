@@ -103,7 +103,7 @@ converter to read the messages: `temporal.NewDefaultFailureConverter` with your 
 `EncodeCommonAttributes: true`; the demo's ENCRYPTION blocks set it. Without it, a worker sees `Encoded failure` and no error is
 raised. The Temporal UI shows the messages through the codec server; without it, `Encoded failure`.
 A worker that encrypts errors reads unencrypted ones as they are, so the two can be mixed.
-In ordered mode (`INBOUND_ORDERING=partition`), your receiver's errors are encrypted only if its own
+In ordered mode (a route with `"ordering": "partition"`), your receiver's errors are encrypted only if its own
 failure converter encrypts them, as the demo receiver's does.
 
 ## Try it in the demo
@@ -135,7 +135,7 @@ for the demo only: a real codec gets its keys from a key management service.
    ```
 
 4. Run the demo as written, with `DEMO_ENCRYPTION_KEY` set in the receiver's and the test caller's
-   terminals, and with this in the Inbound Connector's and each Outbound Connector's:
+   terminals, and with this in the Inbound Connector's and the Outbound Connector's:
 
    ```bash
    export TEMPORAL_CODEC_ENDPOINT=http://localhost:8089

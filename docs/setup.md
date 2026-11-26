@@ -13,8 +13,9 @@ Connector. For a guided walkthrough with a local dev server and Docker Kafka, se
 
 ## Run the Inbound Connector
 
-The Inbound Connector streams every message from a Kafka topic into Temporal as it arrives, by
-starting one standalone Nexus operation per partition batch through a Nexus endpoint.
+The Inbound Connector streams every message from one or more Kafka topics into Temporal as it
+arrives. Each topic is a **route**: for each, it joins a consumer group and starts one standalone
+Nexus operation per partition batch through the route's Nexus endpoint.
 
 ### 1. Implement the receiver
 
@@ -22,17 +23,21 @@ Implement `KafkaMessageReceiver.receive` — a Nexus service you write, in any T
 input is `ReceiveInput{records: [Record...]}`: messages from one partition in offset order
 (schema in `kafka.nexusrpc.yaml`; Go types in `generated/kafkaapi`; bytes are base64 in JSON).
 Its output is empty. Back it with a workflow so the work is durable.
-`test/inboundreceiver/main.go` is a working Go example to copy.
+`test/inboundreceiver/main.go` is a working Go example to copy. One receiver can serve several
+routes (each record names its `topic`), or each route can have its own.
 
 Make the receiver idempotent. Delivery is at least once, and batches can overlap when
 redelivered. Drop messages already handled using `topic` + `partition` + `offset`.
 
-### 2. Create a dead-letter topic
+### 2. Create the dead-letter topics
 
-Create a topic in Kafka for undeliverable messages, or plan to set `DELETE_DEAD_LETTERS=true`.
-The Inbound Connector won't start with neither, or both.
+For each route, create a topic in Kafka for undeliverable messages, or plan to set
+`deleteDeadLetters` to `true`. A route needs one or the other, not both. Routes can share a
+dead-letter topic, but it can't be a topic any route streams.
 
-### 3. Create the Nexus endpoint
+### 3. Create the Nexus endpoints
+
+One per receiver:
 
 ```bash
 temporal operator nexus endpoint create \
@@ -44,17 +49,21 @@ temporal operator nexus endpoint create \
 On Temporal Cloud, create it in the Cloud UI or with `tcld`, and allow the Inbound Connector's
 namespace to call it.
 
-### 4. Set environment variables and run
+### 4. Write the routes, set environment variables and run
+
+The routes are JSON, in `INBOUND_CONFIG` or in a file named by `INBOUND_CONFIG_FILE`. See
+[Inbound routes](#inbound-routes). The smallest has one route:
+
+```json
+{"routes": [{"topic": "orders", "endpoint": "orders-receiver", "deadLetterTopic": "orders-dlq"}]}
+```
 
 | Variable | Set it to |
 |---|---|
 | `KAFKA_BROKERS` | Your Kafka brokers, comma-separated `host:port`. |
-| `KAFKA_TOPIC` | The topic to stream. |
 | `KAFKA_USERNAME`, `KAFKA_PASSWORD` | Your Kafka username and password, if your Kafka needs a login. See [Connecting to Kafka](#connecting-to-kafka). |
 | `KAFKA_TLS` | `true` if your Kafka needs encrypted connections, as hosted Kafka services do. |
-| `KAFKA_GROUP` | The consumer group the Inbound Connector joins. Inbound Connectors with the same consumer group share the topic's partitions. |
-| `KAFKA_DEAD_LETTER_TOPIC` | An existing topic for messages that can't be delivered. Or leave it unset and set `DELETE_DEAD_LETTERS=true` to delete them instead. |
-| `INBOUND_ENDPOINT` | The Nexus endpoint to deliver to. It routes to the service that receives the messages, `KafkaMessageReceiver.receive`. |
+| `INBOUND_CONFIG` or `INBOUND_CONFIG_FILE` | The routes, as JSON, or the path of a file holding them. Exactly one. |
 | `TEMPORAL_ADDRESS`, `TEMPORAL_NAMESPACE` | Your Temporal server and namespace (default `connectors`), plus `TEMPORAL_API_KEY` for Temporal Cloud. The namespace needs standalone Nexus operations. |
 
 To work them out and test them in a browser first, use the
@@ -68,23 +77,37 @@ go run ./inbound
 # or build first: go build -o bin/ ./inbound && ./bin/inbound
 ```
 
-Scale out by running more Inbound Connectors with the same `KAFKA_GROUP`, up to one per partition.
+The Inbound Connector waits until Kafka has every route's topic and dead-letter topic before it
+starts any route. If one route stops on an error, the others stop too, every consumer group is
+left, and the process exits with an error, for your process manager to restart. Changing the routes
+takes a restart.
+
+Scale out by running more Inbound Connectors with the same routes, up to one per partition of the
+busiest topic. Every process runs every route; Inbound Connectors with the same route (topic and
+endpoint, or `group`) share its consumer group. To give a busy topic processes of its own, run it
+in a separate deployment with its own routes.
 
 ## Run the Outbound Connector
 
-The Outbound Connector serves the topic as `KafkaService` with a `write` operation. To consume the
-topic, use the Inbound Connector.
+The Outbound Connector serves `KafkaService` with a `write` operation. Each write names its topic,
+which must be one the Outbound Connector allows (`KAFKA_TOPICS`). To consume a topic, use the
+Inbound Connector.
 
 ### 1. Set environment variables and run
 
 | Variable | Set it to |
 |---|---|
 | `KAFKA_BROKERS` | Your Kafka brokers, comma-separated `host:port`. |
-| `KAFKA_TOPIC` | The topic this Outbound Connector writes to. Callers can't choose another. |
+| `KAFKA_TOPICS` | The topics callers may write to, comma-separated exact names. A write to any other topic is `Rejected` and writes nothing. |
 | `KAFKA_USERNAME`, `KAFKA_PASSWORD` | Your Kafka username and password, if your Kafka needs a login. See [Connecting to Kafka](#connecting-to-kafka). |
 | `KAFKA_TLS` | `true` if your Kafka needs encrypted connections, as hosted Kafka services do. |
-| `NEXUS_TASK_QUEUE` | The task queue to serve (default `nexus-connector-kafka`). Give each Outbound Connector for a different topic its own. |
+| `NEXUS_TASK_QUEUE` | The task queue to serve (default `nexus-connector-kafka`). Give each Outbound Connector in a namespace its own. |
 | `TEMPORAL_ADDRESS`, `TEMPORAL_NAMESPACE` | Your Temporal server and namespace (default `connectors`), plus `TEMPORAL_API_KEY` for Temporal Cloud. The Outbound Connector needs no special server feature. |
+
+Everyone who can call the endpoint can write to every topic on the list. For callers with
+different access, run separate Outbound Connectors, each with its own `KAFKA_TOPICS` and
+`NEXUS_TASK_QUEUE`, behind endpoints of their own. Every listed topic must exist when the Outbound
+Connector starts; topics Kafka marks internal are refused. Changing the list takes a restart.
 
 To work them out and test them in a browser first, use the [setup
 page](#work-out-your-settings-in-a-browser). Every variable the Outbound Connector reads is in
@@ -143,11 +166,16 @@ shown again or saved. **Test** checks:
   once.
 - **Temporal**: it connects as the program would, then checks that the namespace exists. For the
   Outbound Connector, it checks that a Nexus endpoint targets the namespace and `NEXUS_TASK_QUEUE`,
-  and shows the command to create one if none does. For the Inbound Connector, it checks that the endpoint
-  `INBOUND_ENDPOINT` names exists, and shows where it leads.
-- **Kafka**: it connects with the programs' own Kafka code, finds the topic, and reads its last
-  message, without joining a consumer group or committing anything. A failure shows Kafka's whole
-  error. For the Inbound Connector, it also checks that `KAFKA_DEAD_LETTER_TOPIC` exists.
+  and shows the command to create one if none does.
+- **Kafka** (Outbound Connector): for each topic in `KAFKA_TOPICS`, it connects with the programs'
+  own Kafka code, finds the topic, and reads its last message, without joining a consumer group or
+  committing anything. A failure shows Kafka's whole error.
+- **Routes** (Inbound Connector), once the routes are valid: every route as resolved, with its
+  defaults filled in; that each route's endpoint exists, and where it leads; then, for each route,
+  its topic and last message, as above, and that its dead-letter topic exists.
+
+`INBOUND_CONFIG` is a text area with an **Insert example** button, which fills in an example with
+two routes, and a link to [Inbound routes](#inbound-routes).
 
 The page ends with the `export` lines to set, with a `<set NAME>` placeholder for each secret. It
 never changes the program's environment, and it only answers on localhost, since it handles
@@ -207,11 +235,94 @@ The namespace defaults to `connectors`. To use another, including `default`, set
 
 All Nexus connectors default to the same `connectors` namespace. They are kept apart by task
 queue: each serves its own (here `NEXUS_TASK_QUEUE`, default `nexus-connector-kafka`). Two
-Outbound Connectors in one namespace, such as one per topic, need different `NEXUS_TASK_QUEUE` values.
+Outbound Connectors in one namespace, such as one per group of callers, need different `NEXUS_TASK_QUEUE` values.
 
 The Inbound Connector's namespace needs **standalone Nexus operations**. Confirm with Temporal
 that they are enabled for your namespace before running it. The Outbound Connector needs no special
 server feature.
+
+## Inbound routes
+
+The Inbound Connector's topics, and how each is delivered, are JSON: in `INBOUND_CONFIG`, or in a
+file named by `INBOUND_CONFIG_FILE` (set exactly one). A file is easier to keep in version control
+and to mount from a secret or config map; the variable is handy for a one-off.
+
+The JSON has a `defaults` section, then `routes`, one per topic. A route takes each setting from
+itself, else from `defaults`, else from the built-in default in the table below. `topic`,
+`endpoint` and `group` go on each route, never in `defaults`. An empty string (`""`) or `null` is the same as
+leaving the field out. A route that sets `deadLetterTopic` or `deleteDeadLetters` replaces the other
+from `defaults`, so one route can delete its dead letters while the rest send them to a topic.
+Parsing is strict: an unknown key, or a value of the wrong type, is an error, and every problem is
+reported at once, each naming its route (`routes[1] (customers): ...`). Durations are strings, such
+as `"1s"` or `"24h"`.
+
+**Consumer groups.** A route without `group` joins `nexus-connector-kafka:<topic>:<endpoint>`. So
+Inbound Connectors delivering the same topic to the same endpoint share a group and split its
+partitions, and any other pair is kept apart. A `group` is used as it is. No two routes may end up
+with the same group, and no topic may be in two routes.
+
+This example is also the setup page's **Insert example**: `defaults` lists every field that can
+have a default, with its built-in value; the first route has only what can't come from `defaults`;
+the second sets every field, clearing the default dead-letter topic so that `deleteDeadLetters` can
+be on.
+
+```json
+{
+  "defaults": {
+    "service": "KafkaMessageReceiver",
+    "operation": "receive",
+    "startFrom": "oldest",
+    "deadLetterTopic": "dead-letters",
+    "deleteDeadLetters": false,
+    "batchSize": 100,
+    "batchTimeLimit": "0s",
+    "operationTimeout": "24h",
+    "maxInputBytes": 2031616,
+    "maxMessagesPerMinute": 0,
+    "ordering": "none"
+  },
+  "routes": [
+    { "topic": "orders", "endpoint": "orders-receiver" },
+    {
+      "topic": "customers",
+      "endpoint": "customers-receiver",
+      "group": "customers-reader",
+      "service": "KafkaMessageReceiver",
+      "operation": "receive",
+      "startFrom": "newest",
+      "deadLetterTopic": "",
+      "deleteDeadLetters": true,
+      "batchSize": 1,
+      "batchTimeLimit": "1s",
+      "operationTimeout": "1h",
+      "maxInputBytes": 1048576,
+      "maxMessagesPerMinute": 600,
+      "ordering": "partition"
+    }
+  ]
+}
+```
+
+The fields (generated from `setup/routes.go` with `make docs`):
+
+<!-- routes:start -->
+| Field | In `defaults` | Default | Meaning |
+|---|---|---|---|
+| `topic` | no: on each route | required | The topic to stream. Each topic is in one route only. |
+| `endpoint` | no: on each route | required | The Nexus endpoint the route delivers batches to. It routes to the receiver you implement, `KafkaMessageReceiver.receive`. |
+| `group` | no: on each route | `nexus-connector-kafka:<topic>:<endpoint>` | The consumer group the route joins, used as is. Inbound Connectors with the same group share the topic's partitions. Don't share it with any other consumer; no two routes may use the same group. |
+| `service` | yes | `KafkaMessageReceiver` | The Nexus service the receiver serves. |
+| `operation` | yes | `receive` | The operation started for each batch. |
+| `startFrom` | yes | `oldest` | Where a consumer group with no committed offset starts reading a partition: `oldest`, every message still in the topic, or `newest`, only messages written from then on. See [How it works](how-it-works.md#where-reading-starts). |
+| `deadLetterTopic` | yes | none | An existing topic, not one any route streams, for messages too large to deliver. Set this or `deleteDeadLetters`, not both. On a route, either one replaces the other from `defaults`. |
+| `deleteDeadLetters` | yes | `false` | `true` to log and skip messages too large to deliver, instead of writing them to `deadLetterTopic`. |
+| `batchSize` | yes | `100` | The most messages in one batch, and so in one Nexus operation per partition. `1` for one operation per message, which also rules out a message being delivered twice. |
+| `batchTimeLimit` | yes | `"0s"` (deliver as soon as there are messages) | How long a batch waits to fill, such as `"500ms"` or `"1s"`. Waiting makes fewer, fuller batches on a quiet topic, which costs fewer operations. |
+| `operationTimeout` | yes | `"24h"` | How long each operation may take, such as `"30m"` or `"24h"`. More than 0. |
+| `maxInputBytes` | yes | `2031616` (2 MiB less 64 KiB) | The largest encoded batch sent to one operation. Larger batches are split; a single larger message goes to the dead-letter topic. |
+| `maxMessagesPerMinute` | yes | `0` (no limit) | The most messages this route sends to Temporal a minute, such as `600`, spread evenly: it waits before each operation until the batch fits, and the waiting messages stay in Kafka. At least `batchSize`; `0` for no limit. The limit is per route and per process: three Inbound Connectors with `600` send up to 1,800 a minute between them. Messages sent to the dead-letter topic don't count. |
+| `ordering` | yes | `none` | `none` to start each batch's operation without waiting for the one before, as fast as possible, but a later batch can be processed before an earlier one. `partition` to process each partition's messages in order: wait for each operation to complete before starting the next for that partition, and commit only then. A failed operation isn't started again or dead-lettered: it is logged, handled in Temporal, and the partition carries on. See [Ordering](how-it-works.md#ordering). |
+<!-- routes:end -->
 
 ## Environment variables
 
@@ -228,7 +339,6 @@ there, not here.
 | Variable | Required | Default | Meaning |
 |---|---|---|---|
 | `KAFKA_BROKERS` | yes |  | The Kafka brokers to connect to, as a comma-separated list of `host:port`, such as `broker1:9092,broker2:9092`. One reachable broker is enough to find the rest. |
-| `KAFKA_TOPIC` | yes |  | The topic the program serves. One process serves one topic; run one per topic. |
 | `KAFKA_USERNAME` |  | none: no login | Your Kafka username, if Kafka needs a login. Leave it and `KAFKA_PASSWORD` unset if it doesn't. See [Connecting to Kafka](#connecting-to-kafka). |
 | `KAFKA_PASSWORD` (secret) |  | none | The password for `KAFKA_USERNAME`. The startup report shows only whether it is set. |
 | `KAFKA_SASL_MECHANISM` |  | SCRAM-SHA-256 | How Kafka checks `KAFKA_USERNAME` and `KAFKA_PASSWORD`: `SCRAM-SHA-256`, `SCRAM-SHA-512` (AWS MSK), or `PLAIN` (Confluent Cloud, Azure Event Hubs). `PLAIN` sends the password as it is, so use it with TLS. |
@@ -242,20 +352,9 @@ there, not here.
 
 | Variable | Required | Default | Meaning |
 |---|---|---|---|
-| `KAFKA_GROUP` | yes |  | The consumer group the Inbound Connector joins. Inbound Connectors with the same consumer group share the topic's partitions. Don't share it with any other consumer. |
-| `KAFKA_START_FROM` |  | oldest | Where a consumer group with no committed offset starts reading a partition: `oldest`, every message still in the topic, or `newest`, only messages written from then on. See [How it works](how-it-works.md#where-reading-starts). |
-| `KAFKA_DEAD_LETTER_TOPIC` | unless DELETE_DEAD_LETTERS is true |  | An existing topic, other than `KAFKA_TOPIC`, for messages too large to deliver. Set this or `DELETE_DEAD_LETTERS=true`, not both. |
-| `DELETE_DEAD_LETTERS` |  | false | `true` to log and skip messages too large to deliver, instead of writing them to `KAFKA_DEAD_LETTER_TOPIC`; then leave that unset. |
-| `KAFKA_BATCH_SIZE` |  | 100 | The most messages in one batch, and so in one Nexus operation per partition. `1` for one operation per message, which also rules out a message being delivered twice. |
-| `KAFKA_BATCH_TIME_LIMIT` |  | 0 (deliver as soon as there are messages) | How long a batch waits to fill, such as `500ms` or `1s`. Waiting makes fewer, fuller batches on a quiet topic, which costs fewer operations. |
-| `INBOUND_ENDPOINT` | yes |  | The Nexus endpoint the Inbound Connector delivers batches to. It routes to the receiver you implement, `KafkaMessageReceiver.receive`. |
-| `INBOUND_SERVICE` |  | KafkaMessageReceiver | The Nexus service the receiver serves. |
-| `INBOUND_OPERATION` |  | receive | The operation started for each batch. |
-| `INBOUND_OPERATION_TIMEOUT` |  | 24h | How long each operation may take, such as `30m` or `24h`. More than 0. |
-| `INBOUND_MAX_INPUT_BYTES` |  | 2031616 (2 MiB less 64 KiB) | The largest encoded batch sent to one operation. Larger batches are split; a single larger message goes to the dead-letter topic. |
-| `INBOUND_MAX_MESSAGES_PER_MINUTE` |  | no limit | The most messages this Inbound Connector sends to Temporal a minute, such as `600`, spread evenly: it waits before each operation until the batch fits, and the waiting messages stay in Kafka. A whole number, at least `KAFKA_BATCH_SIZE`; a full batch can go at once, so one minute can see up to this plus one batch. The limit is per process: three Inbound Connectors with `600` send up to 1,800 a minute between them. Messages sent to the dead-letter topic don't count. |
-| `INBOUND_ORDERING` |  | none | `none` to start each batch's operation without waiting for the one before, as fast as possible and using every worker your receiver has, but a later batch can be processed before an earlier one. `partition` to process each partition's messages in order: wait for each operation to complete before starting the next for that partition, and commit only then. At most one operation per partition runs at a time, so parallelism is the number of partitions. A failed operation isn't started again or dead-lettered: it is logged, handled in Temporal, and the partition carries on. See [Ordering](how-it-works.md#ordering). |
-| `INBOUND_STATUS_INTERVAL` |  | 5m | When nothing has been delivered for this long, such as `5m` or `1h`, the Inbound Connector logs a status line saying which partitions it has and when it last delivered, and again each interval after, so a quiet topic can be told apart from a stalled Inbound Connector. `0` to turn it off. |
+| `INBOUND_CONFIG` | unless INBOUND_CONFIG_FILE is set |  | The routes, as JSON: a `defaults` section, then `routes`, one per topic, each with its `topic` and `endpoint` and any setting that differs from `defaults`. Set this or `INBOUND_CONFIG_FILE`, not both. See [Inbound routes](#inbound-routes). |
+| `INBOUND_CONFIG_FILE` | unless INBOUND_CONFIG is set |  | The path to a file holding the routes, as `INBOUND_CONFIG` would. Set this or `INBOUND_CONFIG`, not both. |
+| `INBOUND_STATUS_INTERVAL` |  | 5m | When nothing has been delivered for this long, such as `5m` or `1h`, the Inbound Connector logs a status line for each route saying which partitions it has and when it last delivered, and again each interval after, so a quiet topic can be told apart from a stalled Inbound Connector. `0` to turn it off. |
 
 ### Temporal
 
@@ -296,7 +395,6 @@ gRPC headers sent with every call to Temporal: `TEMPORAL_GRPC_META_<NAME>` sends
 | Variable | Required | Default | Meaning |
 |---|---|---|---|
 | `KAFKA_BROKERS` | yes |  | The Kafka brokers to connect to, as a comma-separated list of `host:port`, such as `broker1:9092,broker2:9092`. One reachable broker is enough to find the rest. |
-| `KAFKA_TOPIC` | yes |  | The topic the program serves. One process serves one topic; run one per topic. |
 | `KAFKA_USERNAME` |  | none: no login | Your Kafka username, if Kafka needs a login. Leave it and `KAFKA_PASSWORD` unset if it doesn't. See [Connecting to Kafka](#connecting-to-kafka). |
 | `KAFKA_PASSWORD` (secret) |  | none | The password for `KAFKA_USERNAME`. The startup report shows only whether it is set. |
 | `KAFKA_SASL_MECHANISM` |  | SCRAM-SHA-256 | How Kafka checks `KAFKA_USERNAME` and `KAFKA_PASSWORD`: `SCRAM-SHA-256`, `SCRAM-SHA-512` (AWS MSK), or `PLAIN` (Confluent Cloud, Azure Event Hubs). `PLAIN` sends the password as it is, so use it with TLS. |
@@ -310,7 +408,8 @@ gRPC headers sent with every call to Temporal: `TEMPORAL_GRPC_META_<NAME>` sends
 
 | Variable | Required | Default | Meaning |
 |---|---|---|---|
-| `NEXUS_TASK_QUEUE` |  | nexus-connector-kafka | The task queue the Outbound Connector's Nexus endpoint targets. Give each Outbound Connector for another topic its own. |
+| `KAFKA_TOPICS` | yes |  | The topics callers may write to, as a comma-separated list of exact names, such as `orders,billing`. A write names its topic; one not on this list is refused (`Rejected`) and nothing is written. Every topic must exist when the Outbound Connector starts. Topics Kafka marks internal are refused. |
+| `NEXUS_TASK_QUEUE` |  | nexus-connector-kafka | The task queue the Outbound Connector's Nexus endpoint targets. Give each Outbound Connector in a namespace its own. |
 
 ### Temporal
 

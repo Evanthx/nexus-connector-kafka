@@ -17,7 +17,8 @@ import (
 // times out.
 const (
 	// ErrorTypeRejected: Kafka refused one or more messages for a reason retrying can't fix, for
-	// example a message larger than the broker allows.
+	// example a message larger than the broker allows, or the write named a topic the Outbound
+	// Connector doesn't write to (then nothing was written, and every message is listed).
 	ErrorTypeRejected = "Rejected"
 	// ErrorTypePartlyWritten: some messages were written and the others failed with errors
 	// retrying could fix. The write isn't retried as a whole, which would write the others again:
@@ -27,7 +28,7 @@ const (
 
 // handlerError turns an error from the kafka package into what the write operation returns:
 //
-//   - a write with a rejected message: Rejected, final;
+//   - a write to a topic not allowed, or with a rejected message: Rejected, final;
 //   - a write that wrote some messages and not others: PartlyWritten, final;
 //   - anything else, a write that wrote nothing: a retryable UNAVAILABLE handler error, so the
 //     caller's server retries the whole write.
@@ -37,7 +38,14 @@ const (
 func handlerError(err error) error {
 	var we *kafka.WriteError
 	isWriteErr := errors.As(err, &we)
+	var notAllowed *topicNotAllowed
 	switch {
+	case errors.As(err, &notAllowed):
+		every := &kafka.WriteError{Records: notAllowed.messages}
+		for i := range notAllowed.messages {
+			every.Failures = append(every.Failures, kafka.RecordFailure{Index: i, Err: notAllowed, Rejected: true})
+		}
+		return finalError(err, ErrorTypeRejected, every)
 	case errors.Is(err, kafka.ErrRejected):
 		return finalError(err, ErrorTypeRejected, we)
 	case isWriteErr && len(we.Failures) < we.Records:

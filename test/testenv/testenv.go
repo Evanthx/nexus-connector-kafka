@@ -32,13 +32,13 @@ const (
 )
 
 // Kafka starts an in-memory Kafka with Topic, DeadLetterTopic, and OrdersTopic and returns the
-// settings to reach it, for Topic.
+// settings to reach it.
 func Kafka(t *testing.T) kafka.Config {
 	t.Helper()
 	c, err := kfake.NewCluster(kfake.NumBrokers(1), kfake.SeedTopics(3, Topic, OrdersTopic), kfake.SeedTopics(1, DeadLetterTopic))
 	require.NoError(t, err)
 	t.Cleanup(c.Close)
-	return kafka.Config{Brokers: c.ListenAddrs(), Topic: Topic, StartFrom: kafka.StartFromOldest}
+	return kafka.Config{Brokers: c.ListenAddrs()}
 }
 
 // Temporal starts a dev server with both namespaces and the dynamic config the Outbound Connector

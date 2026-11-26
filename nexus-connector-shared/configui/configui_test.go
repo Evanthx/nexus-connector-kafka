@@ -38,6 +38,9 @@ var (
 			}
 			return v, nil
 		})
+	config = settings.Define(settings.Variable{
+		Name: "CONFIG", Help: "The config, as JSON.", Multiline: true, Example: "{\n  \"a\": 1\n}", HelpURL: "https://example.com/config",
+	}, settings.Text)
 	network = &settings.Section{Title: "Network", Variables: []*settings.Variable{
 		{Name: "HTTPS_PROXY", Help: "The proxy.", Default: "none", External: "gRPC", Aliases: []string{"https_proxy"}, Mask: settings.MaskURLPassword},
 		{Name: "NO_PROXY", Help: "No proxy for these.", Default: "none", External: "gRPC", Aliases: []string{"no_proxy"}},
@@ -48,7 +51,7 @@ var (
 		{Title: "Outbound Connector", Variables: []*settings.Variable{token.Variable, size.Variable}}, temporal, network,
 	}}
 	inbound = &settings.Program{ID: "inbound", Name: "Inbound Connector", Command: "go run ./inbound", Sections: []*settings.Section{
-		{Title: "Inbound Connector", Variables: []*settings.Variable{size.Variable}}, temporal, network,
+		{Title: "Inbound Connector", Variables: []*settings.Variable{size.Variable, config.Variable}}, temporal, network,
 	}}
 
 	programs = []configui.Program{
@@ -169,9 +172,15 @@ func TestSettings_JSON(t *testing.T) {
 		require.Contains(t, raw, key)
 	}
 	variable := raw["programs"].([]any)[0].(map[string]any)["sections"].([]any)[0].(map[string]any)["variables"].([]any)[0].(map[string]any)
-	for _, key := range []string{"name", "help", "default", "required", "secret", "external", "aliases"} {
+	for _, key := range []string{"name", "help", "default", "required", "secret", "external", "aliases", "multiline", "example", "helpURL"} {
 		require.Contains(t, variable, key)
 	}
+	// A variable's own text area, example and help link, for a value such as JSON.
+	cfg := page.Programs[0].Sections[0].Variables[1]
+	require.Equal(t, "CONFIG", cfg.Name)
+	require.True(t, cfg.Multiline)
+	require.Equal(t, "{\n  \"a\": 1\n}", cfg.Example)
+	require.Equal(t, "https://example.com/config", cfg.HelpURL)
 	for _, key := range []string{"file", "profile", "variable", "exists", "found", "error", "values", "secretsSet"} {
 		require.Contains(t, raw["temporalProfile"], key)
 	}

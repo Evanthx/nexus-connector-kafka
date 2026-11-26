@@ -16,28 +16,51 @@ import (
 // of one write, so a consumer can drop the copies a retried write leaves.
 const DedupeHeader = "dedupe-id"
 
-// topicWriter writes to the one topic the Outbound Connector serves.
+// topicWriter writes to the topics the Outbound Connector allows.
 type topicWriter struct {
-	writer *kafka.Writer
-	topic  string
+	writer  *kafka.Writer
+	allowed map[string]bool // KAFKA_TOPICS
 }
 
-// write writes in.Messages in order, in one attempt (see writeAll). Each gets a dedupe-id header
-// built from requestID, the Nexus request ID, which is the same on every attempt of one operation.
+func newTopicWriter(writer *kafka.Writer, topics []string) *topicWriter {
+	allowed := make(map[string]bool, len(topics))
+	for _, t := range topics {
+		allowed[t] = true
+	}
+	return &topicWriter{writer: writer, allowed: allowed}
+}
+
+// topicNotAllowed is a write to a topic KAFKA_TOPICS doesn't list. Nothing is written. Its message
+// never lists the allowed topics: callers needn't learn them.
+type topicNotAllowed struct {
+	topic    string
+	messages int
+}
+
+func (e *topicNotAllowed) Error() string {
+	return fmt.Sprintf("topic %q isn't one this Outbound Connector writes to", e.topic)
+}
+
+// write writes in.Messages to in.Topic in order, in one attempt (see writeAll), if the topic is
+// allowed. Each gets a dedupe-id header built from requestID, the Nexus request ID, which is the
+// same on every attempt of one operation.
 func (w *topicWriter) write(ctx context.Context, requestID string, in kafkaapi.WriteInput) (kafkaapi.WriteOutput, error) {
+	if !w.allowed[in.Topic] {
+		return kafkaapi.WriteOutput{}, &topicNotAllowed{topic: in.Topic, messages: len(in.Messages)}
+	}
 	if err := w.writeAll(ctx, w.records(requestID, in)); err != nil {
 		return kafkaapi.WriteOutput{}, err
 	}
 	return kafkaapi.WriteOutput{Written: int64(len(in.Messages))}, nil
 }
 
-// records are in.Messages as records for the topic, the i-th with the dedupe-id
+// records are in.Messages as records for in.Topic, the i-th with the dedupe-id
 // kafka-write-<requestID>-<i>.
 func (w *topicWriter) records(requestID string, in kafkaapi.WriteInput) []*kgo.Record {
 	records := make([]*kgo.Record, len(in.Messages))
 	for i, m := range in.Messages {
 		dedupe := kgo.RecordHeader{Key: DedupeHeader, Value: fmt.Appendf(nil, "kafka-write-%s-%d", requestID, i)}
-		records[i] = kafka.ToKafkaRecord(w.topic, m, dedupe)
+		records[i] = kafka.ToKafkaRecord(in.Topic, m, dedupe)
 	}
 	return records
 }

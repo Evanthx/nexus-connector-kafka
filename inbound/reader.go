@@ -23,7 +23,7 @@ type deadLetterWriter interface {
 	Write(ctx context.Context, records ...*kgo.Record) error
 }
 
-// reader reads the topic as a member of a consumer group and starts one Nexus operation for each
+// reader reads one route's topic as a member of a consumer group and starts one Nexus operation for each
 // partition's part of a batch. It commits a batch only after every message in it has an operation
 // (or is in the dead-letter topic), so a crash means messages are delivered again, never lost.
 type reader struct {
@@ -221,11 +221,11 @@ func (r *reader) deliverPart(ctx context.Context, source string, recs []kafkaapi
 // past it and it is never delivered. It stays in Kafka until retention removes it.
 func (r *reader) deadLetter(ctx context.Context, rec kafkaapi.Record, reason error) error {
 	if r.deleteDeadLetters {
-		r.logger.Error("Deleting a message that can't be delivered (DELETE_DEAD_LETTERS)",
-			"topic", rec.Topic, "partition", rec.Partition, "offset", rec.Offset, "reason", reason)
+		r.logger.Error("Deleting a message that can't be delivered (deleteDeadLetters)",
+			"partition", rec.Partition, "offset", rec.Offset, "reason", reason)
 		return nil
 	}
-	r.logger.Error("Sending message to the dead-letter topic", "partition", rec.Partition, "offset", rec.Offset, "topic", r.deadLetterTopic, "reason", reason)
+	r.logger.Error("Sending message to the dead-letter topic", "partition", rec.Partition, "offset", rec.Offset, "deadLetterTopic", r.deadLetterTopic, "reason", reason)
 	dl := kafka.DeadLetter(r.deadLetterTopic, rec, r.group, reason)
 	for attempt := 1; ; attempt++ {
 		err := r.deadLetters.Write(ctx, dl)

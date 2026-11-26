@@ -3,17 +3,14 @@
 //
 // The programs are main packages, which nothing can import, so their variables are declared here
 // for the programs, the setup page (configui) and the docs (configui/gendocs) to share. The Kafka
-// variables both programs read are KafkaSection, in kafka.go. Add a new variable here, or there for
+// variables both programs read are KafkaSection, in kafka.go. The Inbound Connector's routes are
+// JSON in one variable, described field by field in routes.go. Add a new variable here, or there for
 // a Kafka one, with its help text and check, then run `make docs`.
 package setup
 
 import (
-	"errors"
-	"fmt"
-	"strconv"
 	"time"
 
-	"github.com/temporalio/nexus-connector-kafka/generated/kafkaapi"
 	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/settings"
 	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/temporalclient"
 )
@@ -26,14 +23,12 @@ var Inbound = &settings.Program{
 	Sections: []*settings.Section{
 		KafkaSection,
 		{Title: "Inbound Connector", Variables: []*settings.Variable{
-			InboundGroup.Variable, KafkaStartFrom.Variable, DeadLetterTopic.Variable, DeleteDeadLetters.Variable, BatchSize.Variable,
-			BatchTimeLimit.Variable, InboundEndpoint.Variable, InboundService.Variable, InboundOperation.Variable,
-			InboundOperationTimeout.Variable, InboundMaxInputBytes.Variable, InboundMaxMessagesPerMinute.Variable, InboundOrdering.Variable, InboundStatusInterval.Variable,
+			InboundConfig.Variable, InboundConfigFile.Variable, InboundStatusInterval.Variable,
 		}},
 		temporalSection,
 		networkSection,
 	},
-	Rules: append([]func(settings.Env) error{deadLetterRule, rateLimitRule}, KafkaRules...),
+	Rules: append([]func(settings.Env) error{routesRule}, KafkaRules...),
 }
 
 // Outbound is the Outbound Connector's process and every environment variable it reads.
@@ -44,7 +39,7 @@ var Outbound = &settings.Program{
 	Sections: []*settings.Section{
 		KafkaSection,
 		{Title: "Outbound Connector", Variables: []*settings.Variable{
-			TaskQueue.Variable,
+			KafkaTopics.Variable, TaskQueue.Variable,
 		}},
 		temporalSection,
 		networkSection,
@@ -81,177 +76,22 @@ var networkSection = &settings.Section{Title: "Network", Variables: []*settings.
 	},
 }}
 
-// The Inbound Connector's own variables.
-var (
-	InboundGroup = settings.Define(settings.Variable{
-		Name:     "KAFKA_GROUP",
-		Required: "yes",
-		Help: "The consumer group the Inbound Connector joins. Inbound Connectors with the same consumer group share the topic's " +
-			"partitions. Don't share it with any other consumer.",
-	}, settings.RequiredText("KAFKA_GROUP", "the consumer group the Inbound Connector joins"))
-
-	DeadLetterTopic = settings.Define(settings.Variable{
-		Name:     "KAFKA_DEAD_LETTER_TOPIC",
-		Required: "unless DELETE_DEAD_LETTERS is true",
-		Help: "An existing topic, other than `KAFKA_TOPIC`, for messages too large to deliver. Set this or " +
-			"`DELETE_DEAD_LETTERS=true`, not both.",
-	}, settings.Text)
-
-	DeleteDeadLetters = settings.Define(settings.Variable{
-		Name:    "DELETE_DEAD_LETTERS",
-		Default: "false",
-		Help: "`true` to log and skip messages too large to deliver, instead of writing them to " +
-			"`KAFKA_DEAD_LETTER_TOPIC`; then leave that unset.",
-	}, settings.Bool("DELETE_DEAD_LETTERS"))
-
-	BatchSize = settings.Define(settings.Variable{
-		Name:    "KAFKA_BATCH_SIZE",
-		Default: "100",
-		Help: "The most messages in one batch, and so in one Nexus operation per partition. `1` for one " +
-			"operation per message, which also rules out a message being delivered twice.",
-	}, settings.PositiveInt("KAFKA_BATCH_SIZE", 100))
-
-	BatchTimeLimit = settings.Define(settings.Variable{
-		Name:    "KAFKA_BATCH_TIME_LIMIT",
-		Default: "0 (deliver as soon as there are messages)",
-		Help: "How long a batch waits to fill, such as `500ms` or `1s`. Waiting makes fewer, fuller batches on " +
-			"a quiet topic, which costs fewer operations.",
-	}, settings.Duration("KAFKA_BATCH_TIME_LIMIT", 0))
-
-	InboundEndpoint = settings.Define(settings.Variable{
-		Name:     "INBOUND_ENDPOINT",
-		Required: "yes",
-		Help: "The Nexus endpoint the Inbound Connector delivers batches to. It routes to the receiver you implement, " +
-			"`KafkaMessageReceiver.receive`.",
-	}, settings.RequiredText("INBOUND_ENDPOINT", "the Nexus endpoint to deliver to"))
-
-	InboundService = settings.Define(settings.Variable{
-		Name:    "INBOUND_SERVICE",
-		Default: kafkaapi.KafkaMessageReceiver.ServiceName,
-		Help:    "The Nexus service the receiver serves.",
-	}, settings.TextOr(kafkaapi.KafkaMessageReceiver.ServiceName))
-
-	InboundOperation = settings.Define(settings.Variable{
-		Name:    "INBOUND_OPERATION",
-		Default: kafkaapi.KafkaMessageReceiver.Receive.Name(),
-		Help:    "The operation started for each batch.",
-	}, settings.TextOr(kafkaapi.KafkaMessageReceiver.Receive.Name()))
-
-	InboundOperationTimeout = settings.Define(settings.Variable{
-		Name:    "INBOUND_OPERATION_TIMEOUT",
-		Default: "24h",
-		Help:    "How long each operation may take, such as `30m` or `24h`. More than 0.",
-	}, func(v string) (time.Duration, error) {
-		d, err := settings.Duration("INBOUND_OPERATION_TIMEOUT", 24*time.Hour)(v)
-		if err == nil && d == 0 {
-			return 0, errors.New("INBOUND_OPERATION_TIMEOUT must be more than 0")
-		}
-		return d, err
-	})
-
-	InboundMaxInputBytes = settings.Define(settings.Variable{
-		Name:    "INBOUND_MAX_INPUT_BYTES",
-		Default: strconv.Itoa(DefaultMaxInputBytes) + " (2 MiB less 64 KiB)",
-		Help: "The largest encoded batch sent to one operation. Larger batches are split; a single larger " +
-			"message goes to the dead-letter topic.",
-	}, settings.PositiveInt("INBOUND_MAX_INPUT_BYTES", DefaultMaxInputBytes))
-
-	// InboundMaxMessagesPerMinute is 0 when unset: no limit.
-	InboundMaxMessagesPerMinute = settings.Define(settings.Variable{
-		Name:    "INBOUND_MAX_MESSAGES_PER_MINUTE",
-		Default: "no limit",
-		Help: "The most messages this Inbound Connector sends to Temporal a minute, such as `600`, spread evenly: " +
-			"it waits before each operation until the batch fits, and the waiting messages stay in Kafka. " +
-			"A whole number, at least `KAFKA_BATCH_SIZE`; a full batch can go at once, so one minute can see up to " +
-			"this plus one batch. The limit is per process: three Inbound Connectors with `600` send up to 1,800 " +
-			"a minute between them. Messages sent to the dead-letter topic don't count.",
-	}, func(v string) (int, error) {
-		if v == "" {
-			return 0, nil
-		}
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 1 {
-			return 0, fmt.Errorf("INBOUND_MAX_MESSAGES_PER_MINUTE must be a whole number of messages, at least 1, not %q; "+
-				"leave it unset for no limit", v)
-		}
-		return n, nil
-	})
-)
-
-// DefaultMaxInputBytes is under Temporal's 2 MiB payload limit by 64 KiB: the limit applies to the
-// whole payload, metadata included, and the size the Inbound Connector counts is an estimate of the
-// encoded records.
-const DefaultMaxInputBytes = 2*1024*1024 - 64*1024
-
-// deadLetterRule: undeliverable messages go to KAFKA_DEAD_LETTER_TOPIC, which isn't KAFKA_TOPIC,
-// or are deleted with DELETE_DEAD_LETTERS=true; one or the other.
-func deadLetterRule(env settings.Env) error {
-	topic := settings.Get(env, DeadLetterTopic.Name)
-	deleteThem, _ := DeleteDeadLetters.Get(env) // rules run only once every value is valid
-	switch {
-	case topic == "" && !deleteThem:
-		return errors.New("set KAFKA_DEAD_LETTER_TOPIC, the topic undeliverable messages go to, " +
-			"or DELETE_DEAD_LETTERS=true to delete them instead")
-	case topic != "" && deleteThem:
-		return errors.New("set KAFKA_DEAD_LETTER_TOPIC or DELETE_DEAD_LETTERS=true, not both: " +
-			"undeliverable messages either go to that topic or are deleted")
-	case topic != "" && topic == settings.Get(env, "KAFKA_TOPIC"):
-		return errors.New("KAFKA_DEAD_LETTER_TOPIC must differ from KAFKA_TOPIC")
-	}
-	return nil
-}
-
-// InboundOrdering is true for INBOUND_ORDERING=partition: wait for each operation to complete
-// before starting the next for its partition.
-var InboundOrdering = settings.Define(settings.Variable{
-	Name:    "INBOUND_ORDERING",
-	Default: "none",
-	Help: "`none` to start each batch's operation without waiting for the one before, as fast as possible and " +
-		"using every worker your receiver has, but a later batch can be processed before an earlier one. " +
-		"`partition` to process each partition's messages in order: wait for each operation to complete " +
-		"before starting the next for that partition, and commit only then. At most one operation per " +
-		"partition runs at a time, so parallelism is the number of partitions. A failed operation isn't " +
-		"started again or dead-lettered: it is logged, handled in Temporal, and the partition carries on.",
-	Docs: "See [Ordering](how-it-works.md#ordering).",
-}, func(v string) (bool, error) {
-	switch v {
-	case "", "none":
-		return false, nil
-	case "partition":
-		return true, nil
-	default:
-		return false, fmt.Errorf("INBOUND_ORDERING must be none or partition, not %q", v)
-	}
-})
-
 // InboundStatusInterval is how long the Inbound Connector goes without delivering before it logs a
 // status line; 0 for never.
 var InboundStatusInterval = settings.Define(settings.Variable{
 	Name:    "INBOUND_STATUS_INTERVAL",
 	Default: "5m",
 	Help: "When nothing has been delivered for this long, such as `5m` or `1h`, the Inbound Connector logs a " +
-		"status line saying which partitions it has and when it last delivered, and again each interval " +
+		"status line for each route saying which partitions it has and when it last delivered, and again each interval " +
 		"after, so a quiet topic can be told apart from a stalled Inbound Connector. `0` to turn it off.",
 }, settings.Duration("INBOUND_STATUS_INTERVAL", 5*time.Minute))
-
-// rateLimitRule: a batch must fit in a minute's messages, or it could never be sent.
-func rateLimitRule(env settings.Env) error {
-	perMinute, _ := InboundMaxMessagesPerMinute.Get(env) // rules run only once every value is valid
-	batchSize, _ := BatchSize.Get(env)
-	if perMinute > 0 && batchSize > perMinute {
-		return fmt.Errorf("KAFKA_BATCH_SIZE (%d) is more than INBOUND_MAX_MESSAGES_PER_MINUTE (%d), so a full batch "+
-			"could never be sent: set KAFKA_BATCH_SIZE to %d or less, or raise INBOUND_MAX_MESSAGES_PER_MINUTE",
-			batchSize, perMinute, perMinute)
-	}
-	return nil
-}
 
 // The Outbound Connector's own variables.
 var (
 	TaskQueue = settings.Define(settings.Variable{
 		Name:    "NEXUS_TASK_QUEUE",
 		Default: DefaultTaskQueue,
-		Help:    "The task queue the Outbound Connector's Nexus endpoint targets. Give each Outbound Connector for another topic its own.",
+		Help:    "The task queue the Outbound Connector's Nexus endpoint targets. Give each Outbound Connector in a namespace its own.",
 	}, settings.TextOr(DefaultTaskQueue))
 )
 

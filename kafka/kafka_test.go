@@ -3,6 +3,8 @@ package kafka
 import (
 	"context"
 	"errors"
+	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -27,7 +29,7 @@ func newCluster(t *testing.T) Config {
 	c, err := kfake.NewCluster(kfake.NumBrokers(1), kfake.SeedTopics(3, testTopic))
 	require.NoError(t, err)
 	t.Cleanup(c.Close)
-	return Config{Brokers: c.ListenAddrs(), Topic: testTopic, StartFrom: StartFromOldest}
+	return Config{Brokers: c.ListenAddrs()}
 }
 
 // produce writes values to one partition.
@@ -66,7 +68,7 @@ func writeAt(cfg Config, partition int32, at time.Time, values ...string) error 
 	defer cl.Close()
 	recs := make([]*kgo.Record, len(values))
 	for i, v := range values {
-		recs[i] = &kgo.Record{Topic: cfg.Topic, Partition: partition, Value: []byte(v), Timestamp: at}
+		recs[i] = &kgo.Record{Topic: testTopic, Partition: partition, Value: []byte(v), Timestamp: at}
 	}
 	return cl.ProduceSync(context.Background(), recs...).FirstErr()
 }
@@ -103,7 +105,12 @@ func TestStartOffset(t *testing.T) {
 
 func newMember(t *testing.T, cfg Config, group string) *GroupMember {
 	t.Helper()
-	m, err := NewGroupMember(cfg, group)
+	return newMemberFrom(t, cfg, group, StartFromOldest)
+}
+
+func newMemberFrom(t *testing.T, cfg Config, group string, startFrom StartFrom) *GroupMember {
+	t.Helper()
+	m, err := NewGroupMember(cfg, testTopic, group, startFrom)
 	require.NoError(t, err)
 	t.Cleanup(m.Close)
 	return m
@@ -166,8 +173,7 @@ func TestGroupMember_CommitIsWhereTheGroupResumes(t *testing.T) {
 func TestGroupMember_StartFromNewest(t *testing.T) {
 	cfg := newCluster(t)
 	produce(t, cfg, 0, "old")
-	cfg.StartFrom = StartFromNewest
-	m := newMember(t, cfg, "g")
+	m := newMemberFrom(t, cfg, "g", StartFromNewest)
 
 	b, err := m.Next(context.Background(), 10, time.Second)
 	require.NoError(t, err)
@@ -183,8 +189,7 @@ func TestGroupMember_StartFromNewest(t *testing.T) {
 // rather than at the end, past the released batch.
 func TestGroupMember_ReleasedFirstBatchSurvivesAHandoff(t *testing.T) {
 	cfg := newCluster(t)
-	cfg.StartFrom = StartFromNewest
-	first, err := NewGroupMember(cfg, "g")
+	first, err := NewGroupMember(cfg, testTopic, "g", StartFromNewest)
 	require.NoError(t, err)
 	empty, err := first.Next(context.Background(), 10, time.Second) // joins at the end
 	require.NoError(t, err)
@@ -278,27 +283,30 @@ func TestFetchErrors(t *testing.T) {
 	require.ErrorContains(t, fetchErrors(fetches(errors.New("corrupt batch"))), "corrupt batch")
 }
 
-// WaitForTopic reports each failed attempt and keeps trying: here until the topic exists. It
-// gives up only when its context ends.
-func TestWaitForTopic(t *testing.T) {
-	c, err := kfake.NewCluster(kfake.NumBrokers(1))
+// WaitForTopics reports each failed attempt, naming the topics it can't see yet, and keeps trying:
+// here until the missing topic exists. It gives up only when its context ends.
+func TestWaitForTopics(t *testing.T) {
+	c, err := kfake.NewCluster(kfake.NumBrokers(1), kfake.SeedTopics(1, "present"))
 	require.NoError(t, err)
 	t.Cleanup(c.Close)
-	cfg := Config{Brokers: c.ListenAddrs(), Topic: testTopic}
+	cfg := Config{Brokers: c.ListenAddrs()}
 
 	var mu sync.Mutex
 	var failures []error
+	var missing [][]string
 	created := make(chan struct{})
 	result := make(chan error, 1)
 	go func() {
-		_, err := WaitForTopic(context.Background(), cfg, 10*time.Millisecond, time.Second, func(_ int, err error) {
-			mu.Lock()
-			defer mu.Unlock()
-			failures = append(failures, err)
-			if len(failures) == 2 {
-				close(created)
-			}
-		})
+		_, err := WaitForTopics(context.Background(), cfg, []string{"present", testTopic}, 10*time.Millisecond, time.Second,
+			func(_ int, m []string, err error) {
+				mu.Lock()
+				defer mu.Unlock()
+				failures = append(failures, err)
+				missing = append(missing, m)
+				if len(failures) == 2 {
+					close(created)
+				}
+			})
 		result <- err
 	}()
 	select {
@@ -315,15 +323,43 @@ func TestWaitForTopic(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	require.ErrorContains(t, failures[0], "UNKNOWN_TOPIC_OR_PARTITION")
+	require.Equal(t, []string{testTopic}, missing[0], "only the missing topic is named")
 
 	// Nothing listening: it fails each attempt until its context ends.
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 	attempts := 0
-	_, err = WaitForTopic(ctx, Config{Brokers: []string{"127.0.0.1:1"}, Topic: testTopic}, 10*time.Millisecond, time.Second,
-		func(int, error) { attempts++ })
+	_, err = WaitForTopics(ctx, Config{Brokers: []string{"127.0.0.1:1"}}, []string{testTopic}, 10*time.Millisecond, time.Second,
+		func(int, []string, error) { attempts++ })
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	require.Positive(t, attempts)
+}
+
+// A topic Kafka marks internal is refused at once, not waited for.
+func TestWaitForTopics_InternalTopicRefused(t *testing.T) {
+	c, err := kfake.NewCluster(kfake.NumBrokers(1), kfake.SeedTopics(1, testTopic))
+	require.NoError(t, err)
+	t.Cleanup(c.Close)
+	cfg := Config{Brokers: c.ListenAddrs()}
+	cl, err := kgo.NewClient(cfg.clientOpts()...)
+	require.NoError(t, err)
+	defer cl.Close()
+	internal := "true"
+	_, err = kadm.NewClient(cl).CreateTopic(context.Background(), 1, 1, map[string]*string{"kfake.is_internal": &internal}, "internal-one")
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	attempts := 0
+	_, err = WaitForTopics(ctx, cfg, []string{testTopic, "internal-one"}, 10*time.Millisecond, time.Second,
+		func(int, []string, error) { attempts++ })
+	require.ErrorIs(t, err, ErrInternalTopic)
+	require.ErrorContains(t, err, `topic "internal-one" is a topic Kafka keeps for itself`)
+	require.Zero(t, attempts, "refused at once, not retried")
+
+	id, err := Identify(ctx, cfg, "internal-one")
+	require.NoError(t, err)
+	require.True(t, id.Internal)
 }
 
 func TestToKafkaRecord(t *testing.T) {
@@ -333,4 +369,71 @@ func TestToKafkaRecord(t *testing.T) {
 	require.Equal(t, "k", string(r.Key))
 	require.Equal(t, "v", string(r.Value))
 	require.Equal(t, []kgo.RecordHeader{{Key: "a", Value: []byte("1")}, {Key: "dedupe-id", Value: []byte("x-0")}}, r.Headers)
+}
+
+// An attempt asks for every topic in one request, so a broker that never answers costs one wait per
+// attempt, not one per topic. kgo's dial ignores the request's context and waits its own 10-second
+// dial timeout, so the attempt timeout doesn't bound it: asking topic by topic, two topics took 20
+// seconds before the first warning.
+func TestWaitForTopics_OneRequestPerAttempt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits out kgo's 10-second dial timeout")
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() { // accept and never answer
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			t.Cleanup(func() { _ = conn.Close() })
+		}
+	}()
+	topics := []string{"t0", "t1"}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	first := make(chan []string, 1)
+	start := time.Now()
+	go func() {
+		_, _ = WaitForTopics(ctx, Config{Brokers: []string{ln.Addr().String()}}, topics, time.Hour, time.Second,
+			func(_ int, missing []string, _ error) {
+				select {
+				case first <- missing:
+				default:
+				}
+				cancel()
+			})
+	}()
+	select {
+	case missing := <-first:
+		require.Less(t, time.Since(start), 15*time.Second, "one attempt waited once per topic")
+		require.Equal(t, topics, missing)
+	case <-time.After(30 * time.Second):
+		t.Fatal("no attempt finished")
+	}
+}
+
+// When Kafka can't be reached, every topic fails the same way: the warning gives the cause once.
+func TestWaitForTopics_UnreachableReportedOnce(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var got error
+	_, _ = WaitForTopics(ctx, Config{Brokers: []string{"127.0.0.1:1"}}, []string{"a", "b", "c"}, time.Hour, time.Second,
+		func(_ int, missing []string, err error) {
+			got = err
+			require.Equal(t, []string{"a", "b", "c"}, missing)
+			cancel()
+		})
+	require.Error(t, got)
+	require.Equal(t, 1, strings.Count(got.Error(), "describe topics:"), got.Error())
+}
+
+// An empty request would ask Kafka for every topic, so an empty list or topic is refused.
+func TestWaitForTopics_EmptyRefused(t *testing.T) {
+	_, err := WaitForTopics(context.Background(), Config{Brokers: []string{"127.0.0.1:1"}}, nil, time.Hour, time.Second, nil)
+	require.EqualError(t, err, "no topics to wait for")
+	_, err = WaitForTopics(context.Background(), Config{Brokers: []string{"127.0.0.1:1"}}, []string{"a", ""}, time.Hour, time.Second, nil)
+	require.EqualError(t, err, "a topic to wait for is empty")
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/settings"
 	"github.com/temporalio/nexus-connector-kafka/setup"
 	"github.com/temporalio/nexus-connector-kafka/test/testenv"
+	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"go.temporal.io/sdk/client"
 )
@@ -86,11 +87,16 @@ func (f *fakeStarter) waitFor(t *testing.T, n int) {
 
 func produce(t *testing.T, cfg kafka.Config, partition int32, values ...string) {
 	t.Helper()
+	produceTo(t, cfg, testenv.Topic, partition, values...)
+}
+
+func produceTo(t *testing.T, cfg kafka.Config, topic string, partition int32, values ...string) {
+	t.Helper()
 	cl, err := kgo.NewClient(kgo.SeedBrokers(cfg.Brokers...), kgo.RecordPartitioner(kgo.ManualPartitioner()))
 	require.NoError(t, err)
 	defer cl.Close()
 	for _, v := range values {
-		require.NoError(t, cl.ProduceSync(context.Background(), &kgo.Record{Topic: cfg.Topic, Partition: partition, Value: []byte(v)}).FirstErr())
+		require.NoError(t, cl.ProduceSync(context.Background(), &kgo.Record{Topic: topic, Partition: partition, Value: []byte(v)}).FirstErr())
 	}
 }
 
@@ -122,7 +128,7 @@ type running struct {
 // and stops it when the test ends. options, if any, change the Inbound Connector before it starts.
 func startInbound(t *testing.T, cfg kafka.Config, group string, starter nexussend.Sender, maxInputBytes int, options ...func(*reader)) running {
 	t.Helper()
-	member, err := kafka.NewGroupMember(cfg, group)
+	member, err := kafka.NewGroupMember(cfg, testenv.Topic, group, kafka.StartFromOldest)
 	require.NoError(t, err)
 	writer, err := kafka.NewWriter(cfg)
 	require.NoError(t, err)
@@ -131,7 +137,7 @@ func startInbound(t *testing.T, cfg kafka.Config, group string, starter nexussen
 		sender:          nexussend.NewRetrying(starter, func(int) time.Duration { return 10 * time.Millisecond }, slog.Default()),
 		deadLetters:     writer,
 		identify:        member.Identity,
-		topic:           cfg.Topic,
+		topic:           testenv.Topic,
 		group:           group,
 		deadLetterTopic: testenv.DeadLetterTopic,
 		batchSize:       10,
@@ -164,9 +170,9 @@ const bigEnough = 2 * 1024 * 1024
 // source is the Inbound Connector's source key for group, as main works it out.
 func source(t *testing.T, cfg kafka.Config, group string) string {
 	t.Helper()
-	id, err := kafka.Identify(context.Background(), cfg)
+	id, err := kafka.Identify(context.Background(), cfg, testenv.Topic)
 	require.NoError(t, err)
-	return sourceKey(id, cfg.Topic, group)
+	return sourceKey(id, testenv.Topic, group)
 }
 
 // opID is the operation ID for group "g" and the records of partition from first to last.
@@ -436,10 +442,10 @@ func TestInbound_IdentityIsCheckedForEveryBatch(t *testing.T) {
 
 	starter.mu.Lock()
 	defer starter.mu.Unlock()
-	require.Equal(t, operationID(sourceKey(second, cfg.Topic, "g"), starter.batches[1]), starter.ids[1])
+	require.Equal(t, operationID(sourceKey(second, testenv.Topic, "g"), starter.batches[1]), starter.ids[1])
 }
 
-// With DELETE_DEAD_LETTERS, a message that can't be delivered is deleted: nothing is written, and
+// With deleteDeadLetters, a message that can't be delivered is deleted: nothing is written, and
 // the stream commits past it.
 func TestInbound_DeleteDeadLetters(t *testing.T) {
 	cfg := testenv.Kafka(t)
@@ -515,18 +521,18 @@ func TestSourceKey(t *testing.T) {
 // The Inbound Connector finds the topic's identity in Kafka.
 func TestIdentify(t *testing.T) {
 	cfg := testenv.Kafka(t)
-	id, err := kafka.Identify(context.Background(), cfg)
+	id, err := kafka.Identify(context.Background(), cfg, testenv.Topic)
 	require.NoError(t, err)
 	require.NotEmpty(t, id.Cluster)
 	require.NotEmpty(t, id.TopicID)
 }
 
-// inboundEnv is a valid Inbound Connector environment with vars added; an empty value unsets a
-// variable.
+// inboundEnv is a valid Inbound Connector environment, with one route, with vars added; an empty
+// value unsets a variable.
 func inboundEnv(vars settings.Map) settings.Map {
 	env := settings.Map{
-		"KAFKA_BROKERS": "localhost:9092", "KAFKA_TOPIC": "events", "KAFKA_GROUP": "g", "INBOUND_ENDPOINT": "ep",
-		"KAFKA_DEAD_LETTER_TOPIC": "events-dlq",
+		"KAFKA_BROKERS":  "localhost:9092",
+		"INBOUND_CONFIG": `{"routes": [{"topic": "events", "endpoint": "ep", "deadLetterTopic": "events-dlq"}]}`,
 	}
 	for k, v := range vars {
 		if v == "" {
@@ -539,74 +545,55 @@ func inboundEnv(vars settings.Map) settings.Map {
 }
 
 func TestConfigFrom(t *testing.T) {
-	_, err := configFrom(inboundEnv(settings.Map{"KAFKA_GROUP": "", "INBOUND_ENDPOINT": ""}))
-	require.EqualError(t, err, "set KAFKA_GROUP: the consumer group the Inbound Connector joins\n"+
-		"set INBOUND_ENDPOINT: the Nexus endpoint to deliver to")
-
-	_, err = configFrom(inboundEnv(settings.Map{"KAFKA_DEAD_LETTER_TOPIC": ""}))
-	require.ErrorContains(t, err, "set KAFKA_DEAD_LETTER_TOPIC, the topic undeliverable messages go to, or DELETE_DEAD_LETTERS=true")
-
 	cfg, err := configFrom(inboundEnv(nil))
 	require.NoError(t, err)
-	require.Equal(t, "events", cfg.kafka.Topic)
-	require.Equal(t, "g", cfg.group)
-	require.Equal(t, "ep", cfg.endpoint)
-	require.Equal(t, "events-dlq", cfg.deadLetterTopic)
-	require.False(t, cfg.deleteDeadLetters)
-	require.Equal(t, 100, cfg.batchSize)
-	require.Zero(t, cfg.timeLimit)
-	require.Equal(t, 24*time.Hour, cfg.operationTimeout)
-	require.Equal(t, kafkaapi.KafkaMessageReceiver.ServiceName, cfg.service)
-	require.Equal(t, "receive", cfg.operation)
-	require.Equal(t, setup.DefaultMaxInputBytes, cfg.maxInputBytes)
+	require.Len(t, cfg.routes, 1)
+	r := cfg.routes[0]
+	require.Equal(t, "events", r.Topic)
+	require.Equal(t, "nexus-connector-kafka:events:ep", r.Group)
+	require.Equal(t, "ep", r.Endpoint)
+	require.Equal(t, "events-dlq", r.DeadLetterTopic)
+	require.Equal(t, 100, r.BatchSize)
+	require.Equal(t, 24*time.Hour, r.OperationTimeout)
+	require.Equal(t, kafkaapi.KafkaMessageReceiver.ServiceName, r.Service)
+	require.Equal(t, setup.DefaultMaxInputBytes, r.MaxInputBytes)
+	require.Equal(t, "INBOUND_CONFIG", cfg.source)
+	require.Equal(t, 5*time.Minute, cfg.statusInterval)
 
-	cfg, err = configFrom(inboundEnv(settings.Map{"KAFKA_BATCH_TIME_LIMIT": "2s", "KAFKA_BATCH_SIZE": "500"}))
-	require.NoError(t, err)
-	require.Equal(t, 2*time.Second, cfg.timeLimit)
-	require.Equal(t, 500, cfg.batchSize)
+	_, err = configFrom(inboundEnv(settings.Map{"INBOUND_CONFIG": `{"routes": [{"topic": "events"}]}`}))
+	require.ErrorContains(t, err, "routes[0] (events): set endpoint")
 
-	_, err = configFrom(inboundEnv(settings.Map{"KAFKA_DEAD_LETTER_TOPIC": "events"}))
-	require.ErrorContains(t, err, "must differ")
-
-	_, err = configFrom(inboundEnv(settings.Map{"INBOUND_OPERATION_TIMEOUT": "0s"}))
-	require.EqualError(t, err, "INBOUND_OPERATION_TIMEOUT must be more than 0")
+	_, err = configFrom(inboundEnv(settings.Map{"INBOUND_CONFIG": ""}))
+	require.EqualError(t, err, "set INBOUND_CONFIG to the routes, as JSON, or INBOUND_CONFIG_FILE to a file holding them")
 }
 
-// DELETE_DEAD_LETTERS replaces KAFKA_DEAD_LETTER_TOPIC: one or the other, not both.
-func TestConfigFrom_DeleteDeadLetters(t *testing.T) {
-	cfg, err := configFrom(inboundEnv(settings.Map{"KAFKA_DEAD_LETTER_TOPIC": "", "DELETE_DEAD_LETTERS": "true"}))
-	require.NoError(t, err)
-	require.True(t, cfg.deleteDeadLetters)
-
-	_, err = configFrom(inboundEnv(settings.Map{"DELETE_DEAD_LETTERS": "true"}))
-	require.ErrorContains(t, err, "not both")
-
-	_, err = configFrom(inboundEnv(settings.Map{"KAFKA_DEAD_LETTER_TOPIC": "", "DELETE_DEAD_LETTERS": "yes please"}))
-	require.EqualError(t, err, `DELETE_DEAD_LETTERS must be true or false, not "yes please"`)
-}
-
-// The startup report shows every setting, marks the ones left to their defaults, never shows the
-// password, and says what the Inbound Connector will do with undeliverable messages.
+// The startup report shows every route's settings, marks where each came from, never shows the
+// password, and says what each route will do.
 func TestReport(t *testing.T) {
-	env := inboundEnv(settings.Map{"KAFKA_USERNAME": "connector", "KAFKA_PASSWORD": "secret-password"})
+	env := inboundEnv(settings.Map{
+		"KAFKA_USERNAME": "connector", "KAFKA_PASSWORD": "secret-password",
+		"INBOUND_CONFIG": `{"defaults": {"batchSize": 10}, "routes": [
+			{"topic": "events", "endpoint": "ep", "deadLetterTopic": "events-dlq"},
+			{"topic": "orders", "endpoint": "op", "group": "og", "deleteDeadLetters": true, "batchSize": 1}]}`,
+	})
 	cfg, err := configFrom(env)
 	require.NoError(t, err)
 	report := cfg.report(env, client.Options{Namespace: "connectors", HostPort: "localhost:7233"})
 	require.NotContains(t, report, "secret-password")
 	require.Contains(t, report, "KAFKA_PASSWORD is set")
-	require.Regexp(t, `KAFKA_BATCH_SIZE +100 \(default\)`, report)
-	require.Regexp(t, `KAFKA_START_FROM +oldest \(default\)`, report)
-	require.Regexp(t, `KAFKA_GROUP +g\n`, report)
-	require.Contains(t, report, `Send messages that can't be delivered to the topic "events-dlq".`)
-	require.Contains(t, report, "can be delivered twice")
-
-	env = inboundEnv(settings.Map{"KAFKA_DEAD_LETTER_TOPIC": "", "DELETE_DEAD_LETTERS": "true", "KAFKA_BATCH_SIZE": "100"})
-	cfg, err = configFrom(env)
-	require.NoError(t, err)
-	report = cfg.report(env, client.Options{Namespace: "connectors", HostPort: "localhost:7233"})
-	require.Contains(t, report, "Delete messages that can't be delivered")
-	require.Regexp(t, `KAFKA_DEAD_LETTER_TOPIC +\(not set\)`, report)
-	require.Regexp(t, `KAFKA_BATCH_SIZE +100\n`, report, "set to the default value: not marked as the default")
+	require.Regexp(t, `routes +INBOUND_CONFIG\n`, report)
+	require.Contains(t, report, "Route 0: events")
+	require.Contains(t, report, "Route 1: orders")
+	require.Regexp(t, `batchSize +10 \(from defaults\)`, report)
+	require.Regexp(t, `batchSize +1\n`, report)
+	require.Regexp(t, `startFrom +oldest \(default\)`, report)
+	require.Regexp(t, `group +nexus-connector-kafka:events:ep \(derived from topic and endpoint\)`, report)
+	require.Regexp(t, `group +og\n`, report)
+	require.Contains(t, report, `Topic "events": Send messages that can't be delivered to the topic "events-dlq".`)
+	require.Contains(t, report, `Topic "orders": Delete messages that can't be delivered`)
+	require.Contains(t, report, `Topic "events": After a crash or a rebalance, a message can be delivered twice`)
+	require.Contains(t, report, "INBOUND_STATUS_INTERVAL")
+	require.Contains(t, report, "KAFKA_CLIENT_LOG_LEVEL")
 }
 
 // With nothing delivered for statusInterval, the Inbound Connector says it is waiting and which
@@ -625,7 +612,7 @@ func TestReportStatus(t *testing.T) {
 			r := &reader{
 				topic: "events", group: "g", statusInterval: 20 * time.Millisecond,
 				partitions: func() []int32 { return tc.parts },
-				logger:     slog.New(slog.NewTextHandler(&buf, nil)),
+				logger:     slog.New(slog.NewTextHandler(&buf, nil)).With("topic", "events"),
 			}
 			r.lastDelivered.Store(time.Now().Add(-time.Hour).UnixNano())
 			ctx, cancel := context.WithCancel(context.Background())
@@ -723,4 +710,81 @@ func TestReportStatus_StillDelivering(t *testing.T) {
 	go r.reportStatus(ctx)
 	require.Eventually(t, func() bool { return strings.Contains(buf.String(), "Still delivering a batch") }, 2*time.Second, 10*time.Millisecond)
 	require.NotContains(t, buf.String(), "Waiting for messages")
+}
+
+// newRouteReader joins group for topic and returns a reader that sends through sender, not yet
+// running.
+func newRouteReader(t *testing.T, cfg kafka.Config, topic, group string, sender nexussend.Sender) *reader {
+	t.Helper()
+	member, err := kafka.NewGroupMember(cfg, topic, group, kafka.StartFromOldest)
+	require.NoError(t, err)
+	return &reader{
+		member:            member,
+		sender:            nexussend.NewRetrying(sender, func(int) time.Duration { return 10 * time.Millisecond }, slog.Default()),
+		identify:          member.Identity,
+		topic:             topic,
+		group:             group,
+		deleteDeadLetters: true,
+		batchSize:         10,
+		maxInputBytes:     bigEnough,
+		logger:            slog.Default().With("topic", topic),
+		retryDelay:        func(int) time.Duration { return 10 * time.Millisecond },
+		partitions:        member.Partitions,
+	}
+}
+
+// groupMembers is how many members group has in Kafka.
+func groupMembers(t *testing.T, cfg kafka.Config, group string) int {
+	t.Helper()
+	cl, err := kgo.NewClient(kgo.SeedBrokers(cfg.Brokers...))
+	require.NoError(t, err)
+	defer cl.Close()
+	groups, err := kadm.NewClient(cl).DescribeGroups(context.Background(), group)
+	require.NoError(t, err)
+	return len(groups[group].Members)
+}
+
+// When one route fails, every route stops: runReaders returns that route's error, and every member,
+// the healthy route's too, has left its group, so the partitions go to other Inbound Connectors.
+func TestRunReaders_OneRouteFailingStopsEveryRoute(t *testing.T) {
+	cfg := testenv.Kafka(t)
+	produce(t, cfg, 0, "c0")
+	starter := newFakeStarter()
+	customers := newRouteReader(t, cfg, testenv.Topic, "customers-group", starter)
+	orders := newRouteReader(t, cfg, testenv.OrdersTopic, "orders-group", starter)
+
+	done := make(chan error, 1)
+	go func() { done <- runReaders(context.Background(), []*reader{customers, orders}) }()
+	starter.waitFor(t, 1)
+	require.Eventually(t, func() bool { return groupMembers(t, cfg, "orders-group") == 1 }, 20*time.Second, 50*time.Millisecond)
+
+	customers.member.Close() // its next read fails: the Kafka client is closed
+	select {
+	case err := <-done:
+		require.ErrorContains(t, err, `streaming the topic "customers" stopped`)
+	case <-time.After(30 * time.Second):
+		t.Fatal("runReaders didn't stop when a route failed")
+	}
+	require.Zero(t, groupMembers(t, cfg, "orders-group"), "the healthy route left its group")
+}
+
+// A route whose endpoint doesn't exist retries forever, and the other route still delivers.
+func TestRunReaders_RoutesAreIsolated(t *testing.T) {
+	cfg := testenv.Kafka(t)
+	produce(t, cfg, 0, "c0")
+	produceTo(t, cfg, testenv.OrdersTopic, 1, "o0")
+	stuck := nexussend.SenderFunc(func(context.Context, nexussend.Operation) error {
+		return errors.New("endpoint not found")
+	})
+	starter := newFakeStarter()
+	customers := newRouteReader(t, cfg, testenv.Topic, "customers-group", stuck)
+	orders := newRouteReader(t, cfg, testenv.OrdersTopic, "orders-group", starter)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runReaders(ctx, []*reader{customers, orders}) }()
+	starter.waitFor(t, 1)
+	require.Equal(t, []string{"o0"}, starter.values())
+	cancel()
+	require.NoError(t, <-done, "stopping isn't an error")
 }

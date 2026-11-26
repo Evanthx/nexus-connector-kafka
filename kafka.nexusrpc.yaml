@@ -5,11 +5,11 @@ services:
   KafkaService:
     fqn: KafkaService
     x-go-name: KafkaService
-    description: "Writes to one Kafka topic. Served by the Outbound Connector, which decides the topic."
+    description: "Writes to the Kafka topics its Outbound Connector allows."
     operations:
       write:
         fqn: write
-        description: "Write messages to the topic."
+        description: "Write messages to a topic the Outbound Connector allows."
         input:
           $ref: "#/$defs/WriteInput"
         output:
@@ -75,13 +75,17 @@ $defs:
   WriteInput:
     type: object
     properties:
+      topic:
+        type: string
+        minLength: 1
+        description: "The topic to write to. It must be one the Outbound Connector allows (KAFKA_TOPICS)"
       messages:
         type: array
         minItems: 1
         maxItems: 10000
         items:
           $ref: "#/$defs/Message"
-    required: [messages]
+    required: [topic, messages]
     additionalProperties: false
 
   Message:

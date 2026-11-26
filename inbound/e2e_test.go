@@ -74,8 +74,8 @@ func (r *receiver) service() *nexus.Service {
 
 type e2e struct {
 	kafkaCfg        kafka.Config
-	starter         *nexussend.Nexus // starts operations without waiting (INBOUND_ORDERING=none)
-	waiter          *nexussend.Nexus // waits for each to complete (INBOUND_ORDERING=partition)
+	starter         *nexussend.Nexus // starts operations without waiting (ordering none)
+	waiter          *nexussend.Nexus // waits for each to complete (ordering partition)
 	receiver        *receiver
 	connector, test client.Client
 }
@@ -259,4 +259,28 @@ func TestEndToEnd_EncryptedDelivery(t *testing.T) {
 	require.NoError(t, err)
 	codectest.RequireEncrypted(t, resp.GetInput(), "secret-2")
 	codectest.RequireEncrypted(t, resp.GetInfo().GetUserMetadata().GetSummary(), "events")
+}
+
+// Two routes deliver two topics to two endpoints, each through its own consumer group.
+func TestEndToEnd_TwoRoutesTwoEndpoints(t *testing.T) {
+	env := startE2E(t, &receiver{})
+	const second = "kafka-receiver-endpoint-orders"
+	testenv.Endpoint(t, env.connector, second, testenv.TestNamespace, receiverTaskQueue)
+	ordersStarter, err := nexussend.NewNexus(env.connector, second, kafkaapi.KafkaMessageReceiver.ServiceName,
+		kafkaapi.KafkaMessageReceiver.Receive.Name(), time.Hour, false)
+	require.NoError(t, err)
+	produce(t, env.kafkaCfg, 0, "customer0")
+	produceTo(t, env.kafkaCfg, testenv.OrdersTopic, 2, "order0")
+
+	readers := []*reader{
+		newRouteReader(t, env.kafkaCfg, testenv.Topic, "customers-group", env.starter),
+		newRouteReader(t, env.kafkaCfg, testenv.OrdersTopic, "orders-group", ordersStarter),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runReaders(ctx, readers) }()
+	env.receiver.waitFor(t, 2)
+	require.ElementsMatch(t, []string{"customer0", "order0"}, env.receiver.values())
+	cancel()
+	require.NoError(t, <-done)
 }

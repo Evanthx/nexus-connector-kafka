@@ -19,3 +19,12 @@ func TestDocsUpToDate(t *testing.T) {
 	require.True(t, ok, "no %s line", settings.EndMarker)
 	require.Equal(t, settings.Markdown(programs...), current, "docs/setup.md is out of date: run make docs")
 }
+
+// docs/setup.md's table of route fields must match setup.RouteFields: run `make docs`.
+func TestRoutesDocsUpToDate(t *testing.T) {
+	doc, err := os.ReadFile("../../docs/setup.md")
+	require.NoError(t, err)
+	updated, err := replaceRoutes(string(doc))
+	require.NoError(t, err)
+	require.Equal(t, updated, string(doc), "docs/setup.md is out of date: run make docs")
+}

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Starts the local Kafka, seeds it, writes one more message to be the topic's last, then runs the
+# Starts the local Kafka, seeds it, writes one more message to be the customers topic's last, then runs the
 # setup page (make configui) with the local Kafka's settings already filled in. Open
 # http://localhost:8090 and press Test: among its checks, it reads that last message.
 #

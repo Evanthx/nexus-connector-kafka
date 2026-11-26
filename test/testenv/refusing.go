@@ -13,7 +13,7 @@ import (
 
 // Refusing starts an in-memory Kafka with Topic, three partitions on three brokers, that refuses
 // every write to a partition refuse returns true for, with err; it writes the others. It returns
-// the settings to reach it, for Topic, and the number of produce requests it refused.
+// the settings to reach it and the number of produce requests it refused.
 func Refusing(t *testing.T, refuse func(partition int32) bool, err *kerr.Error) (kafka.Config, func() int) {
 	t.Helper()
 	c, cerr := kfake.NewCluster(kfake.NumBrokers(3), kfake.SeedTopics(3, Topic))
@@ -60,5 +60,5 @@ func Refusing(t *testing.T, refuse func(partition int32) bool, err *kerr.Error) 
 		}
 		return resp, nil, true
 	})
-	return kafka.Config{Brokers: c.ListenAddrs(), Topic: Topic, StartFrom: kafka.StartFromOldest}, func() int { return int(refused.Load()) }
+	return kafka.Config{Brokers: c.ListenAddrs()}, func() int { return int(refused.Load()) }
 }

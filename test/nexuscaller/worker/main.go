@@ -4,8 +4,8 @@
 // namespace. If the worker stops, a workflow doesn't: it carries on from its history when a worker
 // polls again.
 //
-// It needs no Kafka settings. Its workflows reach Kafka only through the Nexus endpoints
-// (CustomersEndpoint and OrdersEndpoint), which route to Outbound Connectors in another namespace.
+// It needs no Kafka settings. Its workflows reach Kafka only through the Nexus endpoint
+// (Endpoint), which routes to the Outbound Connector in another namespace.
 package main
 
 import (

@@ -15,6 +15,7 @@ import (
 	"github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/settings"
 	ct "github.com/temporalio/nexus-connector-kafka/nexus-connector-shared/test/configuitest"
 	"github.com/temporalio/nexus-connector-kafka/setup"
+	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kfake"
 	"github.com/twmb/franz-go/pkg/kgo"
 	nexuspb "go.temporal.io/api/nexus/v1"
@@ -57,7 +58,7 @@ func newCluster(t *testing.T, topics []string, values ...string) string {
 // values set now, but never a secret's value.
 func TestSettings_JSON(t *testing.T) {
 	h := configui.NewServer(pageTitle, ct.BaseEnv(t, settings.Map{
-		"KAFKA_TOPIC":      "orders",
+		"KAFKA_TOPICS":     "orders",
 		"KAFKA_PASSWORD":   "hunter2_never_sent",
 		"TEMPORAL_API_KEY": "temporal_key_never_sent",
 		"https_proxy":      "http://user:proxy_pw_never_sent@proxy.example:8080",
@@ -93,8 +94,14 @@ func TestSettings_JSON(t *testing.T) {
 		require.Equal(t, "gRPC", p.Sections[3].Variables[0].External)
 		require.Equal(t, []string{"https_proxy"}, p.Sections[3].Variables[0].Aliases)
 	}
+	// The routes' field: a text area, the example, and the link to the docs.
+	routes := page.Programs[0].Sections[1].Variables[0]
+	require.Equal(t, "INBOUND_CONFIG", routes.Name)
+	require.True(t, routes.Multiline)
+	require.JSONEq(t, setup.RoutesExample, routes.Example)
+	require.Equal(t, "https://github.com/Evanthx/nexus-connector-kafka/blob/main/docs/setup.md#inbound-routes", routes.HelpURL)
 	require.Equal(t, map[string]string{
-		"KAFKA_TOPIC":          "orders",
+		"KAFKA_TOPICS":         "orders",
 		"TEMPORAL_CONFIG_FILE": filepath.Join(filepath.Dir(page.TemporalProfile.File), "none.toml"),
 	}, page.Values)
 	require.Equal(t, map[string]bool{
@@ -108,15 +115,12 @@ func TestSettings_JSON(t *testing.T) {
 }
 
 // The Settings check reports exactly what the Inbound Connector would at startup, every problem at
-// once, and the Kafka check waits for valid Kafka settings.
+// once, route problems included, and the Routes check waits for valid routes.
 func TestTest_ReportsEverySettingsProblemAsStartupDoes(t *testing.T) {
 	programs := ct.WithTemporalTimeout(programs, time.Second)
 	values := map[string]string{
-		"KAFKA_TOPIC":               "orders",
-		"KAFKA_START_FROM":          "yesterday",
-		"KAFKA_BATCH_SIZE":          "0",
-		"INBOUND_OPERATION_TIMEOUT": "0s",
-		"TEMPORAL_ADDRESS":          "127.0.0.1:1",
+		"INBOUND_CONFIG":   `{"routes": [{"topic": "orders", "startFrom": "yesterday", "batchSize": 0, "deleteDeadLetters": true}]}`,
+		"TEMPORAL_ADDRESS": "127.0.0.1:1",
 	}
 	_, resp := ct.PostTest(t, configui.NewServer(pageTitle, ct.BaseEnv(t, nil), programs), configui.TestRequest{Program: "inbound", Values: values})
 	require.False(t, resp.OK)
@@ -125,86 +129,86 @@ func TestTest_ReportsEverySettingsProblemAsStartupDoes(t *testing.T) {
 	require.Error(t, startupErr)
 	problems := ct.CheckTitled(t, resp, "Settings").Problems
 	require.Equal(t, strings.Split(startupErr.Error(), "\n"), problems)
+	require.Equal(t, []string{"set KAFKA_BROKERS: the Kafka brokers, as comma-separated host:port"}, problems, "rules wait for valid variables")
+
+	values["KAFKA_BROKERS"] = "127.0.0.1:1"
+	_, resp = ct.PostTest(t, configui.NewServer(pageTitle, ct.BaseEnv(t, nil), programs), configui.TestRequest{Program: "inbound", Values: values})
 	require.Equal(t, []string{
-		"set KAFKA_BROKERS: the Kafka brokers, as comma-separated host:port",
-		"set KAFKA_GROUP: the consumer group the Inbound Connector joins",
-		`KAFKA_START_FROM must be oldest or newest, not "yesterday"`,
-		`KAFKA_BATCH_SIZE must be a whole number, at least 1, not "0"`,
-		"set INBOUND_ENDPOINT: the Nexus endpoint to deliver to",
-		"INBOUND_OPERATION_TIMEOUT must be more than 0",
-	}, problems)
+		"routes[0] (orders): batchSize must be a whole number, at least 1, not 0",
+		`routes[0] (orders): startFrom must be "oldest" or "newest", not "yesterday"`,
+	}, ct.CheckTitled(t, resp, "Settings").Problems)
 	require.Contains(t, ct.CheckTitled(t, resp, "Temporal").Problems[0], "Failed to connect to Temporal at 127.0.0.1:1")
-	require.Equal(t, "Fix the Kafka settings first.", ct.CheckTitled(t, resp, "Kafka").Skipped)
+	require.Equal(t, "Fix the routes first: the Settings check lists what is wrong.", ct.CheckTitled(t, resp, "Routes").Skipped)
 }
 
-// The Test reads the topic's last message with the programs' Kafka code, the same one each time,
-// using the page's values in place of those where configui runs.
+// The Outbound Connector's Test reads each allowed topic's last message with the programs' Kafka
+// code, the same one each time, using the page's values in place of those where configui runs.
 func TestTest_ReadsTheLastMessage(t *testing.T) {
 	programs := ct.WithTemporalTimeout(programs, time.Second)
-	brokers := newCluster(t, []string{"orders"}, "first", "last order")
-	h := configui.NewServer(pageTitle, ct.BaseEnv(t, settings.Map{"KAFKA_TOPIC": "replaced-by-the-page"}), programs)
+	brokers := newCluster(t, []string{"orders", "billing"}, "first", "last order")
+	h := configui.NewServer(pageTitle, ct.BaseEnv(t, settings.Map{"KAFKA_TOPICS": "replaced-by-the-page"}), programs)
 	req := configui.TestRequest{Program: "outbound", Values: map[string]string{
-		"KAFKA_BROKERS": brokers, "KAFKA_TOPIC": "orders", "KAFKA_PASSWORD": "typed_s3cret", "TEMPORAL_ADDRESS": "127.0.0.1:1",
+		"KAFKA_BROKERS": brokers, "KAFKA_TOPICS": "orders,billing", "KAFKA_PASSWORD": "typed_s3cret", "TEMPORAL_ADDRESS": "127.0.0.1:1",
 	}}
 	for range 2 {
 		raw, resp := ct.PostTest(t, h, req)
 		require.NotContains(t, raw, "s3cret")
 		k := ct.CheckTitled(t, resp, "Kafka")
 		require.Empty(t, k.Problems)
-		require.Contains(t, k.Passed[1], "Read the topic's last message: partition 0, offset 1, timestamp ")
-		require.Equal(t, []string{"Key: k", "Value: last order", "Header source: test"}, k.Passed[2:])
 		require.Contains(t, k.Passed[0], `found the topic "orders"`)
+		require.Contains(t, k.Passed[1], `Read the last message of "orders": partition 0, offset 1, timestamp `)
+		require.Equal(t, []string{"Key: k", "Value: last order", "Header source: test"}, k.Passed[2:5])
+		require.Contains(t, k.Passed[5], `found the topic "billing"`)
+		require.Equal(t, `The topic "billing" has no messages to read.`, k.Passed[6])
 	}
 }
 
-// An empty topic is fine: there is just nothing to show.
-func TestTest_EmptyTopic(t *testing.T) {
-	programs := ct.WithTemporalTimeout(programs, time.Second)
-	brokers := newCluster(t, []string{"orders"})
-	_, resp := ct.PostTest(t, configui.NewServer(pageTitle, ct.BaseEnv(t, nil), programs), configui.TestRequest{Program: "outbound", Values: map[string]string{
-		"KAFKA_BROKERS": brokers, "KAFKA_TOPIC": "orders", "TEMPORAL_ADDRESS": "127.0.0.1:1",
-	}})
-	k := ct.CheckTitled(t, resp, "Kafka")
-	require.Empty(t, k.Problems)
-	require.Equal(t, "The topic has no messages to read.", k.Passed[1])
-}
-
-// A Kafka failure shows its whole error.
+// A Kafka failure shows its whole error, for each topic.
 func TestTest_ShowsTheWholeError(t *testing.T) {
 	programs := ct.WithTemporalTimeout(programs, time.Second)
 	brokers := newCluster(t, []string{"orders"})
 	_, resp := ct.PostTest(t, configui.NewServer(pageTitle, ct.BaseEnv(t, nil), programs), configui.TestRequest{Program: "outbound", Values: map[string]string{
-		"KAFKA_BROKERS": brokers, "KAFKA_TOPIC": "missing", "TEMPORAL_ADDRESS": "127.0.0.1:1",
+		"KAFKA_BROKERS": brokers, "KAFKA_TOPICS": "orders,missing", "TEMPORAL_ADDRESS": "127.0.0.1:1",
 	}})
 	require.False(t, resp.OK)
 	require.Equal(t, []string{`Connect to Kafka at ` + brokers + ` and find the topic "missing": describe topic "missing": ` +
 		`UNKNOWN_TOPIC_OR_PARTITION: This server does not host this topic-partition.`}, ct.CheckTitled(t, resp, "Kafka").Problems)
 }
 
-// The Inbound Connector's Kafka check finds its dead-letter topic, or says it is missing.
-func TestTest_InboundDeadLetterTopic(t *testing.T) {
+// The Inbound Connector's Routes check lists every route resolved, then checks each route's topic
+// and dead-letter topic in Kafka.
+func TestTest_InboundRoutes(t *testing.T) {
 	programs := ct.WithTemporalTimeout(programs, time.Second)
-	brokers := newCluster(t, []string{"orders", "orders-dlq"}, "m")
+	brokers := newCluster(t, []string{"orders", "customers", "orders-dlq"}, "m")
 	h := configui.NewServer(pageTitle, ct.BaseEnv(t, nil), programs)
 	req := configui.TestRequest{Program: "inbound", Values: map[string]string{
-		"KAFKA_BROKERS": brokers, "KAFKA_TOPIC": "orders", "KAFKA_GROUP": "g", "INBOUND_ENDPOINT": "ep",
-		"KAFKA_DEAD_LETTER_TOPIC": "orders-dlq", "TEMPORAL_ADDRESS": "127.0.0.1:1",
+		"KAFKA_BROKERS": brokers, "TEMPORAL_ADDRESS": "127.0.0.1:1",
+		"INBOUND_CONFIG": `{"defaults": {"deadLetterTopic": "orders-dlq"}, "routes": [
+			{"topic": "orders", "endpoint": "ep"},
+			{"topic": "customers", "endpoint": "ep2", "deleteDeadLetters": true, "batchSize": 1}]}`,
 	}}
 	_, resp := ct.PostTest(t, h, req)
-	k := ct.CheckTitled(t, resp, "Kafka")
-	require.Empty(t, k.Problems)
-	require.Contains(t, k.Passed, `The dead-letter topic "orders-dlq" exists.`)
+	r := ct.CheckTitled(t, resp, "Routes")
+	require.Empty(t, r.Problems)
+	require.Equal(t, `Route 0: topic "orders" to endpoint "ep" (KafkaMessageReceiver/receive), group "nexus-connector-kafka:orders:ep", `+
+		`start from oldest, batches of up to 100 waiting up to 0s, operations allowed 24h0m0s, inputs up to 2031616 bytes, `+
+		`no rate limit, ordering none, dead letters to "orders-dlq".`, r.Passed[0])
+	require.Contains(t, r.Passed[1], `Route 1: topic "customers" to endpoint "ep2"`)
+	require.Contains(t, r.Passed[1], "batches of up to 1 ")
+	require.Contains(t, r.Passed[1], "dead letters deleted")
+	require.Contains(t, strings.Join(r.Passed, "\n"), `found the dead-letter topic "orders-dlq"`)
+	require.Contains(t, strings.Join(r.Passed, "\n"), `found the topic "customers"`)
 
-	req.Values["KAFKA_DEAD_LETTER_TOPIC"] = "nowhere"
+	req.Values["INBOUND_CONFIG"] = `{"routes": [{"topic": "orders", "endpoint": "ep", "deadLetterTopic": "nowhere"}]}`
 	_, resp = ct.PostTest(t, h, req)
-	require.Equal(t, []string{`Can't find the dead-letter topic "nowhere"; create it, or set DELETE_DEAD_LETTERS=true instead: ` +
+	require.Equal(t, []string{`Connect to Kafka at ` + brokers + ` and find the dead-letter topic "nowhere" (create it, or set deleteDeadLetters to true instead): ` +
 		`describe topic "nowhere": UNKNOWN_TOPIC_OR_PARTITION: This server does not host this topic-partition.`},
-		ct.CheckTitled(t, resp, "Kafka").Problems)
+		ct.CheckTitled(t, resp, "Routes").Problems)
 }
 
 // Against a dev server: the namespace exists; the Outbound Connector's Test reports a missing
 // endpoint targeting its task queue with the command to create one, and the Inbound Connector's
-// that INBOUND_ENDPOINT doesn't exist, until each does.
+// that each route's endpoint doesn't exist, until each does.
 func TestTest_Temporal(t *testing.T) {
 	if testing.Short() {
 		t.Skip("starts a dev server")
@@ -255,27 +259,24 @@ func TestTest_Temporal(t *testing.T) {
 	require.Contains(t, temporal.Passed, `Nexus endpoint "orders-endpoint" targets namespace "connectors" and task queue "kafka-orders".`)
 
 	inbound := configui.TestRequest{Program: "inbound", Values: map[string]string{
-		"INBOUND_ENDPOINT": "receiver-endpoint", "TEMPORAL_ADDRESS": server.FrontendHostPort(),
+		"KAFKA_BROKERS": "127.0.0.1:1", "TEMPORAL_ADDRESS": server.FrontendHostPort(),
 		"TEMPORAL_CONFIG_FILE": base["TEMPORAL_CONFIG_FILE"],
+		"INBOUND_CONFIG":       `{"defaults": {"deleteDeadLetters": true}, "routes": [{"topic": "a", "endpoint": "receiver-endpoint"}, {"topic": "b", "endpoint": "other-endpoint"}]}`,
 	}}
 	_, resp = ct.PostTest(t, h, inbound)
-	temporal = ct.CheckTitled(t, resp, "Temporal")
-	require.Equal(t, connected, temporal.Passed)
-	require.Equal(t, []string{`Nexus endpoint "receiver-endpoint", which the program calls, doesn't exist. Create it, targeting ` +
-		`the namespace and task queue of the worker that serves it (a dev server forgets endpoints when it restarts): ` +
-		`temporal operator nexus endpoint create --name receiver-endpoint --target-namespace <namespace> --target-task-queue <task queue>`},
-		temporal.Problems)
+	require.Equal(t, connected, ct.CheckTitled(t, resp, "Temporal").Passed)
+	routes := ct.CheckTitled(t, resp, "Routes")
+	require.Contains(t, routes.Problems, `Nexus endpoint "receiver-endpoint" (topic "a") doesn't exist. Create it, targeting `+
+		`the namespace and task queue of the worker that serves it (a dev server forgets endpoints when it restarts): `+
+		`temporal operator nexus endpoint create --name receiver-endpoint --target-namespace <namespace> --target-task-queue <task queue>`)
+	require.Contains(t, strings.Join(routes.Problems, "\n"), `Nexus endpoint "other-endpoint" (topic "b") doesn't exist.`)
 	createEndpoint("receiver-endpoint", "receiver")
 	_, resp = ct.PostTest(t, h, inbound)
-	temporal = ct.CheckTitled(t, resp, "Temporal")
-	require.Empty(t, temporal.Problems)
-	require.Equal(t, append(connected,
-		`Nexus endpoint "receiver-endpoint", which the program calls, exists: it targets namespace "connectors" and task queue "receiver".`),
-		temporal.Passed)
-
-	inbound.Values["INBOUND_ENDPOINT"] = ""
-	_, resp = ct.PostTest(t, h, inbound)
-	require.Equal(t, connected, ct.CheckTitled(t, resp, "Temporal").Passed, "no endpoint to look for: Settings reports it")
+	routes = ct.CheckTitled(t, resp, "Routes")
+	require.Contains(t, routes.Passed,
+		`Nexus endpoint "receiver-endpoint" (topic "a") exists: it targets namespace "connectors" and task queue "receiver".`)
+	require.NotContains(t, strings.Join(routes.Problems, "\n"), `"receiver-endpoint"`)
+	require.Contains(t, strings.Join(routes.Problems, "\n"), `Nexus endpoint "other-endpoint" (topic "b") doesn't exist.`)
 
 	outbound.Values["TEMPORAL_NAMESPACE"] = "missing"
 	_, resp = ct.PostTest(t, h, outbound)
@@ -285,4 +286,23 @@ func TestTest_Temporal(t *testing.T) {
 // The page's Kafka checks go through the kafka package, not a client of the page's own.
 func TestNoOwnClient(t *testing.T) {
 	ct.RequireNoOwnClient(t, ".", connectorClientMakers...)
+}
+
+// The setup page refuses an internal dead-letter topic, as startup does, through the same check as
+// the route's own topic.
+func TestTest_InternalDeadLetterTopic(t *testing.T) {
+	programs := ct.WithTemporalTimeout(programs, time.Second)
+	brokers := newCluster(t, []string{"orders"})
+	cl, err := kgo.NewClient(kgo.SeedBrokers(brokers))
+	require.NoError(t, err)
+	defer cl.Close()
+	internal := "true"
+	_, err = kadm.NewClient(cl).CreateTopic(context.Background(), 1, 1, map[string]*string{"kfake.is_internal": &internal}, "internal-dlq")
+	require.NoError(t, err)
+
+	_, resp := ct.PostTest(t, configui.NewServer(pageTitle, ct.BaseEnv(t, nil), programs), configui.TestRequest{Program: "inbound", Values: map[string]string{
+		"KAFKA_BROKERS": brokers, "TEMPORAL_ADDRESS": "127.0.0.1:1",
+		"INBOUND_CONFIG": `{"routes": [{"topic": "orders", "endpoint": "ep", "deadLetterTopic": "internal-dlq"}]}`,
+	}})
+	require.Contains(t, ct.CheckTitled(t, resp, "Routes").Problems, `The topic "internal-dlq" is a topic Kafka keeps for itself (internal); choose another topic.`)
 }

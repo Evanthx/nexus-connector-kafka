@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Creates the topic (3 partitions), its dead-letter topic, and a second topic, orders, for the
-# second Outbound Connector in the docs/testing.md walkthrough. Writes count messages to the topic
-# and 3 to orders.
+# Creates the demo's topics, customers and orders (3 partitions each), and the dead-letter topic
+# both inbound routes use (test/kafka/routes.json). Writes count messages to customers and 3 to
+# orders.
 #
 # Usage: test/kafka/scripts/seed.sh [count]    (default 10)
 set -euo pipefail
@@ -14,7 +14,7 @@ COUNT="${1:-10}"
 docker compose wait kafka-init >/dev/null
 scripts/client-config.sh
 
-for topic in "$KAFKA_TOPIC" "$KAFKA_TOPIC-dead-letters" orders; do
+for topic in customers orders dead-letters; do
   docker exec nexus-connector-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 \
     --command-config /tmp/client.properties \
     --create --if-not-exists --topic "$topic" --partitions 3 --replication-factor 1
@@ -32,5 +32,5 @@ produce() {
   echo "Wrote $count messages to $topic"
 }
 
-produce "$KAFKA_TOPIC" "$COUNT" "seed message"
+produce customers "$COUNT" "seed message"
 produce orders 3 "seed order"

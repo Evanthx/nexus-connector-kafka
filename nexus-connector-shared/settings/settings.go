@@ -64,6 +64,16 @@ type Variable struct {
 	// Aliases are other names External reads the same setting under, in order, when this one is
 	// unset or empty, such as https_proxy for HTTPS_PROXY. Only for an External variable.
 	Aliases []string
+	// Multiline makes the setup page's field a text area, for a value of several lines such as
+	// JSON.
+	Multiline bool
+	// Example is a value the setup page offers to fill the field with ("Insert example"); "" for
+	// none. Set it only on the few variables whose value is hard to write from scratch, such as a
+	// JSON document. Ignored on a Secret variable.
+	Example string
+	// HelpURL is a page explaining the variable at length, linked beside it on the setup page; ""
+	// for none.
+	HelpURL string
 	// Mask, for an External variable that holds a secret only in part, such as a proxy URL with a
 	// password, returns the value with the secret parts masked, for showing, and the secret parts,
 	// which the setup page removes from anything it shows. See MaskURLPassword. A wholly secret
