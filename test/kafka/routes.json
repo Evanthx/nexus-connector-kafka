@@ -1,0 +1,7 @@
+{
+  "defaults": { "deadLetterTopic": "dead-letters" },
+  "routes": [
+    { "topic": "customers", "endpoint": "kafka-receiver-endpoint" },
+    { "topic": "orders", "endpoint": "kafka-orders-receiver-endpoint" }
+  ]
+}
